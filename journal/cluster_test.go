@@ -22,6 +22,13 @@ import (
 
 const clusterNodes = 3
 
+// clusterStoreBudget is each node's JetStream store budget, and the
+// budget SetupAll sizes its ceilings against. Pinned on both sides so
+// placement is hermetic: AccountInfo on a forming cluster can report
+// an unlimited store, which would size R3 ceilings off the 10 GiB
+// default and fail placement on a smaller node budget.
+const clusterStoreBudget = int64(12 << 30)
+
 // startCluster starts the nodes and returns a connection to the first.
 func startCluster(t *testing.T) *nats.Conn {
 	t.Helper()
@@ -77,7 +84,7 @@ func startClusterNode(t *testing.T, index int, clusterPorts []int) *natsserver.S
 		Host: "127.0.0.1", Port: -1,
 		ServerName:        fmt.Sprintf("journal-%d", index),
 		JetStream:         true,
-		JetStreamMaxStore: 1 << 30,
+		JetStreamMaxStore: clusterStoreBudget,
 		StoreDir:          t.TempDir(),
 		Cluster: natsserver.ClusterOpts{
 			Name: "journal", Host: "127.0.0.1", Port: clusterPorts[index],

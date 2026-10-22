@@ -11,13 +11,17 @@
 // Methodology: taskContexts built from a TaskPayload the way the
 // Worker builds one, against an embedded NATS server with the journal
 // provisioned, plus one real orchestrator with two real Workers for
-// the takeover. Every wait is bounded.
+// the takeover. Dispatch is modelled as the engine does it: from
+// iteration 1 on the payload carries the attempt, so a stalled worker
+// and its AckWait redelivery differ only in the message's delivery
+// count. Every wait is bounded.
 package worker
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -44,11 +48,41 @@ func journalServer(t *testing.T) (*nats.Conn, jetstream.JetStream) {
 	return nc, js
 }
 
-func journalPayload(runID string, iteration, attempt int) protocol.TaskPayload {
+// journalPayload is the engine's payload for one dispatch: iteration 0
+// carries no attempt (the worker derives it from the delivery count),
+// later iterations carry attempt 1.
+func journalPayload(runID string, iteration int) protocol.TaskPayload {
+	attempt := 0
+	if iteration > 0 {
+		attempt = 1
+	}
 	return protocol.TaskPayload{
 		RunID: runID, StepID: "s", Iteration: iteration, Attempt: attempt,
 		DispatchNonce: "nonce", StateMaxBytes: protocol.LoopStateMaxBytesDefault,
 	}
+}
+
+// deliveredMsg is a task message delivered n times.
+type deliveredMsg struct {
+	testJetstreamMsg
+	delivered uint64
+}
+
+func (m *deliveredMsg) Metadata() (*jetstream.MsgMetadata, error) {
+	return &jetstream.MsgMetadata{NumDelivered: m.delivered}, nil
+}
+
+// delivery builds the taskContext for the n-th delivery of payload,
+// with step.started published as the Worker does before the handler.
+func delivery(t *testing.T, nc *nats.Conn, payload protocol.TaskPayload, n int) *taskContext {
+	t.Helper()
+	tc := contextForPayload(t, nc, payload, nil)
+	tc.msg = &deliveredMsg{delivered: uint64(n)}
+	tc.publishMsg = tc.tp.JSPublishMsg
+	if err := tc.publishStarted(tc.msg); err != nil {
+		t.Fatalf("publishStarted: %v", err)
+	}
+	return tc
 }
 
 func readJournal(t *testing.T, js jetstream.JetStream, runID string) []journal.Record {
@@ -96,7 +130,7 @@ func nextHistory(
 
 func TestJournal_ContinueCommitsBeforeEventAndCarriesNoState(t *testing.T) {
 	nc, js := journalServer(t)
-	tc := contextForPayload(t, nc, journalPayload("run-jc", 0, 1), nil)
+	tc := delivery(t, nc, journalPayload("run-jc", 0), 1)
 	j, err := tc.Journal()
 	if err != nil {
 		t.Fatalf("Journal: %v", err)
@@ -143,7 +177,7 @@ func TestJournal_LoadCheckpointReadsCommittedStateNotPayload(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), journalTestTimeout)
 	defer cancel()
 	first, err := journal.Open(ctx, js, pub, journal.Task{
-		RunID: "run-jl", StepID: "s", Iteration: 0, Attempt: 1, DispatchNonce: "n0",
+		RunID: "run-jl", StepID: "s", Attempt: 1, DispatchNonce: "nonce", Delivered: 1,
 	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -153,9 +187,9 @@ func TestJournal_LoadCheckpointReadsCommittedStateNotPayload(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	payload := journalPayload("run-jl", 1, 1)
+	payload := journalPayload("run-jl", 1)
 	payload.State = []byte("engine-state")
-	tc := contextForPayload(t, nc, payload, nil)
+	tc := delivery(t, nc, payload, 1)
 	if _, err := tc.Journal(); err != nil {
 		t.Fatalf("Journal: %v", err)
 	}
@@ -180,11 +214,12 @@ func TestJournal_StaleTaskStopsWithoutWritingAndAcks(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), journalTestTimeout)
 	defer cancel()
 	if _, err := journal.Open(ctx, js, pub, journal.Task{
-		RunID: "run-js", StepID: "s", Iteration: 1, Attempt: 1, DispatchNonce: "n1",
+		RunID: "run-js", StepID: "s", Iteration: 1, Attempt: 1, DispatchNonce: "nonce",
+		Delivered: 1,
 	}); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	tc := contextForPayload(t, nc, journalPayload("run-js", 0, 2), nil)
+	tc := delivery(t, nc, journalPayload("run-js", 0), 2)
 	_, err := tc.Journal()
 	if !errors.Is(err, journal.ErrStale) {
 		t.Fatalf("Journal err = %v, want ErrStale", err)
@@ -206,8 +241,12 @@ func TestJournal_OwnAttemptCommitIsRepublishedNotRepeated(t *testing.T) {
 	pub := natsutil.NewTracingPublisher(nc, js)
 	ctx, cancel := context.WithTimeout(context.Background(), journalTestTimeout)
 	defer cancel()
+	// Iteration 1 with the stamped attempt: the first delivery commits
+	// and crashes before publishing; the second delivery is the same
+	// attempt and must republish, not repeat the turn.
 	crashed, err := journal.Open(ctx, js, pub, journal.Task{
-		RunID: "run-jo", StepID: "s", Iteration: 0, Attempt: 1, DispatchNonce: "nonce",
+		RunID: "run-jo", StepID: "s", Iteration: 1, Attempt: 1, DispatchNonce: "nonce",
+		Delivered: 1,
 	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -218,7 +257,7 @@ func TestJournal_OwnAttemptCommitIsRepublishedNotRepeated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	tc := contextForPayload(t, nc, journalPayload("run-jo", 0, 1), nil)
+	tc := delivery(t, nc, journalPayload("run-jo", 1), 2)
 	_, err = tc.Journal()
 	if !errors.Is(err, journal.ErrCommitted) {
 		t.Fatalf("Journal err = %v, want ErrCommitted", err)
@@ -227,8 +266,15 @@ func TestJournal_OwnAttemptCommitIsRepublishedNotRepeated(t *testing.T) {
 	if string(evt.Payload) != `"o"` || evt.AttemptNumber != 1 || evt.JournalSeq != seq {
 		t.Errorf("republished event = %+v, want output \"o\", attempt 1, journal_seq %d", evt, seq)
 	}
-	if got := len(readJournal(t, js, "run-jo")); got != 2 {
-		t.Errorf("records = %d, want 2: recovery appends nothing", got)
+	records := readJournal(t, js, "run-jo")
+	commits := 0
+	for _, r := range records {
+		if r.Type == journal.TypeCommit {
+			commits++
+		}
+	}
+	if len(records) != 2 || commits != 1 {
+		t.Errorf("records = %d with %d commits, want 2 and 1: recovery appends nothing", len(records), commits)
 	}
 	if done, ack := tc.journalOutcome(err); !done || !ack {
 		t.Errorf("journalOutcome = done %v ack %v, want acknowledged", done, ack)
@@ -237,7 +283,7 @@ func TestJournal_OwnAttemptCommitIsRepublishedNotRepeated(t *testing.T) {
 
 func TestJournal_PauseWritesRecordAndResumeMarker(t *testing.T) {
 	nc, js := journalServer(t)
-	tc := contextForPayload(t, nc, journalPayload("run-jp", 0, 1), nil)
+	tc := delivery(t, nc, journalPayload("run-jp", 1), 1)
 	if _, err := tc.Journal(); err != nil {
 		t.Fatalf("Journal: %v", err)
 	}
@@ -248,7 +294,7 @@ func TestJournal_PauseWritesRecordAndResumeMarker(t *testing.T) {
 	if len(records) != 2 || records[1].Type != journal.TypePause {
 		t.Fatalf("records = %+v, want claim then pause", records)
 	}
-	resumed := contextForPayload(t, nc, journalPayload("run-jp", 0, 2), nil)
+	resumed := delivery(t, nc, journalPayload("run-jp", 1), 2)
 	if _, err := resumed.Journal(); err != nil {
 		t.Fatalf("Journal: %v", err)
 	}
@@ -260,10 +306,26 @@ func TestJournal_PauseWritesRecordAndResumeMarker(t *testing.T) {
 	if err := json.Unmarshal(state, &marker); err != nil || marker["pause_resume"] != "cooldown" {
 		t.Errorf("LoadCheckpoint = %s (%v), want the pause marker for cooldown", state, err)
 	}
+	if err := tc.Complete(nil); !errors.Is(err, journal.ErrFenced) {
+		t.Errorf("paused delivery Complete err = %v, want ErrFenced by the resumed one", err)
+	}
 }
 
 func TestJournal_StalledWorkerIsFencedBySuccessor(t *testing.T) {
-	nc, js, jsNew, defData := startLoopEngine(t, "wf-journal", "journal-task")
+	for _, stallAt := range []int{0, 1} {
+		t.Run(fmt.Sprintf("iteration%d", stallAt), func(t *testing.T) {
+			testStalledWorkerFenced(t, stallAt)
+		})
+	}
+}
+
+// testStalledWorkerFenced stalls the first delivery of iteration
+// stallAt past AckWait; the redelivery, which from iteration 1 carries
+// the same attempt, takes over.
+func testStalledWorkerFenced(t *testing.T, stallAt int) {
+	t.Helper()
+	runID := fmt.Sprintf("run-takeover-%d", stallAt)
+	nc, js, jsNew, defData := startLoopEngine(t, "wf-journal-"+runID, "journal-task-"+runID)
 	release := make(chan struct{})
 	stalledFenced := make(chan error, 1)
 	claimed := make(chan struct{}, 2)
@@ -272,8 +334,11 @@ func TestJournal_StalledWorkerIsFencedBySuccessor(t *testing.T) {
 		if err != nil {
 			return err
 		}
+		if j.Task().Iteration < stallAt {
+			return tc.Continue(nil)
+		}
 		claimed <- struct{}{}
-		if j.Task().Attempt == 1 {
+		if j.Task().Delivered == 1 {
 			<-release
 			_, err := j.Append(tc.Context(), journal.TypeEntry, []byte(`"late"`))
 			stalledFenced <- err
@@ -285,13 +350,13 @@ func TestJournal_StalledWorkerIsFencedBySuccessor(t *testing.T) {
 	}
 	// Two Workers: the first delivery blocks in one, the redelivery
 	// after AckWait goes to the other.
-	startFencingWorker(t, nc, "journal-task", handler)
-	startFencingWorker(t, nc, "journal-task", handler)
-	startStepRun(t, js, "run-takeover", defData)
+	startFencingWorker(t, nc, "journal-task-"+runID, handler)
+	startFencingWorker(t, nc, "journal-task-"+runID, handler)
+	startStepRun(t, js, runID, defData)
 	waitClosed(t, claimed, "first claim")
 	// The first worker stalls past AckWait; the redelivery is claimed.
 	waitClosed(t, claimed, "second claim")
-	run := waitStepSettled(t, jsNew, "run-takeover", journalTestTimeout)
+	run := waitStepSettled(t, jsNew, runID, journalTestTimeout)
 	step := run.Steps["s"]
 	if step.Status != dag.StepStatusCompleted || string(step.Output) != `"by-attempt-2"` {
 		t.Fatalf("step = %+v, want completed by attempt 2", run.Steps["s"])
@@ -307,11 +372,14 @@ func TestJournal_StalledWorkerIsFencedBySuccessor(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), journalTestTimeout)
 	defer cancel()
-	report, err := journal.Check(ctx, nc, "run-takeover")
+	report, err := journal.Check(ctx, nc, runID)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
-	if !report.OK() || len(report.Steps) != 1 || report.Steps[0].Commits != 1 {
-		t.Errorf("report = %+v, want one commit and no violations", report)
+	if !report.OK() || len(report.Steps) != 1 || report.Steps[0].Commits != stallAt+1 {
+		t.Errorf("report = %+v, want %d commits and no violations", report, stallAt+1)
+	}
+	if run.Steps["s"].Iterations != stallAt {
+		t.Errorf("iterations = %d, want %d", run.Steps["s"].Iterations, stallAt)
 	}
 }

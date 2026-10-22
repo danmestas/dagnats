@@ -1,20 +1,24 @@
 // journal/conformance_test.go
 // Journal conformance suite (ADR-026), modelled on pi-durable's: every
 // append is fenced by the tail its writer saw (R1); a record from
-// another claim fences a writer (R2); racing claimers get exactly one
-// winner; a claim never fences a later iteration (R4); a rejection is
-// not fencing until the tail says so (R3): a lost acknowledgement, an
-// own record at the tail and a tail written through another node all
-// resolve to success; commits are keyed by attempt and iteration and
-// recovery honours a commit only for the task's own attempt.
+// another claim fences a writer (R2); two deliveries of one task
+// message leave exactly one writer; a claim never fences a later
+// iteration (R4); a rejection is not fencing until the tail says so
+// (R3): a lost acknowledgement, an own record at the tail and a tail
+// written through another node all resolve to success; commits are
+// keyed by attempt and iteration and recovery honours a commit only
+// for the task's own attempt, across deliveries.
 //
-// Methodology: every case runs twice, against one embedded server and
-// against an in-process three-node cluster with R3 streams, through
-// the public Open/Append/Commit surface. Forged records are published
-// raw to stand in for a writer the protocol would otherwise prevent
-// (a stale redelivery whose tail read predates a rival claim, a lost
-// acknowledgement). Every wait is bounded by a context deadline. Each
-// case has at least one positive and one negative assertion.
+// Methodology: every case runs against one embedded server and an
+// in-process three-node cluster with R3 streams, through the public
+// Open/Append/Commit surface, and models production dispatch: the
+// engine stamps the attempt from iteration 1 on, so a stalled worker
+// and the AckWait redelivery that replaces it hold the same run, step,
+// iteration, attempt and nonce and differ only in delivery count; on
+// iteration 0 the attempt follows the delivery count. Forged records
+// are published raw to stand in for a writer the protocol would
+// otherwise prevent. Every wait is bounded. Each case has at least one
+// positive and one negative assertion.
 package journal
 
 import (
@@ -22,7 +26,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -36,9 +39,7 @@ const caseTimeout = 30 * time.Second
 
 // topology is one NATS deployment the suite runs against.
 type topology struct {
-	name string
-	// connect returns a provisioned connection; extra connections to
-	// other nodes (the same node on a single server) come from dial.
+	name    string
 	connect func(t *testing.T) *nats.Conn
 }
 
@@ -56,7 +57,7 @@ func topologies() []topology {
 				t.Skip("three-node cluster skipped in -short mode")
 			}
 			nc := startCluster(t)
-			if err := natsutil.SetupAll(nc); err != nil {
+			if err := natsutil.SetupAll(nc, natsutil.WithStoreBudget(clusterStoreBudget)); err != nil {
 				t.Fatalf("SetupAll: %v", err)
 			}
 			return nc
@@ -72,6 +73,52 @@ func forEachTopology(t *testing.T, fn func(t *testing.T, nc *nats.Conn)) {
 			fn(t, topo.connect(t))
 		})
 	}
+}
+
+// dispatch is one shape of a task payload as the engine stamps it.
+type dispatch struct {
+	name      string
+	iteration int
+	// attempt of the first delivery and of its AckWait redelivery: on
+	// iteration 0 the payload carries no attempt and the worker uses
+	// the delivery count; from iteration 1 the engine stamps it.
+	first, redelivered int
+}
+
+func dispatches() []dispatch {
+	return []dispatch{
+		{name: "iteration0", iteration: 0, first: 1, redelivered: 2},
+		{name: "iteration1", iteration: 1, first: 1, redelivered: 1},
+	}
+}
+
+// forEachDispatch runs fn per topology and dispatch shape, on a run of
+// its own, with iteration 0 already committed when the shape starts at
+// iteration 1.
+func forEachDispatch(
+	t *testing.T, fn func(t *testing.T, nc *nats.Conn, runID string, d dispatch),
+) {
+	t.Helper()
+	forEachTopology(t, func(t *testing.T, nc *nats.Conn) {
+		for _, d := range dispatches() {
+			t.Run(d.name, func(t *testing.T) {
+				runID := fmt.Sprintf("%s-%s", t.Name()[len("TestConformance_"):], d.name)
+				runID = natsutil.SubjectToken(runID)
+				if d.iteration == 1 {
+					c := newClient(t, nc)
+					ctx, cancel := context.WithTimeout(context.Background(), caseTimeout)
+					defer cancel()
+					prior := open(t, c, task(runID, 0, 1, 1))
+					if _, err := prior.Commit(ctx, Commit{
+						Action: ActionContinue, State: []byte("s0"),
+					}); err != nil {
+						t.Fatalf("commit iteration 0: %v", err)
+					}
+				}
+				fn(t, nc, runID, d)
+			})
+		}
+	})
 }
 
 // dialOther opens a second connection, to a different node when the
@@ -107,10 +154,12 @@ func newClient(t *testing.T, nc *nats.Conn) client {
 	return client{js: js, pub: natsutil.NewTracingPublisher(nc, js)}
 }
 
-func task(runID string, iteration, attempt int) Task {
+// task is one delivery of a step's dispatch. The nonce is the run's:
+// one dispatch, however often it is delivered.
+func task(runID string, iteration, attempt, delivered int) Task {
 	return Task{
 		RunID: runID, StepID: "s", Iteration: iteration, Attempt: attempt,
-		DispatchNonce: "nonce-" + strconv.Itoa(attempt), Delivered: attempt,
+		DispatchNonce: "nonce-" + runID, Delivered: delivered,
 	}
 }
 
@@ -157,10 +206,27 @@ func forge(
 	return ack.Sequence
 }
 
+// shortenDedupWindow sets the journal's dedup window so a test can
+// step past it.
+func shortenDedupWindow(t *testing.T, c client, window time.Duration) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), caseTimeout)
+	defer cancel()
+	stream, err := c.js.Stream(ctx, natsutil.AgentJournalStream)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	cfg := stream.CachedInfo().Config
+	cfg.Duplicates = window
+	if _, err := c.js.UpdateStream(ctx, cfg); err != nil {
+		t.Fatalf("UpdateStream: %v", err)
+	}
+}
+
 func TestConformance_AppendCarriesFenceAndStableMsgID(t *testing.T) {
 	forEachTopology(t, func(t *testing.T, nc *nats.Conn) {
 		c := newClient(t, nc)
-		tk := task("r-headers", 0, 1)
+		tk := task("r-headers", 0, 1, 1)
 		j := open(t, c, tk)
 		ctx, cancel := context.WithTimeout(context.Background(), caseTimeout)
 		defer cancel()
@@ -182,8 +248,11 @@ func TestConformance_AppendCarriesFenceAndStableMsgID(t *testing.T) {
 		if got, want := raw.Header.Get("Nats-Msg-Id"), MsgID(tk, 1); got != want {
 			t.Errorf("Nats-Msg-Id = %q, want %q", got, want)
 		}
-		if raw.Header.Get(HeaderType) != TypeEntry {
-			t.Errorf("type header = %q, want entry", raw.Header.Get(HeaderType))
+		if MsgID(tk, 1) == MsgID(task("r-headers", 0, 1, 2), 1) {
+			t.Error("msg-id must differ between deliveries of one dispatch")
+		}
+		if raw.Header.Get(HeaderType) != TypeEntry || raw.Header.Get(HeaderDelivered) != "1" {
+			t.Errorf("headers = %v, want type entry and delivered 1", raw.Header)
 		}
 		if j.Fenced() {
 			t.Error("a successful append must not fence the writer")
@@ -191,11 +260,16 @@ func TestConformance_AppendCarriesFenceAndStableMsgID(t *testing.T) {
 	})
 }
 
-func TestConformance_RecordFromAnotherClaimFences(t *testing.T) {
-	forEachTopology(t, func(t *testing.T, nc *nats.Conn) {
+func TestConformance_RedeliveryFencesStalledWorker(t *testing.T) {
+	forEachDispatch(t, func(t *testing.T, nc *nats.Conn, runID string, d dispatch) {
 		c := newClient(t, nc)
-		stalled := open(t, c, task("r-fence", 0, 1))
-		successor := open(t, c, task("r-fence", 0, 2))
+		stalled := open(t, c, task(runID, d.iteration, d.first, 1))
+		before := countRecords(t, c, runID)
+		successor := open(t, c, task(runID, d.iteration, d.redelivered, 2))
+		if got := countRecords(t, c, runID); got != before+1 {
+			t.Fatalf("records = %d, want %d: the redelivery's claim must land, not dedup",
+				got, before+1)
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), caseTimeout)
 		defer cancel()
 		if _, err := stalled.Append(ctx, TypeEntry, []byte(`1`)); !errors.Is(err, ErrFenced) {
@@ -207,46 +281,82 @@ func TestConformance_RecordFromAnotherClaimFences(t *testing.T) {
 		if _, err := stalled.Commit(ctx, Commit{Action: ActionComplete}); !errors.Is(err, ErrFenced) {
 			t.Errorf("stalled Commit err = %v, want ErrFenced", err)
 		}
-		if _, err := successor.Append(ctx, TypeEntry, []byte(`2`)); err != nil {
-			t.Fatalf("successor Append: %v", err)
+		if _, err := successor.Commit(ctx, Commit{Action: ActionComplete}); err != nil {
+			t.Fatalf("successor Commit: %v", err)
 		}
-		if got := countRecords(t, c, "r-fence"); got != 3 {
-			t.Errorf("records = %d, want 3 (two claims, one entry)", got)
+		if got := countRecords(t, c, runID); got != before+2 {
+			t.Errorf("records = %d, want %d: one commit, from the successor", got, before+2)
 		}
 	})
 }
 
-func TestConformance_RacingClaimsLeaveExactlyOneWriter(t *testing.T) {
-	forEachTopology(t, func(t *testing.T, nc *nats.Conn) {
-		const rounds, racers = 10, 4
+func TestConformance_RedeliveryOutsideDedupWindowStillFences(t *testing.T) {
+	forEachDispatch(t, func(t *testing.T, nc *nats.Conn, runID string, d dispatch) {
+		c := newClient(t, nc)
+		shortenDedupWindow(t, c, 100*time.Millisecond)
+		stalled := open(t, c, task(runID, d.iteration, d.first, 1))
+		time.Sleep(300 * time.Millisecond)
+		successor := open(t, c, task(runID, d.iteration, d.redelivered, 2))
+		ctx, cancel := context.WithTimeout(context.Background(), caseTimeout)
+		defer cancel()
+		if _, err := stalled.Commit(ctx, Commit{Action: ActionComplete}); !errors.Is(err, ErrFenced) {
+			t.Fatalf("stalled Commit err = %v, want ErrFenced", err)
+		}
+		if _, err := successor.Commit(ctx, Commit{Action: ActionComplete}); err != nil {
+			t.Fatalf("successor Commit: %v", err)
+		}
+		ctx2, cancel2 := context.WithTimeout(context.Background(), caseTimeout)
+		defer cancel2()
+		records, err := Read(ctx2, c.js, runID, "s")
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		commits := 0
+		for _, r := range records {
+			if r.Type == TypeCommit && r.Iteration == d.iteration {
+				commits++
+			}
+		}
+		if commits != 1 {
+			t.Errorf("iteration %d commits = %d, want exactly 1", d.iteration, commits)
+		}
+	})
+}
+
+func TestConformance_TwoDeliveriesLeaveExactlyOneWriter(t *testing.T) {
+	forEachDispatch(t, func(t *testing.T, nc *nats.Conn, runID string, d dispatch) {
+		const rounds = 6
 		for round := 0; round < rounds; round++ {
-			runID := fmt.Sprintf("r-race-%d", round)
 			var wg sync.WaitGroup
-			journals := make([]*Journal, racers)
-			openErrs := make([]error, racers)
-			for i := 0; i < racers; i++ {
+			journals := make([]*Journal, 2)
+			openErrs := make([]error, 2)
+			for i := 0; i < 2; i++ {
 				wg.Add(1)
 				go func(i int) {
 					defer wg.Done()
 					c := newClient(t, nc)
 					ctx, cancel := context.WithTimeout(context.Background(), caseTimeout)
 					defer cancel()
-					journals[i], openErrs[i] = Open(ctx, c.js, c.pub, task(runID, 0, i+1))
+					// Delivery counts only grow on one message; on
+					// iteration 0 the attempt follows them.
+					delivered := 2*round + i + 1
+					attempt := d.first
+					if d.iteration == 0 {
+						attempt = delivered
+					}
+					journals[i], openErrs[i] = Open(ctx, c.js, c.pub,
+						task(runID, d.iteration, attempt, delivered))
 				}(i)
 			}
 			wg.Wait()
-			// Claims that landed after a rival's fence the rival, so more
-			// than one Open may succeed; afterwards exactly one journal
-			// may still write, and that one's claim is the newest.
-			claimed, writers := 0, 0
+			writers := 0
 			for i := range journals {
 				if openErrs[i] != nil {
 					if !errors.Is(openErrs[i], ErrFenced) {
-						t.Fatalf("round %d racer %d: %v", round, i, openErrs[i])
+						t.Fatalf("round %d delivery %d: %v", round, i+1, openErrs[i])
 					}
 					continue
 				}
-				claimed++
 				ctx, cancel := context.WithTimeout(context.Background(), caseTimeout)
 				_, err := journals[i].Append(ctx, TypeEntry, []byte(`1`))
 				cancel()
@@ -254,16 +364,14 @@ func TestConformance_RacingClaimsLeaveExactlyOneWriter(t *testing.T) {
 				case err == nil:
 					writers++
 				case !errors.Is(err, ErrFenced):
-					t.Fatalf("round %d racer %d Append: %v", round, i, err)
+					t.Fatalf("round %d delivery %d Append: %v", round, i+1, err)
 				}
 			}
-			if claimed < 1 || writers != 1 {
-				t.Fatalf("round %d: %d claims, %d writers; want >= 1 and exactly 1",
-					round, claimed, writers)
+			if writers != 1 {
+				t.Fatalf("round %d: %d writers, want exactly 1", round, writers)
 			}
-			if got := countRecords(t, newClient(t, nc), runID); got != claimed+1 {
-				t.Fatalf("round %d: %d records, want %d claims plus one entry", round, got, claimed)
-			}
+			// Next round: two later deliveries of the same message race
+			// again and must fence this round's survivor.
 		}
 	})
 }
@@ -273,13 +381,13 @@ func TestConformance_StaleIterationStopsWithoutWriting(t *testing.T) {
 		c := newClient(t, nc)
 		ctx, cancel := context.WithTimeout(context.Background(), caseTimeout)
 		defer cancel()
-		first := open(t, c, task("r-stale", 0, 1))
+		first := open(t, c, task("r-stale", 0, 1, 1))
 		if _, err := first.Commit(ctx, Commit{Action: ActionContinue, State: []byte("s0")}); err != nil {
 			t.Fatalf("Commit: %v", err)
 		}
-		open(t, c, task("r-stale", 1, 1))
+		open(t, c, task("r-stale", 1, 1, 1))
 		before := countRecords(t, c, "r-stale")
-		_, err := Open(ctx, c.js, c.pub, task("r-stale", 0, 2))
+		_, err := Open(ctx, c.js, c.pub, task("r-stale", 0, 2, 2))
 		if !errors.Is(err, ErrStale) {
 			t.Fatalf("late redelivery Open err = %v, want ErrStale", err)
 		}
@@ -294,14 +402,14 @@ func TestConformance_EarlierIterationClaimNeverFencesLater(t *testing.T) {
 		c := newClient(t, nc)
 		ctx, cancel := context.WithTimeout(context.Background(), caseTimeout)
 		defer cancel()
-		first := open(t, c, task("r-scope", 0, 1))
+		first := open(t, c, task("r-scope", 0, 1, 1))
 		if _, err := first.Commit(ctx, Commit{Action: ActionContinue}); err != nil {
 			t.Fatalf("Commit: %v", err)
 		}
-		live := open(t, c, task("r-scope", 1, 1))
+		live := open(t, c, task("r-scope", 1, 1, 1))
 		// A redelivery of iteration 0 whose tail read predates the live
 		// claim: its claim lands at the tail behind the live worker.
-		late := task("r-scope", 0, 2)
+		late := task("r-scope", 0, 2, 2)
 		lateClaimSeq := forge(t, nc, late, TypeClaim, 0, live.Seq(), []byte(`{}`))
 		if _, err := live.Append(ctx, TypeEntry, []byte(`1`)); err != nil {
 			t.Fatalf("live Append after an earlier-iteration claim: %v", err)
@@ -309,8 +417,6 @@ func TestConformance_EarlierIterationClaimNeverFencesLater(t *testing.T) {
 		if live.Fenced() {
 			t.Error("a claim for an earlier iteration must not fence the live worker")
 		}
-		// And the late claimer, which last saw its own claim land and
-		// whose next append finds the live worker's record at the tail.
 		lateJournal := &Journal{task: late, seq: lateClaimSeq, next: 1}
 		lateJournal.attach(c.js, c.pub)
 		if err := lateJournal.bind(ctx); err != nil {
@@ -327,7 +433,7 @@ func TestConformance_CommitStateRecoveredByNextIterationAndRetry(t *testing.T) {
 		c := newClient(t, nc)
 		ctx, cancel := context.WithTimeout(context.Background(), caseTimeout)
 		defer cancel()
-		first := open(t, c, task("r-commit", 0, 1))
+		first := open(t, c, task("r-commit", 0, 1, 1))
 		if _, err := first.Append(ctx, TypeEntry, []byte(`"a"`)); err != nil {
 			t.Fatalf("Append: %v", err)
 		}
@@ -337,7 +443,7 @@ func TestConformance_CommitStateRecoveredByNextIterationAndRetry(t *testing.T) {
 		if _, err := first.Append(ctx, TypeEntry, []byte(`"late"`)); !errors.Is(err, ErrCommitted) {
 			t.Errorf("Append after Commit err = %v, want ErrCommitted", err)
 		}
-		next := open(t, c, task("r-commit", 1, 1))
+		next := open(t, c, task("r-commit", 1, 1, 1))
 		if string(next.State()) != "s0" {
 			t.Errorf("iteration 1 State = %q, want s0", next.State())
 		}
@@ -350,7 +456,8 @@ func TestConformance_CommitStateRecoveredByNextIterationAndRetry(t *testing.T) {
 		if _, err := next.Append(ctx, TypeEntry, []byte(`"b"`)); err != nil {
 			t.Fatalf("Append: %v", err)
 		}
-		retry := open(t, c, task("r-commit", 1, 2))
+		// A retry after a failure: same iteration, new attempt.
+		retry := open(t, c, task("r-commit", 1, 2, 1))
 		if string(retry.State()) != "s0" {
 			t.Errorf("retry State = %q, want s0 (committed before the iteration)", retry.State())
 		}
@@ -364,32 +471,41 @@ func TestConformance_CommitStateRecoveredByNextIterationAndRetry(t *testing.T) {
 	})
 }
 
-func TestConformance_OwnAttemptCommitIsHonoured(t *testing.T) {
-	forEachTopology(t, func(t *testing.T, nc *nats.Conn) {
+func TestConformance_OwnAttemptCommitIsHonouredAcrossDeliveries(t *testing.T) {
+	forEachDispatch(t, func(t *testing.T, nc *nats.Conn, runID string, d dispatch) {
 		c := newClient(t, nc)
 		ctx, cancel := context.WithTimeout(context.Background(), caseTimeout)
 		defer cancel()
-		first := open(t, c, task("r-own", 0, 1))
-		if _, err := first.Commit(ctx, Commit{
+		crashed := open(t, c, task(runID, d.iteration, d.first, 1))
+		if _, err := crashed.Commit(ctx, Commit{
 			Action: ActionComplete, Output: json.RawMessage(`"done"`),
 		}); err != nil {
 			t.Fatalf("Commit: %v", err)
 		}
-		before := countRecords(t, c, "r-own")
-		again := open(t, c, task("r-own", 0, 1))
-		commit, ok := again.Committed()
-		if !ok || commit.Action != ActionComplete || string(commit.Output) != `"done"` {
-			t.Fatalf("Committed = %+v, %v; want the complete commit", commit, ok)
+		before := countRecords(t, c, runID)
+		redelivered := open(t, c, task(runID, d.iteration, d.redelivered, 2))
+		commit, ok := redelivered.Committed()
+		if d.redelivered == d.first {
+			// Stamped attempt: the redelivery is the same attempt and
+			// honours the commit without repeating the turn.
+			if !ok || commit.Action != ActionComplete || string(commit.Output) != `"done"` {
+				t.Fatalf("Committed = %+v, %v; want the complete commit", commit, ok)
+			}
+			if got := countRecords(t, c, runID); got != before {
+				t.Errorf("records = %d, want %d: a recovered attempt claims nothing", got, before)
+			}
+			if _, err := redelivered.Append(ctx, TypeEntry, []byte(`1`)); !errors.Is(err, ErrCommitted) {
+				t.Errorf("Append after recovery err = %v, want ErrCommitted", err)
+			}
+			return
 		}
-		if got := countRecords(t, c, "r-own"); got != before {
-			t.Errorf("records = %d, want %d: a recovered attempt claims nothing", got, before)
-		}
-		if _, err := again.Append(ctx, TypeEntry, []byte(`1`)); !errors.Is(err, ErrCommitted) {
-			t.Errorf("Append after recovery err = %v, want ErrCommitted", err)
-		}
-		other := open(t, c, task("r-own", 0, 2))
-		if _, ok := other.Committed(); ok {
+		// Iteration 0: the redelivery is a new attempt and must not
+		// honour another attempt's commit.
+		if ok {
 			t.Error("another attempt must not honour attempt 1's commit")
+		}
+		if _, err := crashed.Append(ctx, TypeEntry, []byte(`1`)); !errors.Is(err, ErrCommitted) {
+			t.Errorf("crashed writer Append err = %v, want ErrCommitted", err)
 		}
 	})
 }
@@ -399,7 +515,7 @@ func TestConformance_FalseRejectionLostAck(t *testing.T) {
 		c := newClient(t, nc)
 		ctx, cancel := context.WithTimeout(context.Background(), caseTimeout)
 		defer cancel()
-		tk := task("r-lostack", 0, 1)
+		tk := task("r-lostack", 0, 1, 1)
 		j := open(t, c, tk)
 		// The append landed but its acknowledgement never came back: the
 		// writer resends the same message against the tail it last saw.
@@ -425,7 +541,7 @@ func TestConformance_FalseRejectionOwnRecordAtTailViaOtherNode(t *testing.T) {
 		c := newClient(t, nc)
 		ctx, cancel := context.WithTimeout(context.Background(), caseTimeout)
 		defer cancel()
-		tk := task("r-owntail", 0, 1)
+		tk := task("r-owntail", 0, 1, 1)
 		j := open(t, c, tk)
 		// A record of this claim written through another node (an earlier
 		// in-flight append) sits at the tail: the writer resyncs, not fences.
@@ -443,23 +559,26 @@ func TestConformance_FalseRejectionOwnRecordAtTailViaOtherNode(t *testing.T) {
 	})
 }
 
-func TestConformance_PauseRecordResumes(t *testing.T) {
-	forEachTopology(t, func(t *testing.T, nc *nats.Conn) {
+func TestConformance_PauseRecordResumesOnRedelivery(t *testing.T) {
+	forEachDispatch(t, func(t *testing.T, nc *nats.Conn, runID string, d dispatch) {
 		c := newClient(t, nc)
 		ctx, cancel := context.WithTimeout(context.Background(), caseTimeout)
 		defer cancel()
-		first := open(t, c, task("r-pause", 0, 1))
+		first := open(t, c, task(runID, d.iteration, d.first, 1))
 		if _, err := first.Pause(ctx, "cooldown", 50*time.Millisecond); err != nil {
 			t.Fatalf("Pause: %v", err)
 		}
-		resumed := open(t, c, task("r-pause", 0, 2))
+		resumed := open(t, c, task(runID, d.iteration, d.redelivered, 2))
 		if name, ok := resumed.Resume(); !ok || name != "cooldown" {
 			t.Errorf("Resume = %q, %v; want cooldown", name, ok)
 		}
 		if _, err := resumed.Append(ctx, TypeEntry, []byte(`1`)); err != nil {
-			t.Fatalf("Append: %v", err)
+			t.Fatalf("Append after resume: %v", err)
 		}
-		third := open(t, c, task("r-pause", 0, 3))
+		if _, err := first.Append(ctx, TypeEntry, []byte(`1`)); !errors.Is(err, ErrFenced) {
+			t.Errorf("paused delivery Append err = %v, want ErrFenced", err)
+		}
+		third := open(t, c, task(runID, d.iteration, d.redelivered, 3))
 		if _, ok := third.Resume(); ok {
 			t.Error("an entry after the pause means this delivery is not a resume")
 		}

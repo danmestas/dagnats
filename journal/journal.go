@@ -55,6 +55,7 @@ const (
 	HeaderIteration = "Dagnats-Journal-Iteration"
 	HeaderAttempt   = "Dagnats-Journal-Attempt"
 	HeaderIndex     = "Dagnats-Journal-Index"
+	HeaderDelivered = "Dagnats-Journal-Delivered"
 	HeaderNonce     = "Dagnats-Dispatch-Nonce"
 
 	headerExpectedLastSeq = "Nats-Expected-Last-Subject-Sequence"
@@ -105,8 +106,12 @@ type Task struct {
 	Iteration     int
 	Attempt       int
 	DispatchNonce string
-	// Delivered is the delivery count of the task message, written into
-	// the claim for the crash-loop guard (#807).
+	// Delivered is the delivery count of the task message. It is part
+	// of the claim identity: from iteration 1 the engine stamps the
+	// attempt, so a stalled worker and the AckWait redelivery that
+	// replaces it share run, step, iteration, attempt and nonce, and
+	// only the delivery count tells their claims apart. It also feeds
+	// the crash-loop guard (#807).
 	Delivered int
 }
 
@@ -117,15 +122,17 @@ type Record struct {
 	Iteration     int             `json:"iteration"`
 	Attempt       int             `json:"attempt"`
 	DispatchNonce string          `json:"dispatch_nonce,omitempty"`
+	Delivered     int             `json:"delivered"`
 	Index         int             `json:"index"`
 	Time          time.Time       `json:"time"`
 	Data          json.RawMessage `json:"data,omitempty"`
 }
 
-// sameClaim reports whether r was written by the claim for task.
+// sameClaim reports whether r was written by the claim for task: the
+// same dispatch and the same delivery of it.
 func (r Record) sameClaim(task Task) bool {
 	return r.Iteration == task.Iteration && r.Attempt == task.Attempt &&
-		r.DispatchNonce == task.DispatchNonce
+		r.DispatchNonce == task.DispatchNonce && r.Delivered == task.Delivered
 }
 
 // Claim is the body of a claim record.
@@ -176,16 +183,20 @@ type Journal struct {
 }
 
 // MsgID is the stable dedup key of a record:
-// {run}.{step}.{attempt}.{iteration}.{index}.
+// {run}.{step}.{attempt}.{iteration}.{delivered}.{index}. The delivery
+// count keeps a redelivery's records distinct from the stalled
+// delivery's inside the dedup window; without it the successor's
+// claim would be answered with the old claim's sequence.
 func MsgID(task Task, index int) string {
 	if task.RunID == "" || task.StepID == "" {
 		panic("MsgID: run and step must not be empty")
 	}
-	if index < 0 {
-		panic("MsgID: index must not be negative")
+	if index < 0 || task.Delivered < 1 {
+		panic("MsgID: index must not be negative and delivered must be >= 1")
 	}
 	return task.RunID + "." + task.StepID + "." + strconv.Itoa(task.Attempt) +
-		"." + strconv.Itoa(task.Iteration) + "." + strconv.Itoa(index)
+		"." + strconv.Itoa(task.Iteration) + "." + strconv.Itoa(task.Delivered) +
+		"." + strconv.Itoa(index)
 }
 
 // Open claims task's dispatch. It returns ErrStale when the tail
@@ -204,8 +215,8 @@ func Open(
 	if task.RunID == "" || task.StepID == "" {
 		panic("journal.Open: run and step must not be empty")
 	}
-	if task.Iteration < 0 || task.Attempt < 1 {
-		panic("journal.Open: iteration must be >= 0 and attempt >= 1")
+	if task.Iteration < 0 || task.Attempt < 1 || task.Delivered < 1 {
+		panic("journal.Open: iteration must be >= 0, attempt and delivered >= 1")
 	}
 	j := &Journal{task: task}
 	j.attach(js, pub)
@@ -387,7 +398,7 @@ func (j *Journal) append(
 		msg := recordMessage(j.task, recordType, j.next, expected, data)
 		ack, err := j.pub.JSPublishMsg(ctx, msg)
 		if err == nil {
-			return j.advance(ack.Sequence), nil
+			return j.advance(ack.Sequence)
 		}
 		if !wrongLastSequence(err) {
 			return 0, fmt.Errorf("journal: append %s: %w", recordType, err)
@@ -397,13 +408,14 @@ func (j *Journal) append(
 			return 0, err
 		}
 		switch {
-		case tail.Seq == expected:
+		case tail.Seq == expected, tail.Seq == 0:
+			// Unmoved: a rival publish is in process. Empty: the subject
+			// was purged under us. Both wait before retrying.
 			time.Sleep(resyncBackoff * time.Duration(try+1))
-		case tail.Seq == 0:
-			expected = 0
+			expected = tail.Seq
 		case tail.msgID == msgID:
 			// Landed; the acknowledgement was lost.
-			return j.advance(tail.Seq), nil
+			return j.advance(tail.Seq)
 		case tail.sameClaim(j.task), tail.Iteration < j.task.Iteration:
 			// Own earlier record, or a late claim for an earlier
 			// iteration: resync, never fence.
@@ -417,17 +429,25 @@ func (j *Journal) append(
 		recordType, appendRetryMax)
 }
 
-// advance records a stored sequence for this writer's next record.
-func (j *Journal) advance(seq uint64) uint64 {
+// advance records a stored sequence for this writer's next record. A
+// sequence behind the tail this writer saw means the server answered
+// with an older record's sequence (a dedup hit on a record that is not
+// ours): the journal has moved past us, so that is a fence, never a
+// panic that would take the worker down.
+func (j *Journal) advance(seq uint64) (uint64, error) {
 	if seq == 0 {
 		panic("journal.advance: seq must be positive")
 	}
+	if j.next < 0 {
+		panic("journal.advance: next must not be negative")
+	}
 	if seq < j.seq {
-		panic("journal.advance: sequence must not move backwards")
+		j.fenced = true
+		return 0, ErrFenced
 	}
 	j.seq = seq
 	j.next++
-	return seq
+	return seq, nil
 }
 
 // tailRecord is the newest record on the subject, plus its msg-id.
@@ -556,6 +576,7 @@ func recordMessage(
 			HeaderIteration:       {strconv.Itoa(task.Iteration)},
 			HeaderAttempt:         {strconv.Itoa(task.Attempt)},
 			HeaderIndex:           {strconv.Itoa(index)},
+			HeaderDelivered:       {strconv.Itoa(task.Delivered)},
 			HeaderNonce:           {task.DispatchNonce},
 		},
 	}
@@ -575,6 +596,7 @@ func decodeRecord(seq uint64, hdr nats.Header, data []byte, at time.Time) Record
 		Iteration:     headerInt(hdr, HeaderIteration),
 		Attempt:       headerInt(hdr, HeaderAttempt),
 		DispatchNonce: hdr.Get(HeaderNonce),
+		Delivered:     headerInt(hdr, HeaderDelivered),
 		Index:         headerInt(hdr, HeaderIndex),
 		Time:          at,
 		Data:          json.RawMessage(data),

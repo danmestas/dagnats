@@ -197,7 +197,7 @@ func (c *taskContext) journalOutcome(err error) (done, ack bool) {
 		c.drainLogs(protocol.LogMarkerCompleted)
 		return true, true
 	case journalFenced:
-		c.drainLogs(protocol.LogMarkerFailed)
+		c.drainLogs(protocol.LogMarkerFenced)
 		slog.WarnContext(c.ctx, "task fenced by a later claim; leaving it to the successor",
 			"run_id", c.runID, "step_id", c.stepID, "error", err)
 		return true, false

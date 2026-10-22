@@ -74,7 +74,8 @@ type logsEOFEvent struct {
 func isAttemptEndingMarker(marker string) bool {
 	switch marker {
 	case protocol.LogMarkerCompleted, protocol.LogMarkerFailed,
-		protocol.LogMarkerContinued, protocol.LogMarkerPaused:
+		protocol.LogMarkerContinued, protocol.LogMarkerPaused,
+		protocol.LogMarkerFenced:
 		return true
 	}
 	return false

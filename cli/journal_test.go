@@ -61,7 +61,7 @@ func TestJournalCheck_CleanRunExitsZero(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	j, err := journal.Open(ctx, js, natsutil.NewTracingPublisher(nc, js), journal.Task{
-		RunID: "run-ok", StepID: "s", Attempt: 1, DispatchNonce: "n",
+		RunID: "run-ok", StepID: "s", Attempt: 1, DispatchNonce: "n", Delivered: 1,
 	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -102,12 +102,12 @@ func TestJournalCheck_ViolationExitsOne(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if _, err := journal.Open(ctx, js, pub, journal.Task{
-		RunID: "run-bad", StepID: "s", Attempt: 1, DispatchNonce: "n1",
+		RunID: "run-bad", StepID: "s", Attempt: 1, DispatchNonce: "n1", Delivered: 1,
 	}); err != nil {
 		t.Fatalf("Open stalled: %v", err)
 	}
 	successor, err := journal.Open(ctx, js, pub, journal.Task{
-		RunID: "run-bad", StepID: "s", Attempt: 2, DispatchNonce: "n2",
+		RunID: "run-bad", StepID: "s", Attempt: 2, DispatchNonce: "n2", Delivered: 2,
 	})
 	if err != nil {
 		t.Fatalf("Open successor: %v", err)
@@ -126,6 +126,7 @@ func TestJournalCheck_ViolationExitsOne(t *testing.T) {
 			journal.HeaderIteration:               {"0"},
 			journal.HeaderAttempt:                 {"1"},
 			journal.HeaderIndex:                   {"1"},
+			journal.HeaderDelivered:               {"1"},
 			journal.HeaderNonce:                   {"n1"},
 		},
 	}

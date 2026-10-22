@@ -67,6 +67,10 @@ const (
 	// LogMarkerPaused is emitted by Pause — this attempt is done; a
 	// resumed step (LoadCheckpoint) gets a new attempt-scoped subject.
 	LogMarkerPaused = "paused"
+	// LogMarkerFenced is emitted when a journal step's delivery is
+	// fenced by a later claim (ADR-026): this attempt's subject is done
+	// and its successor's is already open; nothing failed.
+	LogMarkerFenced = "fenced"
 	// LogMarkerTruncated is emitted at most once, the moment
 	// LogStepBytesMax is reached, BEFORE the attempt-ending marker
 	// (which still lands last) — no out/err chunk follows it, but the
