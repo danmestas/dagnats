@@ -15,14 +15,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/journal"
+	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -34,6 +37,19 @@ const journalPageMax = 1024
 // idle wait is also when the follow checks whether the step ended, so
 // it is the worst-case delay of the eof event.
 var journalPollInterval = 2 * time.Second
+
+// journalFollowConcurrentMax caps concurrent journal follows at the
+// same limit as log follows but counts them separately, so neither
+// stream can starve the other. A var so tests can lower it.
+var journalFollowConcurrentMax int64 = protocol.LogFollowConcurrentMax
+
+// journalFollowActive counts in-flight journal follows in this process.
+var journalFollowActive int64
+
+// journalIdleHook, when set by a test, runs after a follow's wait times
+// out and before it checks whether the step ended: the window in which
+// a record can land and the step can finish.
+var journalIdleHook atomic.Pointer[func()]
 
 // journalResponse is the non-follow body. NextFrom is the sequence to
 // pass as from= for the following page; EOF means the step is over and
@@ -74,7 +90,11 @@ func handleGetStepJournal(svc *Service, w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "step not found", http.StatusNotFound)
 		return
 	}
-	from := journalFrom(r)
+	from, err := journalFrom(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	if r.URL.Query().Get("follow") == "1" {
 		serveJournalFollow(svc, w, r, runID, stepID, from)
 		return
@@ -85,22 +105,31 @@ func handleGetStepJournal(svc *Service, w http.ResponseWriter, r *http.Request) 
 // journalFrom is the first sequence to deliver (0 = the start). A
 // Last-Event-ID header names the last record the client received, so
 // it resumes one past it, and it wins over from=: an EventSource that
-// reconnects resends its original URL together with the header.
-func journalFrom(r *http.Request) uint64 {
+// reconnects resends its original URL together with the header. It
+// applies to page reads as well as follows, so one cursor rule serves
+// both.
+func journalFrom(r *http.Request) (uint64, error) {
 	if r == nil {
 		panic("journalFrom: r must not be nil")
 	}
 	if last := r.Header.Get("Last-Event-ID"); last != "" {
 		if n, err := strconv.ParseUint(last, 10, 64); err == nil {
-			return n + 1
+			if n == math.MaxUint64 {
+				return 0, errJournalCursorRange
+			}
+			return n + 1, nil
 		}
 	}
 	n, err := strconv.ParseUint(r.URL.Query().Get("from"), 10, 64)
 	if err != nil {
-		return 0
+		return 0, nil
 	}
-	return n
+	return n, nil
 }
+
+// errJournalCursorRange rejects a Last-Event-ID with no successor; the
+// increment would wrap to 0 and silently restart the stream.
+var errJournalCursorRange = errors.New("Last-Event-ID out of range")
 
 // journalConsumerSpec is the one ordered-consumer spec both reads use.
 func journalConsumerSpec(runID, stepID string, from uint64) natsutil.OrderedConsumerSpec {
@@ -195,7 +224,10 @@ func serveJournalFollow(
 	svc *Service, w http.ResponseWriter, r *http.Request,
 	runID, stepID string, from uint64,
 ) {
-	release, flusher, ok := beginFollow(w)
+	release, flusher, ok := beginFollow(
+		w, &journalFollowActive, journalFollowConcurrentMax,
+		"too many concurrent journal follows",
+	)
 	if !ok {
 		return
 	}
@@ -247,11 +279,43 @@ func runJournalFollowLoop(
 				return
 			}
 		}
+		if hook := journalIdleHook.Load(); hook != nil {
+			(*hook)()
+		}
 		if journalStepEnded(ctx, svc, runID, stepID) {
-			writeLogsEOFEvent(w, flusher, "")
+			// A record may have landed between the timed-out wait and
+			// the terminal check; the step is over, so nothing is
+			// appended after this point and a drain is complete.
+			if drainJournal(w, flusher, cons, runID, stepID) {
+				writeLogsEOFEvent(w, flusher, "")
+			}
 			return
 		}
 	}
+}
+
+// drainJournal emits what the consumer still holds, until a fetch
+// comes back empty. False means the client is gone or the consumer
+// failed (an error event was written), so no eof must follow.
+func drainJournal(
+	w http.ResponseWriter, flusher http.Flusher, cons jetstream.Consumer,
+	runID, stepID string,
+) bool {
+	for drained := 0; drained < journalPageMax; drained++ {
+		msg, err := cons.Next(jetstream.FetchMaxWait(logsFetchIdleWait))
+		if err != nil {
+			if errors.Is(err, nats.ErrTimeout) {
+				return true
+			}
+			writeLogsErrorEvent(w, flusher, err)
+			return false
+		}
+		record, ok := decodeJournalMsg(msg, runID, stepID)
+		if ok && !writeJournalRecordEvent(w, flusher, record) {
+			return false
+		}
+	}
+	return true
 }
 
 // errJournalStreamUnavailable is reported when the follow finds the

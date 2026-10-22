@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -272,9 +273,9 @@ func TestJournalFollow_FromParamStartsAtSequence(t *testing.T) {
 func TestJournalFollow_ConcurrencyCapReturns503(t *testing.T) {
 	f := newJournalFixture(t, "jrn-cap")
 	f.open(t)
-	orig := logFollowConcurrentMax
-	logFollowConcurrentMax = 1
-	t.Cleanup(func() { logFollowConcurrentMax = orig })
+	orig := journalFollowConcurrentMax
+	journalFollowConcurrentMax = 1
+	t.Cleanup(func() { journalFollowConcurrentMax = orig })
 
 	openJournalFollow(t, f.url("a", "?follow=1"), "")
 	resp, err := http.Get(f.url("a", "?follow=1"))
@@ -284,6 +285,66 @@ func TestJournalFollow_ConcurrencyCapReturns503(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("second follow status = %d, want 503", resp.StatusCode)
+	}
+	// The log lane has its own counter: a full journal cap leaves it open.
+	logCtx, stopLogs := context.WithCancel(context.Background())
+	defer stopLogs()
+	logReq, err := http.NewRequestWithContext(logCtx, "GET",
+		fmt.Sprintf("%s/runs/%s/logs?step=a&follow=1", f.baseURL, f.runID), nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	logsResp, err := http.DefaultClient.Do(logReq)
+	if err != nil {
+		t.Fatalf("log follow: %v", err)
+	}
+	defer logsResp.Body.Close()
+	if logsResp.StatusCode != http.StatusOK {
+		t.Fatalf("log follow status = %d, want 200 (separate cap)", logsResp.StatusCode)
+	}
+}
+
+func TestJournalFollow_DrainsRecordAppendedAsStepEnds(t *testing.T) {
+	f := newJournalFixture(t, "jrn-drain")
+	f.open(t)
+	_, events := openJournalFollow(t, f.url("a", "?follow=1"), "")
+	nextRecordEvent(t, events) // claim; the follow is now idle-waiting
+	var lastSeq atomic.Uint64
+	var once sync.Once
+	hook := func() {
+		once.Do(func() {
+			lastSeq.Store(f.append(t, "final"))
+			f.finish()
+			waitForStepTerminal(t, f.svc, f.runID, "a", 5*time.Second)
+		})
+	}
+	journalIdleHook.Store(&hook)
+	t.Cleanup(func() { journalIdleHook.Store(nil) })
+	rec := nextRecordEvent(t, events)
+	if rec.event != "record" || rec.id != fmt.Sprint(lastSeq.Load()) {
+		t.Fatalf("got %+v, want the final record %d before eof", rec, lastSeq.Load())
+	}
+	if eof := nextRecordEvent(t, events); eof.event != "eof" {
+		t.Fatalf("after the final record got %+v, want eof", eof)
+	}
+}
+
+func TestJournal_LastEventIDWithoutSuccessorIs400(t *testing.T) {
+	f := newJournalFixture(t, "jrn-maxid")
+	for _, query := range []string{"", "?follow=1"} {
+		req, err := http.NewRequest("GET", f.url("a", query), nil)
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		req.Header.Set("Last-Event-ID", "18446744073709551615")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("query %q status = %d, want 400", query, resp.StatusCode)
+		}
 	}
 }
 

@@ -384,7 +384,7 @@ GET /runs/{id}/steps/{step}/journal?from={seq}&follow={0|1}
 | `from` | no | First journal sequence to return (inclusive). The sequence is the record's `seq`. Omit for the start of the journal. |
 | `follow` | no | `1` upgrades to Server-Sent Events. |
 
-Header `Last-Event-ID` (follow and page): the last `seq` the client
+Header `Last-Event-ID` (follow and page; `18446744073709551615` has no successor and is a `400`): the last `seq` the client
 received; the response resumes one past it. It wins over `from`, because
 an `EventSource` reconnect resends its original URL together with the
 header.
@@ -407,12 +407,13 @@ the end. A step with no journal returns `{"records": [], "next_from": 0,
 `: keepalive` comments. The stream ends with `event: eof` once the step
 is terminal and the journal is drained (up to a couple of seconds
 later), `event: error` if the journal stream fails, or when the
-connection reaches `LogFollowDurationMax`. Follows share
-`LogFollowConcurrentMax` with run-log follows.
+connection reaches `LogFollowDurationMax`. Journal follows are capped at
+`LogFollowConcurrentMax`, counted separately from run-log follows.
 
 | Status | Condition |
 |--------|-----------|
 | `200` | Records (possibly empty) or an SSE stream |
+| `400` | `Last-Event-ID` is the maximum sequence |
 | `404` | Run not found, or `step` unknown |
 | `405` | Method other than `GET` |
 | `503` | `follow=1` at `LogFollowConcurrentMax`, or the journal stream is not available |

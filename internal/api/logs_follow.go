@@ -90,7 +90,9 @@ func serveLogsFollow(
 	svc *Service, w http.ResponseWriter, r *http.Request,
 	runID, stepID string, attempt, iteration int,
 ) {
-	release, flusher, ok := beginFollow(w)
+	release, flusher, ok := beginFollow(
+		w, &logFollowActive, logFollowConcurrentMax, "too many concurrent log follows",
+	)
 	if !ok {
 		return
 	}
@@ -113,19 +115,25 @@ func serveLogsFollow(
 }
 
 // beginFollow admits one SSE follow connection, shared by the log and
-// journal streams: it takes a slot under logFollowConcurrentMax (503
-// when full) and checks the writer can stream. release gives the slot
-// back; ok is false when a response was already written.
-func beginFollow(w http.ResponseWriter) (release func(), flusher http.Flusher, ok bool) {
+// journal streams: it takes a slot in active (503 with fullMsg once
+// active would exceed max) and checks the writer can stream. Each
+// stream passes its own counter so one cannot starve the other. release
+// gives the slot back; ok is false when a response was already written.
+func beginFollow(
+	w http.ResponseWriter, active *int64, max int64, fullMsg string,
+) (release func(), flusher http.Flusher, ok bool) {
 	if w == nil {
 		panic("beginFollow: w must not be nil")
 	}
-	if atomic.AddInt64(&logFollowActive, 1) > logFollowConcurrentMax {
-		atomic.AddInt64(&logFollowActive, -1)
-		http.Error(w, "too many concurrent follows", http.StatusServiceUnavailable)
+	if active == nil {
+		panic("beginFollow: active must not be nil")
+	}
+	if atomic.AddInt64(active, 1) > max {
+		atomic.AddInt64(active, -1)
+		http.Error(w, fullMsg, http.StatusServiceUnavailable)
 		return nil, nil, false
 	}
-	release = func() { atomic.AddInt64(&logFollowActive, -1) }
+	release = func() { atomic.AddInt64(active, -1) }
 	flusher, canFlush := w.(http.Flusher)
 	if !canFlush {
 		release()

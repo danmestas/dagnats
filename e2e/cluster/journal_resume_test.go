@@ -38,75 +38,91 @@ const (
 	journalReadTimeout   = 30 * time.Second
 	journalAppendTimeout = 60 * time.Second
 	openWait             = 8 * time.Second
+	reconnectsMax        = 5
 )
 
-// journalFollow is one open SSE connection to a node.
+// journalFollow is a client following one step's journal on one node.
+// Like a browser EventSource it reconnects, with Last-Event-ID set to
+// the last id it saw, when the stream ends before the caller is done:
+// the server closes with event: error on a transient failure (a
+// consumer that could not be created mid-election).
 type journalFollow struct {
-	scan   *bufio.Scanner
-	cancel context.CancelFunc
+	addr, runID string
+	lastID      string
+	seqs        []uint64
+	scan        *bufio.Scanner
 }
 
-func openJournalFollow(
-	t *testing.T, addr, runID, lastEventID string,
-) *journalFollow {
+func openJournalFollow(t *testing.T, addr, runID, lastEventID string) *journalFollow {
+	t.Helper()
+	f := &journalFollow{addr: addr, runID: runID, lastID: lastEventID}
+	f.connect(t)
+	return f
+}
+
+// connect (re)opens the stream, retrying until it answers 200.
+func (f *journalFollow) connect(t *testing.T) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*journalReadTimeout)
-	url := fmt.Sprintf("http://%s/runs/%s/steps/a/journal?follow=1", addr, runID)
-	// A client reconnects through transient failures: right after the
-	// cluster forms or a node dies, opening the consumer can fail while
-	// the journal stream elects a leader.
+	t.Cleanup(cancel)
+	url := fmt.Sprintf("http://%s/runs/%s/steps/a/journal?follow=1", f.addr, f.runID)
 	// Headers arrive before any record, so a connection that has not
 	// answered within openWait is stuck and is retried.
 	client := &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: openWait}}
 	for {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
-			cancel()
 			t.Fatalf("new request: %v", err)
 		}
-		if lastEventID != "" {
-			req.Header.Set("Last-Event-ID", lastEventID)
+		if f.lastID != "" {
+			req.Header.Set("Last-Event-ID", f.lastID)
 		}
 		resp, err := client.Do(req)
 		if err == nil && resp.StatusCode == http.StatusOK {
-			t.Cleanup(func() { cancel(); resp.Body.Close() })
-			return &journalFollow{scan: bufio.NewScanner(resp.Body), cancel: cancel}
+			t.Cleanup(func() { resp.Body.Close() })
+			f.scan = bufio.NewScanner(resp.Body)
+			return
 		}
 		if err != nil {
-			t.Logf("follow %s: %v", addr, err)
+			t.Logf("follow %s: %v", f.addr, err)
 		} else {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 			resp.Body.Close()
-			t.Logf("follow %s: status %d: %s", addr, resp.StatusCode, body)
+			t.Logf("follow %s: status %d: %s", f.addr, resp.StatusCode, body)
 		}
 		if ctx.Err() != nil {
-			cancel()
-			t.Fatalf("follow %s did not open: %v", addr, ctx.Err())
+			t.Fatalf("follow %s did not open: %v", f.addr, ctx.Err())
 		}
 		time.Sleep(time.Second)
 	}
 }
 
-// readUntil collects record sequences (from the id: lines) until stop
-// returns true for the latest one; the connection context bounds it.
+// readUntil returns every record sequence received so far once stop
+// holds for the latest, reconnecting (bounded) when the stream ends.
 func (f *journalFollow) readUntil(t *testing.T, stop func(seq uint64) bool) []uint64 {
 	t.Helper()
-	var seqs []uint64
-	for f.scan.Scan() {
-		line := f.scan.Text()
-		if !strings.HasPrefix(line, "id: ") {
-			continue
+	for reconnects := 0; reconnects <= reconnectsMax; reconnects++ {
+		for f.scan.Scan() {
+			line := f.scan.Text()
+			if strings.HasPrefix(line, "event: error") {
+				t.Logf("server ended the stream with an error; reconnecting")
+			}
+			if !strings.HasPrefix(line, "id: ") {
+				continue
+			}
+			f.lastID = strings.TrimPrefix(line, "id: ")
+			seq, err := strconv.ParseUint(f.lastID, 10, 64)
+			if err != nil {
+				t.Fatalf("bad id line %q: %v", line, err)
+			}
+			f.seqs = append(f.seqs, seq)
+			if stop(seq) {
+				return f.seqs
+			}
 		}
-		seq, err := strconv.ParseUint(strings.TrimPrefix(line, "id: "), 10, 64)
-		if err != nil {
-			t.Fatalf("bad id line %q: %v", line, err)
-		}
-		seqs = append(seqs, seq)
-		if stop(seq) {
-			return seqs
-		}
+		f.connect(t)
 	}
-	t.Fatalf("stream ended after %v before the stop condition: %v", seqs, f.scan.Err())
+	t.Fatalf("stream kept ending after %v", f.seqs)
 	return nil
 }
 
@@ -129,27 +145,48 @@ func appendRetry(t *testing.T, jrn *journal.Journal, body string) uint64 {
 	}
 }
 
+// fetchJournalSeqs reads the journal page from addr, retrying through
+// the transient 500s a cluster answers right after a node loss.
 func fetchJournalSeqs(t *testing.T, addr, runID string) []uint64 {
 	t.Helper()
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(fmt.Sprintf("http://%s/runs/%s/steps/a/journal", addr, runID))
+	client := &http.Client{Timeout: 15 * time.Second}
+	url := fmt.Sprintf("http://%s/runs/%s/steps/a/journal", addr, runID)
+	deadline := time.Now().Add(journalReadTimeout)
+	for {
+		seqs, err := fetchJournalPage(client, url)
+		if err == nil {
+			return seqs
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("page %s: %v", url, err)
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+func fetchJournalPage(client *http.Client, url string) ([]uint64, error) {
+	resp, err := client.Get(url)
 	if err != nil {
-		t.Fatalf("page: %v", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, body)
+	}
 	var page struct {
 		Records []struct {
 			Seq uint64 `json:"seq"`
 		} `json:"records"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
-		t.Fatalf("decode page: %v", err)
+		return nil, err
 	}
 	seqs := make([]uint64, 0, len(page.Records))
 	for _, r := range page.Records {
 		seqs = append(seqs, r.Seq)
 	}
-	return seqs
+	return seqs, nil
 }
 
 func TestMultiProcessCluster_JournalFollowResumesAcrossNodeLoss(t *testing.T) {
@@ -222,7 +259,6 @@ func TestMultiProcessCluster_JournalFollowResumesAcrossNodeLoss(t *testing.T) {
 	first := openJournalFollow(t, nodes[2].httpAddr, runID, "")
 	before := first.readUntil(t, func(seq uint64) bool { return seq >= lastBefore })
 	killNode(nodes[2])
-	first.cancel()
 
 	// Written while the client has no connection.
 	var lastMissed uint64
