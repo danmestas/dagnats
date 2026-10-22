@@ -345,7 +345,8 @@ func testUnsafeCrashPoint(t *testing.T, c client, runID string, d dispatch, p cr
 		if res.Key != runID+".s."+strconv.Itoa(d.iteration)+".0" {
 			t.Errorf("result key = %q, want the call's idempotency key", res.Key)
 		}
-		if settled := p == crashBeforeIntent || p == crashAfterCommitBeforeEvent; settled == res.Interrupted {
+		settled := p == crashBeforeIntent || p == crashAfterCommitBeforeEvent
+		if settled == res.Interrupted {
 			t.Errorf("redelivery result = %+v at %s; interrupted should be %v", res, p, !settled)
 		}
 	} else if p != crashAfterCommitBeforeEvent || d.iteration == 0 {
@@ -572,5 +573,85 @@ func TestReplay_FailedModelRequestKeepsItsPosition(t *testing.T) {
 	}
 	if countType(records, TypeModelResponse) != 1 || response.Call != 0 {
 		t.Errorf("model records = %+v; want one response at position 0", records)
+	}
+}
+
+// TestReplay_NewAttemptHonoursPriorUnsafeCallByContentNotPosition: a
+// retry that issues the same unsafe call at another position is
+// answered from the prior attempt's intent, with its key, so external
+// deduplication keeps working; a different call at that position is
+// a fresh one.
+func TestReplay_NewAttemptHonoursPriorUnsafeCallByContentNotPosition(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	c := newClient(t, nc)
+	ctx, cancel := context.WithTimeout(context.Background(), replayTimeout)
+	defer cancel()
+	runs := &atomic.Int32{}
+	tool := func(_ context.Context, call ToolCall) ([]byte, error) {
+		runs.Add(1)
+		return []byte(`"` + call.Key + `"`), nil
+	}
+	charge := ToolCall{Name: "charge", Input: json.RawMessage(`{"amount": 5}`)}
+	first := open(t, c, task("run-content", 1, 1, 1))
+	if _, err := first.Tool(ctx, ToolCall{Name: "read"}, Safe, tool); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if _, err := first.Tool(ctx, charge, Unsafe, tool); err != nil {
+		t.Fatalf("charge: %v", err)
+	}
+	stalled := startBlockedTool(t, first, "send", Unsafe, false, 6)
+	if _, err := first.Commit(ctx, Commit{Action: ActionFail, Error: "boom"}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	retry := open(t, c, task("run-content", 1, 2, 2))
+	// The retry sends first, then charges another amount (a fresh
+	// call: same name, other input), then the same amount (answered
+	// from attempt 1 under its key), then reads (fresh, position 1).
+	res, err := retry.Tool(ctx, ToolCall{Name: "send"}, Unsafe, tool)
+	if err != nil || !res.Interrupted || res.Key != "run-content.s.1.2" {
+		t.Errorf("send on attempt 2 = %+v, %v; want interrupted under the prior key", res, err)
+	}
+	other := ToolCall{Name: "charge", Input: json.RawMessage(`{"amount": 7}`)}
+	res, err = retry.Tool(ctx, other, Unsafe, tool)
+	if err != nil || res.Interrupted || res.Key != "run-content.s.1.0" || runs.Load() != 3 {
+		t.Errorf("other charge on attempt 2 = %+v, %v after %d runs; want a fresh unsafe call",
+			res, err, runs.Load())
+	}
+	res, err = retry.Tool(ctx, charge, Unsafe, tool)
+	if err != nil || string(res.Output) != `"run-content.s.1.1"` || res.Key != "run-content.s.1.1" {
+		t.Errorf("charge on attempt 2 = %+v, %v; want the prior result under its key", res, err)
+	}
+	if n := runs.Load(); n != 3 {
+		t.Errorf("tool ran %d times after the honoured call, want 3: nothing unsafe reran", n)
+	}
+	res, err = retry.Tool(ctx, ToolCall{Name: "read"}, Safe, tool)
+	if err != nil || res.Key != "run-content.s.1.1" || runs.Load() != 4 {
+		t.Errorf("read on attempt 2 = %+v, %v after %d runs; want a fresh run at position 1",
+			res, err, runs.Load())
+	}
+	// A redelivery of attempt 2 walks the same calls and reuses what
+	// attempt 2 recorded, including the honoured answers.
+	again := open(t, c, task("run-content", 1, 2, 3))
+	res, err = again.Tool(ctx, ToolCall{Name: "send"}, Unsafe, tool)
+	if err != nil || !res.Interrupted || res.Key != "run-content.s.1.2" {
+		t.Errorf("send on the redelivery = %+v, %v; want the interrupted answer again", res, err)
+	}
+	res, err = again.Tool(ctx, other, Unsafe, tool)
+	if err != nil || res.Key != "run-content.s.1.0" || runs.Load() != 4 {
+		t.Errorf("other charge on the redelivery = %+v, %v after %d runs; want reuse",
+			res, err, runs.Load())
+	}
+	res, err = again.Tool(ctx, charge, Unsafe, tool)
+	if err != nil || res.Key != "run-content.s.1.1" || runs.Load() != 4 {
+		t.Errorf("charge on the redelivery = %+v, %v after %d runs; want reuse", res, err, runs.Load())
+	}
+	if err := stalled.resume(t); !errors.Is(err, ErrCommitted) && !errors.Is(err, ErrFenced) {
+		t.Errorf("stalled tool err = %v, want ErrCommitted or ErrFenced", err)
+	}
+	if v := checkToolPairs(readRecords(t, c, "run-content"), false); len(v) != 0 {
+		t.Errorf("checker violations: %v", v)
 	}
 }

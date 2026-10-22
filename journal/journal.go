@@ -204,6 +204,9 @@ type Journal struct {
 	// Model calls, matched against a previous holder's records.
 	toolCalls  int
 	modelCalls int
+	// honoured holds the sequences of prior-attempt unsafe intents
+	// this attempt has already answered.
+	honoured map[uint64]bool
 }
 
 // MsgID is the stable dedup key of a record:
@@ -244,7 +247,7 @@ func Open(
 	if task.Iteration < 0 || task.Attempt < 1 || task.Delivered < 1 {
 		panic("journal.Open: iteration must be >= 0, attempt and delivered >= 1")
 	}
-	j := &Journal{task: task}
+	j := &Journal{task: task, honoured: map[uint64]bool{}}
 	j.attach(js, pub)
 	if err := j.bind(ctx); err != nil {
 		return nil, err

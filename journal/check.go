@@ -444,9 +444,11 @@ func taskOf(r Record) Task {
 // in order. The result may come from a later claim than the intent: a
 // successor answers a crashed holder's unfinished call without a
 // second intent (ADR-026). An intent left unanswered is no violation
-// once its attempt failed (a fail commit of the iteration follows it;
-// the next attempt runs a safe call afresh), nor when it is the last
-// and the step ended failed: nothing could answer it.
+// once its attempt ended: a fail commit of the iteration follows it,
+// or a higher attempt wrote its own intent for the call (the engine
+// timed the attempt out; the next attempt runs a safe call afresh and
+// supersedes it). The last unanswered intent is tolerated when the
+// step ended failed: nothing could answer it.
 func checkToolPairs(records []Record, stepFailed bool) []string {
 	if records == nil {
 		panic("checkToolPairs: records must not be nil")
@@ -476,8 +478,10 @@ func checkToolPairs(records []Record, stepFailed bool) []string {
 		}
 		key := toolCall{r.Iteration, *body.Call}
 		pending, unanswered := open[key]
+		superseded := unanswered && (pending.Seq <= lastCommit[r.Iteration] ||
+			r.Attempt > pending.Attempt)
 		switch {
-		case r.Type == TypeToolIntent && unanswered && pending.Seq > lastCommit[r.Iteration]:
+		case r.Type == TypeToolIntent && unanswered && !superseded:
 			violations = append(violations, fmt.Sprintf(
 				"iteration %d call %d: second tool.intent at seq %d while seq %d is unanswered",
 				key.iteration, key.call, r.Seq, pending.Seq))
@@ -494,8 +498,12 @@ func checkToolPairs(records []Record, stepFailed bool) []string {
 	if len(open) > len(records) {
 		panic("checkToolPairs: more open calls than records")
 	}
+	var last uint64
+	for _, pending := range open {
+		last = max(last, pending.Seq)
+	}
 	for key, pending := range open {
-		if pending.Seq <= lastCommit[key.iteration] || stepFailed {
+		if pending.Seq <= lastCommit[key.iteration] || (stepFailed && pending.Seq == last) {
 			continue
 		}
 		violations = append(violations, fmt.Sprintf(

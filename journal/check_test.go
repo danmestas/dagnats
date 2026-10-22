@@ -239,6 +239,26 @@ func TestCheckStep_UnansweredIntentIsFineOnceTheAttemptEnded(t *testing.T) {
 	if v := checkToolPairs(doubled, false); !hasViolation(v, "call 0") {
 		t.Errorf("violations = %v, want the doubled intent flagged", v)
 	}
+	// The engine timed attempt 1 out after its intent (no commit) and
+	// dispatched attempt 2, which ran the safe call afresh: the higher
+	// attempt's intent supersedes the unanswered one.
+	timedOut := []Record{
+		rec(1, TypeClaim, 1, 1, `{}`), rec(2, TypeToolIntent, 1, 1, `{"call":0,"replay":"safe"}`),
+		rec(3, TypeClaim, 1, 2, `{}`), rec(4, TypeToolIntent, 1, 2, `{"call":0,"replay":"safe"}`),
+		rec(5, TypeToolResult, 1, 2, `{"call":0}`), commitRec(6, 1, 2, ActionComplete),
+	}
+	if v := checkToolPairs(timedOut, false); len(v) != 0 {
+		t.Errorf("timeout retry flagged: %v", v)
+	}
+	// On a failed step only the last unanswered intent is tolerated.
+	twoOpen := []Record{
+		rec(1, TypeClaim, 1, 1, `{}`), rec(2, TypeToolIntent, 1, 1, `{"call":0,"replay":"safe"}`),
+		rec(3, TypeToolIntent, 1, 1, `{"call":1,"replay":"safe"}`),
+	}
+	v := checkToolPairs(twoOpen, true)
+	if !hasViolation(v, "call 0") || hasViolation(v, "call 1") {
+		t.Errorf("violations = %v, want call 0 flagged and the last intent, call 1, tolerated", v)
+	}
 	// The last attempt crashed after an intent and the engine failed
 	// the step: nothing could answer it, so it is not a violation on a
 	// failed step, and still one on a completed step.

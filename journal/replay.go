@@ -92,8 +92,10 @@ type ModelFunc func(ctx context.Context) ([]byte, error)
 // interrupted result carrying the partial output and the call's key,
 // which the model then sees. On a new attempt of the iteration (after
 // a commit, or a higher attempt from iteration 1) only unsafe intents
-// are honoured: a recorded unsafe result stands, an unfinished unsafe
-// call is interrupted, and safe calls run afresh.
+// are honoured, matched by content rather than position: the first
+// prior unsafe intent with the same name and input not yet honoured
+// in this attempt answers the call under its own key, with its
+// recorded result or as interrupted; safe calls run afresh.
 //
 // The guarantee is that the SDK starts an unsafe call at most once
 // per position. A holder stalled between its intent and the tool's
@@ -117,28 +119,87 @@ func (j *Journal) Tool(
 	call.Call = j.toolCalls
 	call.Key = j.task.RunID + "." + j.task.StepID + "." +
 		strconv.Itoa(j.task.Iteration) + "." + strconv.Itoa(call.Call)
+	// Prior unsafe intents are matched by content before this
+	// attempt's positions, so a redelivery replays the honoured calls
+	// in the same order it first made them.
+	if prior, record, ok := j.priorUnsafeIntent(call); ok {
+		return j.honourPrior(ctx, prior, record)
+	}
 	intent, recorded, found := j.recordedToolIntent(call.Call)
-	prior := found && j.priorAttempt(recorded)
-	if found && !prior && !sameCall(intent.ToolCall, call) {
+	if !found {
+		return j.freshTool(ctx, call, replay, fn)
+	}
+	if !sameCall(intent.ToolCall, call) {
 		return ToolResult{}, fmt.Errorf("%w: call %d recorded as %s %s, now %s %s",
 			ErrReplayMismatch, call.Call, intent.Name, intent.Input, call.Name, call.Input)
-	}
-	if !found || (prior && (intent.Replay == Safe || !sameCall(intent.ToolCall, call))) {
-		return j.freshTool(ctx, call, replay, fn)
 	}
 	j.toolCalls++
 	if result, done := j.recordedToolResult(call.Call, recorded.Seq); done {
 		return result, nil
 	}
-	// A prior-attempt intent reaching here is Unsafe, so only a
-	// same-attempt safe call is rerun.
 	if intent.Replay == Safe && replay == Safe {
 		return j.runTool(ctx, call, fn)
 	}
-	return j.appendToolResult(ctx, ToolResult{
-		Call: call.Call, Key: call.Key, Error: ErrInterrupted, Interrupted: true,
-		Partial: j.partialOutput(recorded),
-	})
+	return j.appendToolResult(ctx, interruptedResult(intent.ToolCall, j.partialOutput(recorded)))
+}
+
+// honourPrior answers a call from a prior attempt's unsafe intent: its
+// recorded result when the call finished, else an interrupted result.
+// The call keeps the prior intent's position and key, and does not
+// take a position in this attempt.
+func (j *Journal) honourPrior(
+	ctx context.Context, intent ToolIntent, record Record,
+) (ToolResult, error) {
+	if intent.Replay != Unsafe {
+		panic("honourPrior: only unsafe intents are honoured")
+	}
+	if record.Seq == 0 {
+		panic("honourPrior: record must have a sequence")
+	}
+	j.honoured[record.Seq] = true
+	if result, done := j.recordedToolResult(intent.Call, record.Seq); done {
+		return result, nil
+	}
+	return j.appendToolResult(ctx, interruptedResult(intent.ToolCall, j.partialOutput(record)))
+}
+
+// interruptedResult is the result recorded for a call that was
+// started and never finished.
+func interruptedResult(call ToolCall, partial json.RawMessage) ToolResult {
+	if call.Key == "" {
+		panic("interruptedResult: call must carry its key")
+	}
+	if call.Call < 0 {
+		panic("interruptedResult: call must not be negative")
+	}
+	return ToolResult{
+		Call: call.Call, Key: call.Key, Error: ErrInterrupted, Interrupted: true, Partial: partial,
+	}
+}
+
+// priorUnsafeIntent finds the first unsafe intent of a prior attempt
+// with the same name and input as call that this attempt has not yet
+// honoured.
+func (j *Journal) priorUnsafeIntent(call ToolCall) (ToolIntent, Record, bool) {
+	if call.Name == "" {
+		panic("priorUnsafeIntent: call must be named")
+	}
+	if len(j.records) > recordsMax {
+		panic("priorUnsafeIntent: records exceed the read bound")
+	}
+	for _, r := range j.records {
+		if r.Type != TypeToolIntent || !j.priorAttempt(r) || j.honoured[r.Seq] {
+			continue
+		}
+		var intent ToolIntent
+		if err := json.Unmarshal(r.Data, &intent); err != nil || intent.Replay != Unsafe {
+			continue
+		}
+		if sameCall(intent.ToolCall, call) {
+			return intent, r, true
+		}
+	}
+	return ToolIntent{}, Record{}, false
 }
 
 // freshTool appends a new intent for call and runs it.
@@ -269,8 +330,8 @@ func (j *Journal) recordedToolResult(call int, intentSeq uint64) (ToolResult, bo
 	return found, ok
 }
 
-// recordedToolIntent finds the newest intent recorded for the call at
-// position call, with its record.
+// recordedToolIntent finds the newest intent this attempt recorded
+// for the call at position call, with its record.
 func (j *Journal) recordedToolIntent(call int) (ToolIntent, Record, bool) {
 	if call < 0 {
 		panic("recordedToolIntent: call must not be negative")
@@ -282,7 +343,7 @@ func (j *Journal) recordedToolIntent(call int) (ToolIntent, Record, bool) {
 	var record Record
 	ok := false
 	for _, r := range j.records {
-		if r.Type != TypeToolIntent {
+		if r.Type != TypeToolIntent || j.priorAttempt(r) {
 			continue
 		}
 		var intent ToolIntent

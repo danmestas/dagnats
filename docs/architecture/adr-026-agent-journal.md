@@ -181,12 +181,21 @@ A new attempt of the iteration (after a fail commit, or a higher attempt
 from iteration 1; on iteration 0 the attempt follows the delivery
 count, so there only the commit marks the boundary) is the engine saying
 "do it again": safe calls and model requests run afresh, with a new
-intent, and only unsafe intents from the prior attempt are honoured: a
-recorded unsafe result stands (the effect happened), an unfinished
-unsafe call is reported `interrupted`, and an unsafe intent for a
-different call at that position is ignored, since the new attempt's
-model may plan differently. Reusing safe results across attempts would
-turn every retry into a replay of the failure.
+intent, and only unsafe intents from the prior attempt are honoured,
+matched by content rather than position because the new attempt's model
+may plan differently: the first prior unsafe intent with the same name
+and input not yet honoured in this attempt answers the call under its
+own key, with its recorded result (the effect happened) or as
+`interrupted`, and takes no position in the new attempt. Reusing safe
+results across attempts would turn every retry into a replay of the
+failure.
+
+A retry at iteration 0 without a commit (the engine timed the attempt
+out) cannot be told from a redelivery, because there the attempt follows
+the delivery count: its safe results and model responses are reused as
+a redelivery's would be, and the turn is not repeated from scratch. This
+is the same iteration-0 gap as the commit-and-crash case above, and it
+closes with the deferred `dispatchIdentity` change.
 
 The guarantee is that the SDK starts an unsafe call at most once per
 position: a successor never starts a call whose intent is recorded. It
@@ -198,8 +207,9 @@ the handler, or the external system, can deduplicate on it.
 The successor writes no second intent for a call it answers, so each
 call has one intent answered by one result, in order (checker invariant
 4, keyed by iteration and call rather than by claim; an intent left
-unanswered is tolerated once its attempt failed, or when it is the last
-and the step ended failed). A tool's own error is part of its result,
+unanswered is tolerated once its attempt ended, by a fail commit or by
+a higher attempt's intent for the call, and the last one is tolerated
+when the step ended failed). A tool's own error is part of its result,
 not a reason to stop the step; the error `Tool` returns is the journal's
 (`ErrFenced`, `ErrCommitted`, `ErrReplayMismatch`, transport).
 
