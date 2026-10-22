@@ -193,6 +193,9 @@ type Journal struct {
 	committed    *Commit
 	committedSeq uint64
 	resume       string
+	// lastCommitSeq is the iteration's newest commit before the claim:
+	// records at or before it belong to an attempt the engine retried.
+	lastCommitSeq uint64
 	// restarts is the number of claims on this iteration at the tail
 	// before this one with nothing else between them: the crash-loop
 	// guard's count (ADR-028).
@@ -543,7 +546,8 @@ func (j *Journal) rebuild(records []Record) {
 	if j.task.Attempt < 1 {
 		panic("journal.rebuild: attempt must be >= 1")
 	}
-	j.state, j.records, j.committed, j.resume, j.restarts = nil, nil, nil, "", 0
+	j.state, j.records, j.committed, j.resume = nil, nil, nil, ""
+	j.restarts, j.lastCommitSeq = 0, 0
 	for i := range records {
 		r := records[i]
 		if r.Iteration < j.task.Iteration {
@@ -562,6 +566,7 @@ func (j *Journal) rebuild(records []Record) {
 			j.resume = pauseName(r)
 		case TypeCommit:
 			j.resume = ""
+			j.lastCommitSeq = r.Seq
 			if r.Attempt == j.task.Attempt {
 				var c Commit
 				if err := json.Unmarshal(r.Data, &c); err == nil {

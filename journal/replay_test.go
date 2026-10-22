@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -66,24 +67,30 @@ func forEachDispatchSingle(
 type blockedTool struct {
 	release chan struct{}
 	done    chan error
-	effects *atomic.Int32
+	// starts counts invocations of the tool function, effects the
+	// side effects it completed.
+	starts, effects *atomic.Int32
 }
 
-// startBlockedTool calls Tool on j in a goroutine. The tool appends a
-// partial entry, then either blocks before its side effect
-// (effectBeforeBlock false) or after it.
+// startBlockedTool calls Tool for name on j in a goroutine. The tool
+// appends a partial entry, then either blocks before its side effect
+// (effectBeforeBlock false) or after it. It returns once the journal
+// holds recordsAfter records: the intent and the entry have landed.
 func startBlockedTool(
-	t *testing.T, j *Journal, replay Replay, effectBeforeBlock bool,
+	t *testing.T, j *Journal, name string, replay Replay, effectBeforeBlock bool,
+	recordsAfter int,
 ) *blockedTool {
 	t.Helper()
 	b := &blockedTool{
-		release: make(chan struct{}), done: make(chan error, 1), effects: &atomic.Int32{},
+		release: make(chan struct{}), done: make(chan error, 1),
+		starts: &atomic.Int32{}, effects: &atomic.Int32{},
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), replayTimeout)
 		defer cancel()
-		_, err := j.Tool(ctx, ToolCall{Name: "send"}, replay,
+		_, err := j.Tool(ctx, ToolCall{Name: name}, replay,
 			func(ctx context.Context, call ToolCall) ([]byte, error) {
+				b.starts.Add(1)
 				if _, err := j.Append(ctx, TypeEntry, []byte(`"half"`)); err != nil {
 					return nil, err
 				}
@@ -98,8 +105,7 @@ func startBlockedTool(
 			})
 		b.done <- err
 	}()
-	// The intent and the partial entry must land before the takeover.
-	waitRecords(t, j, 3)
+	waitRecords(t, j, recordsAfter)
 	return b
 }
 
@@ -213,7 +219,7 @@ func testReplayCase(t *testing.T, c client, runID string, d dispatch, m matrixCa
 			t.Fatalf("first Tool = %+v, %v", res, err)
 		}
 	} else {
-		stalled = startBlockedTool(t, first, m.recorded, false)
+		stalled = startBlockedTool(t, first, "send", m.recorded, false, 3)
 		effects = stalled.effects
 	}
 	before := len(readRecords(t, c, runID))
@@ -288,20 +294,30 @@ func TestReplay_UnsafeSideEffectAtMostOnceAcrossCrashPoints(t *testing.T) {
 	}
 }
 
+// unsafeCounters is the side-effect accounting kept outside the
+// journal: how often the SDK started the tool and how many effects
+// completed.
+type unsafeCounters struct{ starts, effects *atomic.Int32 }
+
 // testUnsafeCrashPoint: the first delivery crashes at p; the
 // redelivery (same nonce, attempt from iteration 1, higher delivery
-// count) runs the handler again. The unsafe tool's effect counter,
-// kept outside the journal, never exceeds 1, and the stalled worker,
-// once it resumes, is fenced before it can add to it.
+// count) runs the handler again. The guarantee under test is the
+// documented one: the SDK starts an unsafe call at most once per
+// position, so a successor never starts it again and is told it was
+// interrupted, with the call's key; a holder stalled between its
+// intent and its effect may still complete that effect after the
+// takeover, which is why effects never exceed starts, and starts
+// never exceed 1.
 func testUnsafeCrashPoint(t *testing.T, c client, runID string, d dispatch, p crashPoint) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), replayTimeout)
 	defer cancel()
-	effects := &atomic.Int32{}
+	counters := unsafeCounters{starts: &atomic.Int32{}, effects: &atomic.Int32{}}
 	run := func(j *Journal) (ToolResult, error) {
 		return j.Tool(ctx, ToolCall{Name: "charge"}, Unsafe,
 			func(context.Context, ToolCall) ([]byte, error) {
-				effects.Add(1)
+				counters.starts.Add(1)
+				counters.effects.Add(1)
 				return []byte(`"charged"`), nil
 			})
 	}
@@ -309,12 +325,9 @@ func testUnsafeCrashPoint(t *testing.T, c client, runID string, d dispatch, p cr
 	var stalled *blockedTool
 	switch p {
 	case crashBeforeIntent:
-	case crashAfterIntent:
-		stalled = startBlockedTool(t, first, Unsafe, false)
-		effects = stalled.effects
-	case crashAfterToolBeforeResult:
-		stalled = startBlockedTool(t, first, Unsafe, true)
-		effects = stalled.effects
+	case crashAfterIntent, crashAfterToolBeforeResult:
+		stalled = startBlockedTool(t, first, "charge", Unsafe, p == crashAfterToolBeforeResult, 3)
+		counters = unsafeCounters{starts: stalled.starts, effects: stalled.effects}
 	case crashAfterCommitBeforeEvent:
 		if _, err := run(first); err != nil {
 			t.Fatalf("first Tool: %v", err)
@@ -324,36 +337,34 @@ func testUnsafeCrashPoint(t *testing.T, c client, runID string, d dispatch, p cr
 		}
 	}
 	second := open(t, c, task(runID, d.iteration, d.redelivered, 2))
-	if _, ok := second.Committed(); ok {
-		if p != crashAfterCommitBeforeEvent || d.iteration == 0 {
-			t.Fatalf("redelivery found a commit at %s on iteration %d", p, d.iteration)
-		}
-	} else {
+	if _, ok := second.Committed(); !ok {
 		res, err := run(second)
 		if err != nil {
 			t.Fatalf("redelivery Tool: %v", err)
 		}
-		settled := p == crashBeforeIntent || (p == crashAfterCommitBeforeEvent && d.iteration == 0)
-		if settled == res.Interrupted {
+		if res.Key != runID+".s."+strconv.Itoa(d.iteration)+".0" {
+			t.Errorf("result key = %q, want the call's idempotency key", res.Key)
+		}
+		if settled := p == crashBeforeIntent || p == crashAfterCommitBeforeEvent; settled == res.Interrupted {
 			t.Errorf("redelivery result = %+v at %s; interrupted should be %v", res, p, !settled)
 		}
+	} else if p != crashAfterCommitBeforeEvent || d.iteration == 0 {
+		t.Fatalf("redelivery found a commit at %s on iteration %d", p, d.iteration)
 	}
 	if stalled != nil {
 		if err := stalled.resume(t); !errors.Is(err, ErrFenced) {
 			t.Errorf("stalled tool err = %v, want ErrFenced", err)
 		}
-		// The resumed worker tries another call: the fence holds.
 		if _, err := run(first); !errors.Is(err, ErrFenced) {
 			t.Errorf("stalled worker's next Tool err = %v, want ErrFenced", err)
 		}
 	}
-	if n := effects.Load(); n > 1 {
-		t.Errorf("unsafe tool ran %d times across crash point %s, want at most 1", n, p)
+	starts, effects := counters.starts.Load(), counters.effects.Load()
+	if starts != 1 || effects > starts {
+		t.Errorf("unsafe tool started %d times with %d effects at %s; want exactly one start",
+			starts, effects, p)
 	}
-	if n := effects.Load(); n == 0 && p != crashAfterIntent {
-		t.Errorf("unsafe tool never ran at crash point %s", p)
-	}
-	if v := checkToolPairs(readRecords(t, c, runID)); len(v) != 0 {
+	if v := checkToolPairs(readRecords(t, c, runID), false); len(v) != 0 {
 		t.Errorf("checker violations: %v", v)
 	}
 }
@@ -410,22 +421,156 @@ func TestReplay_IdempotencyKeyIsStableAcrossDeliveriesAndAttempts(t *testing.T) 
 	if _, err := first.Commit(ctx, Commit{Action: ActionFail, Error: "boom"}); err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	// The retry is attempt 2 of the same iteration: it resumes from
-	// the journal, so call 0 is reused and call 1 is new.
+	// The retry is attempt 2 of the same iteration: a safe call runs
+	// afresh under the same key, and the next position has its own.
 	retry := open(t, c, task("run-key", 1, 2, 3))
-	res, err = retry.Tool(ctx, ToolCall{Name: "post"}, Safe, record)
-	if err != nil || res.Error != "boom" || len(keys) != 1 {
-		t.Errorf("retry Tool = %+v, %v after %d runs; want the recorded error reused",
-			res, err, len(keys))
+	res, err = retry.Tool(ctx, post, Safe, record)
+	if err != nil || res.Error != "boom" || res.Key != "run-key.s.1.0" {
+		t.Errorf("retry Tool = %+v, %v; want a fresh run under the same key", res, err)
 	}
 	if _, err := retry.Tool(ctx, ToolCall{Name: "post"}, Safe, record); err != nil {
 		t.Fatalf("retry second Tool: %v", err)
 	}
-	if len(keys) != 2 || keys[0] != "run-key.s.1.0" || keys[1] != "run-key.s.1.1" {
-		t.Errorf("keys = %v, want run-key.s.1.0 then run-key.s.1.1", keys)
+	want := []string{"run-key.s.1.0", "run-key.s.1.0", "run-key.s.1.1"}
+	if strings.Join(keys, " ") != strings.Join(want, " ") {
+		t.Errorf("keys = %v, want %v", keys, want)
 	}
 	records := readRecords(t, c, "run-key")
-	if countType(records, TypeToolIntent) != 2 || countType(records, TypeToolResult) != 2 {
-		t.Errorf("records = %+v; want two calls, each with one intent and one result", records)
+	if countType(records, TypeToolIntent) != 3 || countType(records, TypeToolResult) != 3 {
+		t.Errorf("records = %+v; want three runs, each with one intent and one result", records)
+	}
+}
+
+// TestReplay_NewAttemptRerunsSafeCallsAndModelButKeepsUnsafeOutcomes:
+// after attempt 1 commits a failure, attempt 2 of the same iteration
+// is the engine saying "do it again": safe calls and model requests
+// run afresh, while an unsafe call's recorded outcome stands and an
+// unsafe call left unfinished is reported interrupted.
+func TestReplay_NewAttemptRerunsSafeCallsAndModelButKeepsUnsafeOutcomes(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	c := newClient(t, nc)
+	ctx, cancel := context.WithTimeout(context.Background(), replayTimeout)
+	defer cancel()
+	safeRuns, unsafeRuns := &atomic.Int32{}, &atomic.Int32{}
+	safe := func(context.Context, ToolCall) ([]byte, error) {
+		return []byte(strconv.Itoa(int(safeRuns.Add(1)))), nil
+	}
+	unsafe := func(context.Context, ToolCall) ([]byte, error) {
+		return []byte(strconv.Itoa(int(unsafeRuns.Add(1)))), nil
+	}
+	model := NewScriptedModel([]byte(`"m1"`), []byte(`"m2"`))
+	first := open(t, c, task("run-attempts", 1, 1, 1))
+	if _, err := first.Tool(ctx, ToolCall{Name: "read"}, Safe, safe); err != nil {
+		t.Fatalf("safe Tool: %v", err)
+	}
+	if _, err := first.Tool(ctx, ToolCall{Name: "charge"}, Unsafe, unsafe); err != nil {
+		t.Fatalf("unsafe Tool: %v", err)
+	}
+	if _, err := first.Model(ctx, model.Respond); err != nil {
+		t.Fatalf("Model: %v", err)
+	}
+	stalled := startBlockedTool(t, first, "send", Unsafe, false, 6)
+	if _, err := first.Commit(ctx, Commit{Action: ActionFail, Error: "boom"}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	retry := open(t, c, task("run-attempts", 1, 2, 2))
+	res, err := retry.Tool(ctx, ToolCall{Name: "read"}, Safe, safe)
+	if err != nil || string(res.Output) != "2" {
+		t.Errorf("safe Tool on attempt 2 = %+v, %v; want a fresh run", res, err)
+	}
+	res, err = retry.Tool(ctx, ToolCall{Name: "charge"}, Unsafe, unsafe)
+	if err != nil || string(res.Output) != "1" || unsafeRuns.Load() != 1 {
+		t.Errorf("unsafe Tool on attempt 2 = %+v, %v after %d runs; want the recorded outcome",
+			res, err, unsafeRuns.Load())
+	}
+	if out, err := retry.Model(ctx, model.Respond); err != nil || string(out) != `"m2"` {
+		t.Errorf("Model on attempt 2 = %s, %v; want a fresh request", out, err)
+	}
+	res, err = retry.Tool(ctx, ToolCall{Name: "send"}, Unsafe, unsafe)
+	if err != nil || !res.Interrupted || res.Key != "run-attempts.s.1.2" {
+		t.Errorf("unfinished unsafe Tool on attempt 2 = %+v, %v; want interrupted with its key",
+			res, err)
+	}
+	if err := stalled.resume(t); !errors.Is(err, ErrCommitted) && !errors.Is(err, ErrFenced) {
+		t.Errorf("stalled tool err = %v, want ErrCommitted or ErrFenced", err)
+	}
+	if v := checkToolPairs(readRecords(t, c, "run-attempts"), false); len(v) != 0 {
+		t.Errorf("checker violations: %v", v)
+	}
+}
+
+func TestReplay_MismatchedCallOnRecoveryIsAnError(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	c := newClient(t, nc)
+	ctx, cancel := context.WithTimeout(context.Background(), replayTimeout)
+	defer cancel()
+	runs := &atomic.Int32{}
+	tool := func(context.Context, ToolCall) ([]byte, error) {
+		runs.Add(1)
+		return []byte(`"ok"`), nil
+	}
+	first := open(t, c, task("run-mismatch", 1, 1, 1))
+	call := ToolCall{Name: "read", Input: json.RawMessage(`{"path": "a"}`)}
+	if _, err := first.Tool(ctx, call, Safe, tool); err != nil {
+		t.Fatalf("Tool: %v", err)
+	}
+	second := open(t, c, task("run-mismatch", 1, 1, 2))
+	for _, wrong := range []ToolCall{
+		{Name: "write", Input: call.Input},
+		{Name: "read", Input: json.RawMessage(`{"path":"b"}`)},
+	} {
+		if _, err := second.Tool(ctx, wrong, Safe, tool); !errors.Is(err, ErrReplayMismatch) {
+			t.Errorf("Tool(%+v) err = %v, want ErrReplayMismatch", wrong, err)
+		}
+	}
+	// The same call, differently formatted, is the same call.
+	same := ToolCall{Name: "read", Input: json.RawMessage(`{"path":"a"}`)}
+	res, err := second.Tool(ctx, same, Safe, tool)
+	if err != nil || string(res.Output) != `"ok"` || runs.Load() != 1 {
+		t.Errorf("matching Tool = %+v, %v after %d runs; want the recorded result",
+			res, err, runs.Load())
+	}
+}
+
+func TestReplay_FailedModelRequestKeepsItsPosition(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	c := newClient(t, nc)
+	ctx, cancel := context.WithTimeout(context.Background(), replayTimeout)
+	defer cancel()
+	first := open(t, c, task("run-model-pos", 1, 1, 1))
+	failing := func(context.Context) ([]byte, error) { return nil, errors.New("rate limited") }
+	if _, err := first.Model(ctx, failing); err == nil {
+		t.Fatal("failing request returned no error")
+	}
+	model := NewScriptedModel([]byte(`"a"`), []byte(`"b"`))
+	if out, err := first.Model(ctx, model.Respond); err != nil || string(out) != `"a"` {
+		t.Fatalf("Model after a failure = %s, %v", out, err)
+	}
+	second := open(t, c, task("run-model-pos", 1, 1, 2))
+	out, err := second.Model(ctx, model.Respond)
+	if err != nil || string(out) != `"a"` || model.Requests() != 1 {
+		t.Errorf("redelivery Model = %s, %v after %d requests; want position 0 reused", out, err,
+			model.Requests())
+	}
+	var response ModelResponse
+	records := readRecords(t, c, "run-model-pos")
+	for _, r := range records {
+		if r.Type == TypeModelResponse {
+			if err := json.Unmarshal(r.Data, &response); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+		}
+	}
+	if countType(records, TypeModelResponse) != 1 || response.Call != 0 {
+		t.Errorf("model records = %+v; want one response at position 0", records)
 	}
 }

@@ -162,30 +162,57 @@ records a recovery reuses.
 call (name, input), its position in the iteration, its idempotency key
 and the replay declaration; runs `fn`; and appends `tool.result` with the
 output or the tool's own error. Calls are matched by position within the
-iteration, across claims and attempts, so a recovering claim walks the
-same sequence of calls. On recovery:
+iteration, and the recorded call at a position must be the same call
+(name and input as canonical JSON), else `ErrReplayMismatch`: a handler
+that issues its calls in another order on replay is not replaying, and
+nothing is reused or written for it.
+
+Recovery is per attempt. Within an attempt (the deliveries and claims
+of one dispatch, before any commit), a successor walks the same calls:
 
 - a recorded result is reused, whatever either declaration says;
 - an intent without a result is rerun only if both the recorded and the
   current declaration say `Safe`;
-- otherwise an `interrupted` result is recorded with any partial output:
-  the `entry` records the previous holder appended after the intent,
-  as a JSON array. The model sees it.
+- otherwise an `interrupted` result is recorded with any partial output
+  (the `entry` records the previous holder appended after the intent,
+  as a JSON array) and the call's key. The model sees it.
+
+A new attempt of the iteration (after a fail commit, or a higher attempt
+from iteration 1; on iteration 0 the attempt follows the delivery
+count, so there only the commit marks the boundary) is the engine saying
+"do it again": safe calls and model requests run afresh, with a new
+intent, and only unsafe intents from the prior attempt are honoured: a
+recorded unsafe result stands (the effect happened), an unfinished
+unsafe call is reported `interrupted`, and an unsafe intent for a
+different call at that position is ignored, since the new attempt's
+model may plan differently. Reusing safe results across attempts would
+turn every retry into a replay of the failure.
+
+The guarantee is that the SDK starts an unsafe call at most once per
+position: a successor never starts a call whose intent is recorded. It
+is not that the effect happens at most once: a holder stalled between
+its intent and the tool's effect may complete that effect after the
+successor recorded `interrupted`. The result carries the call's key so
+the handler, or the external system, can deduplicate on it.
 
 The successor writes no second intent for a call it answers, so each
-call has exactly one intent and one result (checker invariant 4, now
-keyed by iteration and call rather than by claim). A tool's own error is
-part of its result, not a reason to stop the step; the error `Tool`
-returns is the journal's (`ErrFenced`, `ErrCommitted`, transport).
+call has one intent answered by one result, in order (checker invariant
+4, keyed by iteration and call rather than by claim; an intent left
+unanswered is tolerated once its attempt failed, or when it is the last
+and the step ended failed). A tool's own error is part of its result,
+not a reason to stop the step; the error `Tool` returns is the journal's
+(`ErrFenced`, `ErrCommitted`, `ErrReplayMismatch`, transport).
 
 Each call has a stable idempotency key, `{run}.{step}.{iteration}.{call}`,
 the same on every delivery and attempt, for tools to pass to external
 systems that deduplicate (ADR-028's spawn key defaults to it).
 
-`j.Model(ctx, fn)` returns the `model.response` recorded for the call at
-this position, and otherwise reads the tail first (a holder already
-fenced must not spend a model call), requests, and records the response.
-A request that fails records nothing. `journal.ScriptedModel` is the fake
+`j.Model(ctx, fn)` returns the `model.response` this attempt recorded for
+the call at this position, and otherwise reads the tail first (a holder
+already fenced must not spend a model call), requests, and records the
+response. A request that fails records nothing and does not consume the
+position, so the next request, or the next delivery, records at the
+same position. `journal.ScriptedModel` is the fake
 for tests: scripted responses in order, and a count of requests served,
 so a test can tell a reused response from a re-requested one. Streaming
 tokens stay on `PutStream`, which is a non-durable preview: a crash
@@ -267,9 +294,10 @@ all capitals.
 | R3 | A worker MUST NOT treat a rejection as fencing before re-reading the tail from the leader. | `TestConformance_FalseRejectionLostAck`, `TestConformance_FalseRejectionOwnRecordAtTailViaOtherNode`, `TestConformance_RacingClaimsLeaveExactlyOneWriter` (in-process rival, three nodes) |
 | R4 | A claim MUST NOT fence a worker on a later iteration. | `TestConformance_EarlierIterationClaimNeverFencesLater`, `TestConformance_StaleIterationStopsWithoutWriting` |
 | R5 | An iteration MUST end with exactly one commit for its attempt. | `TestConformance_OwnAttemptCommitIsHonoured`, `TestCheckStep_OneCommitPerIterationFromAcceptedAttempt`, chaos soak |
-| R6 | Recovery MUST reuse recorded model responses and tool results. | `TestReplay_Matrix` (result present), `TestReplay_ModelResponseReusedNotReRequested`, `TestReplay_IdempotencyKeyIsStableAcrossDeliveriesAndAttempts` |
+| R6 | Recovery within an attempt MUST reuse recorded model responses and tool results; a new attempt MUST rerun safe calls and model requests and MUST honour prior unsafe intents. | `TestReplay_Matrix` (result present), `TestReplay_ModelResponseReusedNotReRequested`, `TestReplay_NewAttemptRerunsSafeCallsAndModelButKeepsUnsafeOutcomes`, `TestReplay_FailedModelRequestKeepsItsPosition` |
 | R7 | An unfinished tool call MUST NOT be rerun unless both declarations are `Safe`. | `TestReplay_Matrix` (result absent) |
-| R8 | An unsafe tool's side effect MUST happen at most once across any crash schedule. | `TestReplay_UnsafeSideEffectAtMostOnceAcrossCrashPoints` (four crash points, each with a redelivery of the same task and the stalled worker resuming), `TestToolReplay_StalledUnsafeToolIsInterruptedNotRerun` (real Workers), chaos soak |
+| R8 | The SDK MUST NOT start an unsafe call more than once per position across any crash schedule, and MUST report it interrupted with its key. | `TestReplay_UnsafeSideEffectAtMostOnceAcrossCrashPoints` (four crash points, each with a redelivery of the same task and the stalled worker resuming), `TestToolReplay_StalledUnsafeToolIsInterruptedNotRerun` (real Workers), chaos soak |
+| R9 | A recorded call at a position MUST match the current call, else `ErrReplayMismatch`. | `TestReplay_MismatchedCallOnRecoveryIsAnError` |
 
 ## Alternatives considered
 
@@ -306,9 +334,13 @@ all capitals.
   at 1.
 - The legacy `checkpoints` bucket can be retired.
 - `PutStream` output is documented as a non-durable preview.
-- Tool results are reused across attempts of an iteration: a retry
-  resumes the iteration's calls, it does not repeat them. A handler that
-  wants a tool called again after an error makes a new call.
+- A retry (new attempt) repeats the iteration's safe calls and model
+  requests and keeps only its unsafe outcomes; a redelivery within an
+  attempt repeats nothing.
+- At-most-once for unsafe tools is at-most-one-start per position; the
+  effect of a call interrupted between intent and effect may still land.
+  Tools that must be exactly-once pass the key to a system that
+  deduplicates.
 
 ## Security considerations
 

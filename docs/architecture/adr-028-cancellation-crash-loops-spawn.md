@@ -59,7 +59,13 @@ the SDK, and a schema field would need engine, payload and bridge
 plumbing for a bit the handler's fleet already owns, as ADR-026 argued
 for opting in through `Journal()`. Racing claimers for one delivery may
 each land a claim, so the count can overstate crashes by one; the limit
-is a backstop, not an exact budget.
+is a backstop, not an exact budget. The count is per iteration, not per
+attempt: claims from a prior attempt that ended without a commit (the
+engine timed the step out, or a worker died before `Journal()` could
+commit) carry into the next attempt's count, which is what a crash loop
+that spans attempts looks like. Like opt-in itself, the guard holds only
+when every worker of the task type runs an SDK with it: an older worker
+claims and crashes without ever checking the count.
 
 JetStream's delivery count cannot stand in for this: `Pause` is a delayed
 negative acknowledgement, so it redelivers too. Steps without a journal keep
