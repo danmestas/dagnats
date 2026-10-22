@@ -71,7 +71,7 @@ func TestChaosSoak(t *testing.T) {
 		t.Fatalf("go test -timeout leaves %s; the soak needs %s plus %s of drain",
 			time.Until(deadline).Round(time.Second), cfg.duration, 2*runTimeout)
 	}
-	f := newFixture(t, cfg.cluster)
+	f := newFixture(t, fixtureOptions{cluster: cfg.cluster, engines: 2})
 	r := &router{}
 	r.install(t)
 	a := f.newAgent(t)

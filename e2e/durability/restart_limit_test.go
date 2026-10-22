@@ -30,7 +30,7 @@ func TestCrashLoop_RestartLimitFailsThenRetries(t *testing.T) {
 	if testing.Short() {
 		t.Skip("crash loop test skipped in -short mode")
 	}
-	f := newFixture(t, false)
+	f := newFixture(t, fixtureOptions{engines: 1})
 	r := &router{}
 	r.install(t)
 	a := f.newAgent(t)

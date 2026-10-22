@@ -10,9 +10,9 @@
 // AckWait is 30s and not configurable, so a stall there is a delay,
 // not a takeover.
 //
-// Methodology: the shared fixture of harness_test.go; one baseline
-// run, then one subtest per cell running in parallel against the same
-// engines, each on its own agent (task type and workers) so a stall in
+// Methodology: the shared fixture of harness_test.go with one engine
+// (fixtureOptions); one baseline run, then one subtest per cell
+// running in parallel against it, each on its own agent (task type and workers) so a stall in
 // one cell cannot age another cell's prefetched deliveries, and each
 // routed its own crash by run ID. Every wait is bounded.
 package durability
@@ -29,7 +29,7 @@ func TestCrashPointMatrix(t *testing.T) {
 	if testing.Short() {
 		t.Skip("crash-point matrix skipped in -short mode")
 	}
-	f := newFixture(t, false)
+	f := newFixture(t, fixtureOptions{engines: 1})
 	r := &router{}
 	r.install(t)
 	baselineID := f.newAgent(t).startRun(t)

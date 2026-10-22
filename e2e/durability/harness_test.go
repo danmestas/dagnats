@@ -3,8 +3,8 @@
 // the chaos soak (#809).
 //
 // Methodology: one embedded NATS server (or an in-process three-node
-// cluster) with two real orchestrators sharing the WORKFLOW_HISTORY
-// durable as a cluster does, and, per agent, a one-step agent-loop
+// cluster) with one or more real orchestrators sharing the
+// WORKFLOW_HISTORY durable (fixtureOptions), and, per agent, a one-step agent-loop
 // workflow on its own task type with two real Workers and a short
 // AckWait. A Worker handles its deliveries one at a time, so a stalled
 // handler holds that worker's prefetched deliveries past their
@@ -118,10 +118,26 @@ type agent struct {
 	taskType string
 }
 
-// newFixture starts the server (standalone, or an in-process
-// three-node cluster when cluster is set), the engines and the service.
-func newFixture(t *testing.T, cluster bool) *fixture {
+// fixtureOptions is what newFixture starts: a standalone server or an
+// in-process three-node cluster, and how many orchestrators share the
+// history durable. The soak runs two, as a cluster does; the matrix
+// and the crash-loop test run one, because with two the harness found
+// that a continue can be handled before the other engine applied the
+// same delivery's step.started, which drops the continue or (after an
+// engine kill between its save and its publish) deduplicates the
+// resend; see "How durability is verified" in ADR-026.
+type fixtureOptions struct {
+	cluster bool
+	engines int
+}
+
+// newFixture starts the server, the engines and the service.
+func newFixture(t *testing.T, opts fixtureOptions) *fixture {
 	t.Helper()
+	if opts.engines < 1 || opts.engines > 4 {
+		panic("newFixture: engines must be 1..4")
+	}
+	cluster := opts.cluster
 	var nc *nats.Conn
 	if cluster {
 		nc = dagnatstest.StartTestCluster(t, 3)
@@ -147,21 +163,24 @@ func newFixture(t *testing.T, cluster bool) *fixture {
 		nc: nc, js: js, effects: effects, cluster: cluster,
 		svc: harness.NewTestService(t, nc), requests: map[string]int{},
 	}
-	f.startEngines(t)
+	f.startEngines(t, opts.engines)
 	return f
 }
 
-// startEngines starts two orchestrators on the shared history durable.
-func (f *fixture) startEngines(t *testing.T) {
+// startEngines starts n orchestrators on the shared history durable.
+func (f *fixture) startEngines(t *testing.T, n int) {
 	t.Helper()
 	if f.nc == nil {
 		panic("startEngines: fixture has no connection")
+	}
+	if n < 1 {
+		panic("startEngines: n must be positive")
 	}
 	schedule := make([]time.Duration, engineBackoffLen)
 	for i := range schedule {
 		schedule[i] = engineBackoff
 	}
-	for i := 0; i < 2; i++ {
+	for i := 0; i < n; i++ {
 		orch := enginepkg.NewOrchestrator(f.nc, enginepkg.WithHistoryRedeliverBackoff(schedule))
 		orch.Start()
 		t.Cleanup(orch.Stop)

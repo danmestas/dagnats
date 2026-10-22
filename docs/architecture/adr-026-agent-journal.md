@@ -301,6 +301,87 @@ A gap inherited from ADR-025, not closed here: the worker publishes
 redelivery raises the step's `Attempts` through `handleStepStarted`'s max
 rule before `ErrStale` acknowledges it.
 
+### How durability is verified
+
+`internal/chaos` is the crash seam (#809). The SDK, the journal and the
+engine call `chaos.At` at every boundary where a crash leaves distinct
+durable state: before and after the claim, after `tool.intent`, inside
+the tool (effect done, result not written), after `tool.result`, after
+the commit, after the lifecycle event (before the ack), and in the
+engine between a dispatch save and its publish, and between the
+publish and the sent marker, on both the enqueue and the continue path.
+Production never installs a hook, so a boundary is one atomic load and
+a nil check; the package is internal, so nothing outside the module can
+install one. A kill is the holder returning `chaos.ErrKilled` up its
+stack and then acknowledging, negatively acknowledging and publishing
+nothing, which is what a dead process leaves behind; a stall is the hook
+blocking past AckWait and then letting the zombie proceed, so it must
+be fenced.
+
+`e2e/durability` runs on top of it, with a scripted agent (a safe tool, an
+unsafe tool, a safe tool, an answer) whose tools count starts and
+effects in a KV bucket outside the journal:
+
+- `TestCrashPointMatrix`, in the normal suite: one run per crash point,
+  killed and stalled, on the unsafe iteration; the run must finish with
+  the crash-free answer (an unsafe call a successor found started is
+  answered `interrupted`, which is the specified outcome), `Check` must
+  pass, and the unsafe tool must have started at most once.
+  `DAGNATS_DURABILITY_ITERATION0=1` adds iteration 0 (below).
+- `TestCrashLoop_RestartLimitFailsThenRetries`: a kill after every claim
+  until the restart limit fails the step, which the retry resumes.
+- `TestChaosSoak`, opt-in (`DAGNATS_CHAOS=1`, `make test-chaos`, the
+  nightly `Chaos soak` workflow and the `chaos` PR label): two
+  orchestrators sharing the history durable as a cluster does, runs in
+  parallel under a seeded random schedule of kills, stalls past
+  AckWait, the duplicate deliveries those cause (AckWait redelivery, a
+  `DispatchUnsent` resend) and, in cluster mode, stream-leader
+  step-downs; `Check` and the counters after every run; the seed is
+  printed and `DAGNATS_CHAOS_SEED` reproduces the schedules.
+
+Mutation checks, each guard deleted once against the matrix and the
+crash-loop test:
+
+| Guard deleted | Caught by |
+|---|---|
+| `Nats-Expected-Last-Subject-Sequence` on appends | every stall cell: the zombie's append lands (6 cells) |
+| `stream_seq` and `delivered` in the claim msg-id | the redelivery's claim is deduplicated against the stalled one: kill cells wedge, stall cells double-write, the crash loop never trips (7 cells) |
+| the engine acceptance rule | `engine.continue_saved/kill`: the redelivered continue advances the loop twice |
+| the restart limit | the crash loop never fails the step |
+| tool replay safety (unsafe intents rerun) | `after_tool_intent/stall`, `inside_tool/kill`, `inside_tool/stall`: the unsafe tool starts twice |
+
+What the harness found and this ADR does not fix (each reproduces in
+the soak; the iteration-0 matrix cells are opt-in and the matrix runs
+one engine until these land):
+
+1. On iteration 0 the attempt follows the delivery count, so every
+   redelivery is a new attempt by construction: `Open` cannot recognise
+   the previous delivery's commit as its own and reruns the iteration,
+   a late redelivery after the engine has moved on reruns it again until
+   the next iteration's claim fences it (an intent without a result),
+   and, worse, each delivery's `step.started` raises `Attempts` by the
+   max rule while the journal picks its winner by journal order, so the
+   winner's `step.continue` can carry a lower attempt than the engine
+   holds, be dropped by the acceptance rule, and the winner's ack then
+   ends redelivery: the run wedges. Fix shape: stamp the attempt on the
+   iteration-0 dispatch as the engine does from iteration 1, so a
+   redelivery is a recovery of the same attempt.
+2. Two engines: a `step.continue` can be handled by one engine before
+   the other has applied the same delivery's `step.started`; for a
+   Running step the attempt is compared and the continue is dropped.
+   ADR-025's Queued rule (#814) covers the Queued case only.
+3. An engine that dies between a continue's save and its publish while
+   the step is still Queued (the previous iteration's `step.started`
+   overtaken, as in 2) has its resend planned as a first dispatch, whose
+   msg-id `{run}.{step}.queued` is deduplicated by `TASK_QUEUES`: the
+   iteration is never sent. Fix shape: `planTaskResend` treats a loop
+   past iteration 0 as a continue resend regardless of status.
+4. Journal reader consumers leak: `journal.Open` and `journal.Read` each
+   leave an ordered consumer on `AGENT_JOURNAL` that is never deleted
+   (measured: 110 after 20 runs and 50 reads, unchanged after 16s), so
+   a soak hits nats-server's default of 1000 consumers per stream
+   after about 300 runs and every claim fails with error 10026.
+
 ## Requirements
 
 The key words MUST, MUST NOT, SHOULD and MAY are to be interpreted as
@@ -313,10 +394,10 @@ all capitals.
 | R2 | A worker MUST stop handling a task once a record from another claim follows its own. | `TestConformance_RecordFromAnotherClaimFences`, `TestJournal_StalledWorkerIsFencedBySuccessor`; `SIGSTOP` takeover in `e2e/cluster` (`TestMultiProcessCluster_JournalTakeoverFencesStalledWorker`); bridge redelivery in `TestBridgeJournalRedeliveryFencesFirstWorker` |
 | R3 | A worker MUST NOT treat a rejection as fencing before re-reading the tail from the leader. | `TestConformance_FalseRejectionLostAck`, `TestConformance_FalseRejectionOwnRecordAtTailViaOtherNode`, `TestConformance_RacingClaimsLeaveExactlyOneWriter` (in-process rival, three nodes) |
 | R4 | A claim MUST NOT fence a worker on a later iteration. | `TestConformance_EarlierIterationClaimNeverFencesLater`, `TestConformance_StaleIterationStopsWithoutWriting` |
-| R5 | An iteration MUST end with exactly one commit for its attempt. | `TestConformance_OwnAttemptCommitIsHonoured`, `TestCheckStep_OneCommitPerIterationFromAcceptedAttempt`, chaos soak |
+| R5 | An iteration MUST end with exactly one commit for its attempt. | `TestConformance_OwnAttemptCommitIsHonoured`, `TestCheckStep_OneCommitPerIterationFromAcceptedAttempt`, `TestCrashPointMatrix` and `TestChaosSoak` (e2e/durability) |
 | R6 | Recovery within an attempt MUST reuse recorded model responses and tool results; a new attempt MUST rerun safe calls and model requests and MUST honour prior unsafe intents. | `TestReplay_Matrix` (result present), `TestReplay_ModelResponseReusedNotReRequested`, `TestReplay_NewAttemptRerunsSafeCallsAndModelButKeepsUnsafeOutcomes`, `TestReplay_FailedModelRequestKeepsItsPosition` |
 | R7 | An unfinished tool call MUST NOT be rerun unless both declarations are `Safe`. | `TestReplay_Matrix` (result absent) |
-| R8 | The SDK MUST NOT start an unsafe call more than once per position across any crash schedule, and MUST report it interrupted with its key. | `TestReplay_UnsafeSideEffectAtMostOnceAcrossCrashPoints` (four crash points, each with a redelivery of the same task and the stalled worker resuming), `TestToolReplay_StalledUnsafeToolIsInterruptedNotRerun` (real Workers), chaos soak |
+| R8 | The SDK MUST NOT start an unsafe call more than once per position across any crash schedule, and MUST report it interrupted with its key. | `TestReplay_UnsafeSideEffectAtMostOnceAcrossCrashPoints` (four crash points, each with a redelivery of the same task and the stalled worker resuming), `TestToolReplay_StalledUnsafeToolIsInterruptedNotRerun` (real Workers), `TestCrashPointMatrix` and `TestChaosSoak` (e2e/durability) |
 | R9 | A recorded call at a position MUST match the current call, else `ErrReplayMismatch`. | `TestReplay_MismatchedCallOnRecoveryIsAnError` |
 
 ## Alternatives considered
