@@ -11,7 +11,7 @@
 // not a takeover.
 //
 // Methodology: the shared fixture of harness_test.go with one engine
-// (fixtureOptions); one baseline run, then one subtest per cell
+// (two with DAGNATS_DURABILITY_ENGINES=2); one baseline run, then one subtest per cell
 // running in parallel against it, each on its own agent (task type and workers) so a stall in
 // one cell cannot age another cell's prefetched deliveries, and each
 // routed its own crash by run ID. Every wait is bounded.
@@ -20,6 +20,7 @@ package durability
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"testing"
 
 	"github.com/danmestas/dagnats/internal/chaos"
@@ -29,7 +30,7 @@ func TestCrashPointMatrix(t *testing.T) {
 	if testing.Short() {
 		t.Skip("crash-point matrix skipped in -short mode")
 	}
-	f := newFixture(t, fixtureOptions{engines: 1})
+	f := newFixture(t, fixtureOptions{engines: matrixEngines(t)})
 	r := &router{}
 	r.install(t)
 	baselineID := f.newAgent(t).startRun(t)
@@ -95,6 +96,22 @@ func matrixCases() []matrixCase {
 		panic("matrixCases: no cases")
 	}
 	return cases
+}
+
+// matrixEngines is how many orchestrators the matrix runs: one by
+// default, two with DAGNATS_DURABILITY_ENGINES=2 (off until the
+// two-engine findings in ADR-026 are fixed; the fix PR turns it on).
+func matrixEngines(t *testing.T) int {
+	t.Helper()
+	raw := os.Getenv("DAGNATS_DURABILITY_ENGINES")
+	if raw == "" {
+		return 1
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 || n > 4 {
+		t.Fatalf("DAGNATS_DURABILITY_ENGINES=%q: want 1..4", raw)
+	}
+	return n
 }
 
 // mode names a hook's action.

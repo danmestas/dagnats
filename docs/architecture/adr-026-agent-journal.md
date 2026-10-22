@@ -350,9 +350,12 @@ crash-loop test:
 | the restart limit | the crash loop never fails the step |
 | tool replay safety (unsafe intents rerun) | `after_tool_intent/stall`, `inside_tool/kill`, `inside_tool/stall`: the unsafe tool starts twice |
 
-What the harness found and this ADR does not fix (each reproduces in
-the soak; the iteration-0 matrix cells are opt-in and the matrix runs
-one engine until these land):
+What the harness found, and the fixes that follow #809 in their own
+PRs. Until all four land, `TestChaosSoak` (and so the nightly `Chaos
+soak` workflow) is expected red; the iteration-0 matrix cells
+(`DAGNATS_DURABILITY_ITERATION0=1`) and the two-engine matrix
+(`DAGNATS_DURABILITY_ENGINES=2`) are off by default and are the red
+tests those fix PRs turn on:
 
 1. On iteration 0 the attempt follows the delivery count, so every
    redelivery is a new attempt by construction: `Open` cannot recognise

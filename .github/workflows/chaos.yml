@@ -9,6 +9,14 @@ name: Chaos soak
 # ci.yml's required `test` check or in race.yml's 15-minute budget: it
 # runs nightly, and on a pull request labelled `chaos`. The seed is in
 # the log; rerun the failing job's seed with DAGNATS_CHAOS_SEED.
+#
+# Expected red until the four findings of ADR-026 ("How durability is
+# verified") are fixed in their own PRs: (1) iteration-0 attempt from
+# the delivery count lets the engine drop the journal winner's commit,
+# (2) a continue handled before the other engine applied step.started
+# is dropped, (3) a continue resend from a Queued step is deduplicated
+# by TASK_QUEUES, (4) journal reader consumers leak until the stream's
+# consumer cap. Remove this note when the soak is green.
 
 on:
   schedule:
