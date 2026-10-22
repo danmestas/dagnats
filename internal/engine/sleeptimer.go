@@ -833,13 +833,16 @@ func (st *SleepTimer) fireLoopWait(tm TimerMessage) {
 	if tm.RunID == "" || tm.StepID == "" {
 		panic("fireLoopWait: run and step must not be empty")
 	}
-	if tm.Attempt < 1 {
-		panic("fireLoopWait: a waiting iteration has an attempt")
+	if tm.Action != TimerActionLoopWait {
+		panic("fireLoopWait: timer must be a loop_wait")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	evt := protocol.NewStepEvent(protocol.EventStepWaitElapsed, tm.RunID, tm.StepID, nil)
-	evt.SetIdentity(tm.Iteration, tm.Attempt, tm.DispatchNonce)
+	// The engine compares iteration and nonce, never the attempt, so a
+	// timer armed while Attempts still lagged (a continue accepted on a
+	// Queued step) wakes the step like any other.
+	evt.SetIdentity(tm.Iteration, max(tm.Attempt, 1), tm.DispatchNonce)
 	if err := publishLifecycleEvent(ctx, st.tp, evt); err != nil {
 		slog.WarnContext(ctx, "loop wait: publish step.wait.elapsed",
 			"run_id", tm.RunID, "step_id", tm.StepID, "error", err)
