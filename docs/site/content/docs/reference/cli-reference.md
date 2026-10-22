@@ -1173,6 +1173,28 @@ dagnats metrics show --name=X [--since=DUR] [--service=X] [--json]
 
 ---
 
+## journal
+
+Audit a run's agent journals (ADR-026).
+
+### journal check
+
+Read the run's `AGENT_JOURNAL` records, its history and snapshot, and the `submissions` bucket when it exists, and check the journal invariants: one commit per iteration from the attempt the engine accepted, no record after the claim that fenced its writer, every `tool.intent` paired with a `tool.result`, every placed input once, and the engine's iteration count equal to the accepted `continue` commits. Exits 1 on any violation, so it can gate a soak or a CI run.
+
+```
+dagnats journal check <run-id> [--json]
+```
+
+**Example:**
+```bash
+dagnats journal check a1b2c3d4
+# run a1b2c3d4: 1 journal step(s)
+#   plan: 7 records, 2 commits, ok
+#   skipped: invariant 3 (unsafe tool executed at most once) needs the test side-effect counter
+#   skipped: invariant 5 (placed inputs vs submissions) skipped: submissions bucket absent
+# OK
+```
+
 ## singleton
 
 List and release singleton locks.

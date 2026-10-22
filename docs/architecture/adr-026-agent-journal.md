@@ -1,6 +1,6 @@
 # ADR-026: Agent journal
 
-**Status:** Proposed (2026-10-21)
+**Status:** Accepted (2026-10-21)
 **Deciders:** Dan Mestas
 **Depends on:** ADR-025
 **Reverses:** ADR-002's rejection of per-tool-call durability
@@ -35,33 +35,51 @@ checked against the journal tail its writer last saw.
 ### Stream
 
 `AGENT_JOURNAL`, subjects `journal.{run}.{step}`, file storage, the
-cluster's replica count, a 30-day max age like `WORKFLOW_HISTORY`, purged
-with the run.
+cluster's replica count, a 30-day max age like `WORKFLOW_HISTORY`, a
+two-minute dedup window, purged with the run (`dagnats clean`). Direct get
+is off: a direct get may be answered by a replica that lags, and with it off
+`GetLastMsgForSubject` goes through the JetStream API, which only the stream
+leader serves. That is how "read the tail from the leader" is implemented.
+Provisioned by `natsutil.SetupAll` with the other streams.
 
 ### Appends
 
 Every append carries `Nats-Expected-Last-Subject-Sequence` set to the last
 journal sequence its writer saw, and `Nats-Msg-Id` set to
-`{run}.{step}.{attempt}.{iteration}.{record}`. JetStream rejects an append
-whose expected sequence is stale, so a worker that lost the tail cannot
-write.
+`{run}.{step}.{attempt}.{iteration}.{index}`, where `index` is the record's
+position within its claim (the claim is 0). JetStream rejects an append
+whose expected sequence is stale (error 10071, naming the real tail), and,
+on a clustered stream, one that arrives while another expected-sequence
+publish on the subject is still in process (10164, found while running the
+conformance suite on three nodes). A worker that lost the tail cannot write.
 
 A rejection does not by itself mean the claim is lost. Three benign cases
 also cause one: an append that landed but whose acknowledgement was lost; a
-batch still applying on the same subject; and a tail read from a stale
-replica. On rejection the writer re-reads the tail from the stream leader.
-If the tail is its own record, the append succeeded. If it is another
-record of its own claim, it retries with the actual sequence, at most 8
-times. Only a record from another claim means the writer is fenced.
+rival publish still applying on the same subject; and a late claim for an
+earlier iteration landing just before the writer's own claim. On rejection
+the writer re-reads the tail from the stream leader. If the tail is the
+record it just sent (same `Nats-Msg-Id`), the append succeeded. If it is
+another record of its own claim, or any record from an earlier iteration,
+it retries with the actual sequence; if the tail has not moved it waits
+briefly for the in-process publish and retries. At most 8 resyncs. Only a
+record from another claim for the same or a later iteration means the
+writer is fenced.
 
 ### Claims
 
-On picking up a task the worker reads the tail from the stream leader (a
-direct get can be served by a stale replica). If the tail belongs to a
-later iteration than the task's, the task is stale and the worker stops
-without writing. Otherwise it appends a `claim` record carrying the
-iteration, attempt, dispatch nonce and delivery count. A claim fences claims
-for the same or an earlier iteration, and never a worker on a later one.
+A step opts in when its handler calls `TaskContext.Journal()`; nothing in
+the workflow definition or the task payload changes, and a handler that
+never calls it runs exactly as before. The worker then reads the tail from
+the stream leader. If the tail belongs to a later iteration than the task's,
+the task is a late redelivery: the worker stops without writing and
+acknowledges the message. Otherwise it reads the journal back, and appends
+a `claim` record carrying the iteration, attempt, dispatch nonce and
+delivery count. A claim fences every earlier claim for the same or an
+earlier iteration, in journal order, and never a worker on a later one. A
+fenced worker publishes no further lifecycle event and does not touch the
+task message: the message belongs to the successor, whose acknowledgement
+settles it. Racing claimers for one iteration may each land a claim; what
+holds is that afterwards exactly one of them can still write.
 
 ### Records
 
@@ -76,17 +94,30 @@ for the same or an earlier iteration, and never a worker on a later one.
 | `entry` | Handler | Application records, opaque to dagnats |
 | `commit` | SDK | Ends an iteration: next action and state |
 
-Each record is a JSON body with a `Dagnats-Journal-Type` header and the
-dispatch nonce in a header.
+Each record is a JSON body. Its identity is in headers so a tail read can
+classify it without decoding the body: `Dagnats-Journal-Type`,
+`Dagnats-Journal-Iteration`, `Dagnats-Journal-Attempt`,
+`Dagnats-Journal-Index` and `Dagnats-Dispatch-Nonce`. The model, tool and
+input types are reserved here and written by the helpers of #805 and
+ADR-027; this ADR's implementation writes `claim`, `pause`, `commit` and
+the handler's `entry`.
 
 ### Commits and recovery
 
-An iteration ends with one `commit` message holding the next action
-(continue, complete, fail or wait) and the state. It is one message, not an
+An iteration ends with one `commit` message holding the action its
+lifecycle event will carry (`continue`, `complete` or `fail`; a pause is
+its own record, not a commit) and the state. It is one message, not an
 atomic batch: on a one-node file stream the server stages a batch in a store
 it syncs to disk, which costs 25 to 30 ms, against 0.15 ms for one fenced
 message. After the commit is stored, the worker publishes the lifecycle
-event of ADR-025 with the commit's journal sequence.
+event of ADR-025 with the commit's journal sequence as `journal_seq`.
+
+For a journal step the commit record replaces the state ADR-025 carries in
+`step.continue`: the event carries no state, the engine keeps whatever it
+had, and the next delivery reads the last committed state from the journal.
+One source of truth, and the `loop_state_max_bytes` cap no longer applies
+to journal steps, which is where ADR-025 said larger state belongs. The
+engine is unchanged.
 
 A worker that claims iteration N reads the journal back from the last
 commit:
@@ -101,8 +132,9 @@ commit:
 
 ### Tools and model calls
 
-`tc.Tool(call, Safe|Unsafe, fn)` appends `tool.intent`, runs the tool and
-appends `tool.result`. On recovery:
+Deferred to #805; this ADR records the shape they build on. `tc.Tool(call,
+Safe|Unsafe, fn)` appends `tool.intent`, runs the tool and appends
+`tool.result`. On recovery:
 
 - a recorded result is reused;
 - an intent without a result is rerun only if both the recorded and the
@@ -117,10 +149,15 @@ a non-durable preview: a crash mid-stream re-sends the request.
 
 ### Compatibility
 
-`Checkpoint` and `LoadCheckpoint` keep working on journal-enabled steps by
-writing and reading the latest state. The `checkpoints` bucket gets a TTL
-and is retired once no worker writes it. The HTTP bridge gains
-`journal.append`, `journal.read` and `load_checkpoint` actions.
+`Checkpoint` and `LoadCheckpoint` keep working on journal steps:
+`Checkpoint` buffers the state the next commit carries, and
+`LoadCheckpoint` returns, in order, the state checkpointed this delivery,
+the pause marker `{"pause_resume": name}` when the iteration's newest
+record is a `pause`, else the last committed state. `Pause` writes the
+`pause` record instead of the `checkpoints` marker. A step without a
+journal is untouched. The `checkpoints` bucket TTL and the HTTP bridge
+actions (`journal.append`, `journal.read`, `load_checkpoint`) are the
+follow-up to #804.
 
 ### Checker
 
@@ -140,7 +177,11 @@ outcomes), and assert:
 6. The engine's iteration count equals the number of commits.
 
 Invariant 3 needs the external counter, so it holds in tests only; the
-command checks the other five on any run.
+command reports it as skipped and checks the other five on any run, and
+reports invariant 5 as skipped while the `submissions` bucket does not
+exist. The accepted attempt of an iteration is the highest `step.started`
+attempt among the dispatch nonces that claimed it. The command exits 1 on a
+violation so it can gate a soak.
 
 ## Requirements
 
@@ -150,11 +191,11 @@ all capitals.
 
 | ID | Requirement | Proven by |
 |---|---|---|
-| R1 | Every journal append MUST carry `Nats-Expected-Last-Subject-Sequence` and a stable `Nats-Msg-Id`. | Journal conformance suite |
-| R2 | A worker MUST stop handling a task once a record from another claim follows its own. | `SIGSTOP` takeover test, `e2e/cluster` |
-| R3 | A worker MUST NOT treat a rejection as fencing before re-reading the tail from the leader. | False-rejection tests (lost ack, batch in flight, stale replica) |
-| R4 | A claim MUST NOT fence a worker on a later iteration. | Journal conformance suite |
-| R5 | An iteration MUST end with exactly one commit for its attempt. | Journal checker, chaos soak |
+| R1 | Every journal append MUST carry `Nats-Expected-Last-Subject-Sequence` and a stable `Nats-Msg-Id`. | `TestConformance_AppendCarriesFenceAndStableMsgID` |
+| R2 | A worker MUST stop handling a task once a record from another claim follows its own. | `TestConformance_RecordFromAnotherClaimFences`, `TestJournal_StalledWorkerIsFencedBySuccessor`; `SIGSTOP` takeover in `e2e/cluster` (follow-up) |
+| R3 | A worker MUST NOT treat a rejection as fencing before re-reading the tail from the leader. | `TestConformance_FalseRejectionLostAck`, `TestConformance_FalseRejectionOwnRecordAtTailViaOtherNode`, `TestConformance_RacingClaimsLeaveExactlyOneWriter` (in-process rival, three nodes) |
+| R4 | A claim MUST NOT fence a worker on a later iteration. | `TestConformance_EarlierIterationClaimNeverFencesLater`, `TestConformance_StaleIterationStopsWithoutWriting` |
+| R5 | An iteration MUST end with exactly one commit for its attempt. | `TestConformance_OwnAttemptCommitIsHonoured`, `TestCheckStep_OneCommitPerIterationFromAcceptedAttempt`, chaos soak |
 | R6 | Recovery MUST reuse recorded model responses and tool results. | Crash-point tests |
 | R7 | An unfinished tool call MUST NOT be rerun unless both declarations are `Safe`. | Tool replay matrix |
 | R8 | An unsafe tool's side effect MUST happen at most once across any crash schedule. | Crash-point tests, chaos soak |
@@ -166,6 +207,13 @@ all capitals.
   fences on the same write that records progress.
 - **Atomic batches for every commit.** Measured at 25 to 30 ms on a one-node
   stream. Kept only for state too large for one message.
+- **Opting in through `AgentLoopConfig` or the task payload.** Would touch
+  the schema, the engine's dispatch path and the bridge for a bit the
+  handler already knows. A `Journal()` call is the smallest surface, and a
+  step with no journal costs nothing.
+- **Carrying the committed state in `step.continue` as well.** Two copies
+  to keep equal and the 256 KiB cap kept on journal steps, for an engine
+  that would not read the second copy.
 - **pi-durable's storage model** (a session store with indexed tables). Its
   reads need indexes that JetStream does not keep; an append-only journal
   read back from the last commit needs none.

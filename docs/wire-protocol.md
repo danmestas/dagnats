@@ -300,6 +300,33 @@ Upgrade order: engines before workers. A worker that sends its state in
 falls back to the `checkpoints` bucket only when the task carries no
 `state_max_bytes`, which is how it recognises an older engine.
 
+#### Agent journal (ADR-026)
+
+A step may keep a journal: one append-only subject `journal.{run_id}.{step_id}` on the `AGENT_JOURNAL` stream (file storage, the cluster's replica count, 30-day max age, a two-minute dedup window, direct get disabled so a tail read is answered by the stream leader, purged with the run by `dagnats clean`). The worker SDK opts a step in when its handler calls `Journal()`; a handler that never calls it runs as before. The HTTP bridge actions `journal.append`, `journal.read` and `load_checkpoint` are the follow-up to #804.
+
+**Record envelope.** Each record is one JetStream message. Identity lives in headers; the body is the record's JSON.
+
+| Header | Value |
+|--------|-------|
+| `Nats-Msg-Id` | `{run_id}.{step_id}.{attempt}.{iteration}.{index}` — stable, so a resent append is deduplicated |
+| `Nats-Expected-Last-Subject-Sequence` | the journal sequence the writer last saw (`0` on an empty journal) |
+| `Dagnats-Journal-Type` | `claim`, `pause`, `commit`, `entry`, `model.response`, `tool.intent`, `tool.result`, `input.placed` |
+| `Dagnats-Journal-Iteration`, `Dagnats-Journal-Attempt` | the writer's claim: the task's iteration and 1-based attempt |
+| `Dagnats-Journal-Index` | the record's position within its claim; the claim is `0` |
+| `Dagnats-Dispatch-Nonce` | `TaskPayload.dispatch_nonce` |
+
+Bodies: `claim` `{"iteration","attempt","dispatch_nonce","delivered"}`; `pause` `{"name","duration_ms"}`; `commit` `{"action":"continue"|"complete"|"fail","output","state","error","failure_type","retry_after_ms"}`; `entry` is the handler's JSON, opaque to dagnats.
+
+**Claims.** Before writing, the worker reads the tail from the leader. A tail from a later iteration means the task is a late redelivery: nothing is written and the message is acknowledged. Otherwise the worker reads the journal back and appends a `claim`. A claim fences every earlier claim for the same or an earlier iteration, in journal order; it never fences a later iteration.
+
+**Appends and rejections.** JetStream rejects an append whose expected sequence is stale (error `10071`, naming the real tail) and, on a clustered stream, one that arrives while another expected-sequence publish on the subject is in process (`10164`). Neither is fencing by itself. The writer re-reads the tail from the leader: the record it just sent (same `Nats-Msg-Id`) means the append landed and its acknowledgement was lost; another record of its own claim, or a record from an earlier iteration, means resync and retry with the real sequence; an unmoved tail means wait briefly and retry. At most 8 resyncs. A record from another claim for the same or a later iteration means the writer is fenced: it stops, publishes no further lifecycle event, and leaves the task message to its successor.
+
+**Commits.** An iteration ends with one `commit` record (one message, not an atomic batch), then the lifecycle event, which carries the commit's journal sequence as `journal_seq`. For a journal step `step.continue` carries no `state`: the commit record is the state of record and the next delivery reads it from the journal, so `loop_state_max_bytes` does not apply. `Pause` appends a `pause` record instead of the `checkpoints` marker; `LoadCheckpoint` returns `{"pause_resume": name}` on the resumed delivery, else the last committed state.
+
+**Recovery.** A `commit` for the task's own attempt and iteration means the previous holder crashed between committing and publishing: the worker republishes that commit's lifecycle event (its msg-id is stable) and acknowledges the task without repeating the turn. Otherwise the iteration starts from the last commit of an earlier iteration, with this iteration's earlier records available for reuse.
+
+**Audit.** `dagnats journal check <run-id>` reads the journal, the run's history and snapshot, and the `submissions` bucket when it exists, and checks: one commit per iteration from the accepted attempt; no record after the claim that fenced its writer; every `tool.intent` paired with a `tool.result`; every placed input once; the engine's iteration count equal to the accepted `continue` commits. It exits 1 on a violation.
+
 ### Heartbeat
 
 Workers register in the `workers` KV bucket on startup via `worker.Directory`. The bucket has a 60s TTL, and the worker SDK re-PUTs its registration every 30s to remain visible. Deregistration happens automatically on TTL expiry or explicit DELETE.
@@ -470,6 +497,8 @@ Workers register their presence in the `workers` KV bucket:
 **Checkpoint**: Records the state the next `Continue` commits (#801). Nothing is written at checkpoint time: the state rides the `step.continue` event and the engine saves it in the run snapshot in the same write that advances the iteration, then hands it to the next task as `TaskPayload.state`. A worker that dies between `Checkpoint` and `Continue` therefore leaves nothing behind, and the redelivered iteration starts from the state the crashed one started from. A retry of an iteration (same iteration, new attempt) also starts from the last committed state. `LoadCheckpoint` returns, in order: the state checkpointed earlier in the same delivery, a `checkpoints`-bucket entry when one exists (a pause marker, or a checkpoint from a worker older than #801), else `TaskPayload.state`.
 
 The state per step is capped by the engine's `loop_state_max_bytes` (default 256 KiB), carried to workers as `TaskPayload.state_max_bytes`; the whole run snapshot is one KV value bounded by `max_payload`. On-failure handlers and compensation steps resolve their own input and never see loop state.
+
+**Journal steps** (a handler that called `Journal()`, ADR-026): `Pause` writes a `pause` record to the journal instead of the `checkpoints` marker, `Checkpoint` buffers the state the iteration's `commit` record carries, and `LoadCheckpoint` returns the state checkpointed this delivery, else the pause marker when the iteration's newest record is a pause, else the last committed state from the journal. The cap above does not apply; see "Agent journal".
 
 ## Idempotency & Deduplication
 
