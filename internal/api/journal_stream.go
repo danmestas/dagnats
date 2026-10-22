@@ -58,7 +58,7 @@ func handleGetStepJournal(svc *Service, w http.ResponseWriter, r *http.Request) 
 	runID, stepID := parts[0], parts[2]
 	// Bounded so a stalled KV read (a cluster mid-election) answers 500
 	// for the client to retry instead of holding the connection open.
-	lookupCtx, cancelLookup := context.WithTimeout(r.Context(), 10*time.Second)
+	lookupCtx, cancelLookup := context.WithTimeout(r.Context(), runLookupTimeout)
 	defer cancelLookup()
 	run, err := svc.GetRun(lookupCtx, runID)
 	if err != nil {
@@ -123,7 +123,7 @@ func serveJournalPage(
 	svc *Service, w http.ResponseWriter, r *http.Request,
 	runID, stepID string, from uint64, stepDone bool,
 ) {
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), runLookupTimeout)
 	defer cancel()
 	cons, err := natsutil.OpenConsumer(
 		ctx, svc.js, natsutil.AgentJournalStream, journalConsumerSpec(runID, stepID, from),

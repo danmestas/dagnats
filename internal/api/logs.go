@@ -80,6 +80,10 @@ func writeJSONError(w http.ResponseWriter, status int, msg string) {
 	}
 }
 
+// runLookupTimeout bounds the run lookup the logs and journal
+// handlers do before streaming.
+const runLookupTimeout = 10 * time.Second
+
 // handleGetRunLogs serves GET /runs/{id}/logs?step=&attempt=&cursor=&follow=&from=.
 func handleGetRunLogs(svc *Service, w http.ResponseWriter, r *http.Request) {
 	if svc == nil {
@@ -100,7 +104,11 @@ func handleGetRunLogs(svc *Service, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	run, err := svc.GetRun(r.Context(), runID)
+	// Bounded so a stalled KV read (a cluster mid-election) answers 500
+	// for the client to retry instead of holding the connection open.
+	lookupCtx, cancelLookup := context.WithTimeout(r.Context(), runLookupTimeout)
+	defer cancelLookup()
+	run, err := svc.GetRun(lookupCtx, runID)
 	if err != nil {
 		if errors.Is(err, engine.ErrRunNotFound) {
 			http.Error(w, "run not found", http.StatusNotFound)
