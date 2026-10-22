@@ -200,11 +200,23 @@ func TestCheckStep_ToolIntentsPairWithResults(t *testing.T) {
 		t.Errorf("violations = %v, want an unpaired tool.intent", v)
 	}
 	paired := []Record{
-		rec(1, TypeClaim, 0, 1, `{}`), rec(2, TypeToolIntent, 0, 1, `{}`),
-		rec(3, TypeToolResult, 0, 1, `{}`), commitRec(4, 0, 1, ActionComplete),
+		rec(1, TypeClaim, 0, 1, `{}`), rec(2, TypeToolIntent, 0, 1, `{"call":0}`),
+		rec(3, TypeToolResult, 0, 1, `{"call":0}`), commitRec(4, 0, 1, ActionComplete),
 	}
 	if v := checkStep("s", state, paired, []protocol.Event{started(0, 1)}).Violations; len(v) != 0 {
 		t.Errorf("paired intent flagged: %v", v)
+	}
+	// A successor answers a crashed holder's call without a second
+	// intent; a result for a call nobody intended is a violation.
+	state = dag.StepState{Status: dag.StepStatusCompleted, Attempts: 2}
+	takeover := []Record{
+		rec(1, TypeClaim, 0, 1, `{}`), rec(2, TypeToolIntent, 0, 1, `{"call":0}`),
+		rec(3, TypeClaim, 0, 2, `{}`), rec(4, TypeToolResult, 0, 2, `{"call":0,"interrupted":true}`),
+		rec(5, TypeToolResult, 0, 2, `{"call":1}`), commitRec(6, 0, 2, ActionComplete),
+	}
+	v = checkStep("s", state, takeover, []protocol.Event{started(0, 1), started(0, 2)}).Violations
+	if hasViolation(v, "call 0") || !hasViolation(v, "call 1: 0 tool.intent") {
+		t.Errorf("violations = %v, want call 0 paired across claims and call 1 flagged", v)
 	}
 }
 

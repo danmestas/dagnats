@@ -438,31 +438,51 @@ func taskOf(r Record) Task {
 	}
 }
 
-// checkToolPairs is invariant 4: within one claim, every tool.intent
-// has exactly one tool.result.
+// checkToolPairs is invariant 4: within one iteration, every tool
+// call (by position) has exactly one tool.intent and exactly one
+// tool.result. The result may come from a later claim than the
+// intent: a successor answers a crashed holder's unfinished call
+// without writing a second intent (ADR-026).
 func checkToolPairs(records []Record) []string {
 	if records == nil {
 		panic("checkToolPairs: records must not be nil")
 	}
-	intents := map[Task]int{}
-	results := map[Task]int{}
+	type toolCall struct{ iteration, call int }
+	intents := map[toolCall]int{}
+	results := map[toolCall]int{}
+	var violations []string
 	for _, r := range records {
-		switch r.Type {
-		case TypeToolIntent:
-			intents[taskOf(r)]++
-		case TypeToolResult:
-			results[taskOf(r)]++
+		if r.Type != TypeToolIntent && r.Type != TypeToolResult {
+			continue
+		}
+		var body struct {
+			Call *int `json:"call"`
+		}
+		if err := json.Unmarshal(r.Data, &body); err != nil || body.Call == nil {
+			violations = append(violations, fmt.Sprintf("seq %d %s has no call", r.Seq, r.Type))
+			continue
+		}
+		key := toolCall{r.Iteration, *body.Call}
+		if r.Type == TypeToolIntent {
+			intents[key]++
+		} else {
+			results[key]++
 		}
 	}
-	if len(results) > len(records) {
+	if len(intents)+len(results) > 2*len(records) {
 		panic("checkToolPairs: more groups than records")
 	}
-	var violations []string
-	for claim, n := range intents {
-		if results[claim] != n {
+	for key, n := range intents {
+		if n != 1 || results[key] != 1 {
 			violations = append(violations, fmt.Sprintf(
-				"iteration %d attempt %d: %d tool.intent, %d tool.result",
-				claim.Iteration, claim.Attempt, n, results[claim]))
+				"iteration %d call %d: %d tool.intent, %d tool.result",
+				key.iteration, key.call, n, results[key]))
+		}
+	}
+	for key, n := range results {
+		if intents[key] == 0 {
+			violations = append(violations, fmt.Sprintf(
+				"iteration %d call %d: 0 tool.intent, %d tool.result", key.iteration, key.call, n))
 		}
 	}
 	sort.Strings(violations)

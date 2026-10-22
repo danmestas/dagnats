@@ -31,6 +31,9 @@ const (
 	journalFenced
 	// journalRecovered: our own commit was found and republished; ack.
 	journalRecovered
+	// journalRestartLimit: the crash-loop guard failed the step and
+	// published step.failed; ack (ADR-028).
+	journalRestartLimit
 )
 
 // Journal claims this dispatch's journal, once per delivery. It
@@ -74,6 +77,9 @@ func (c *taskContext) Journal() (*journal.Journal, error) {
 	c.journal = j
 	if commit, ok := j.Committed(); ok {
 		return nil, c.republishCommitted(commit, j.CommittedSeq())
+	}
+	if err := c.failRestartLimit(j); err != nil {
+		return nil, err
 	}
 	return j, nil
 }
@@ -119,6 +125,8 @@ func (c *taskContext) stopError() error {
 		return journal.ErrFenced
 	case journalRecovered:
 		return journal.ErrCommitted
+	case journalRestartLimit:
+		return journal.ErrRestartLimit
 	}
 	panic(fmt.Sprintf("stopError: unknown journal stop %d", c.journalStop))
 }
@@ -221,7 +229,7 @@ func (c *taskContext) journalOutcome(err error) (done, ack bool) {
 	switch c.journalStop {
 	case journalLive:
 		return false, false
-	case journalStale, journalRecovered:
+	case journalStale, journalRecovered, journalRestartLimit:
 		c.drainLogs(protocol.LogMarkerCompleted)
 		return true, true
 	case journalFenced:

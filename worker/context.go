@@ -116,6 +116,9 @@ type taskContext struct {
 	journal     *journal.Journal
 	journalStop journalStop
 	journalSeq  uint64
+	// restartLimit is the Worker's crash-loop guard (ADR-028);
+	// RestartLimitDefault when 0.
+	restartLimit int
 }
 
 // newTaskContext constructs a taskContext from a dispatched

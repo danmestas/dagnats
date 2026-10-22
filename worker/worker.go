@@ -224,6 +224,10 @@ type Worker struct {
 	triggerSubsMu sync.Mutex
 	triggerSubs   []*nats.Subscription
 
+	// restartLimit is the crash-loop guard of journal steps (ADR-028):
+	// RestartLimitDefault when 0.
+	restartLimit int
+
 	// controlPlane is the deployment-wired runtime control-plane handle.
 	// nil unless WithControlPlane was passed (the Tier-1 grant). Even
 	// when non-nil, a per-step handle is granted only to steps that
@@ -1146,6 +1150,7 @@ func (w *Worker) startTaskSpan(
 	)
 	ctx, tc.releaseCancel = w.bindCancel(ctx, tc)
 	tc.workerID = w.workerID
+	tc.restartLimit = w.restartLimit
 	tc.publishMsg = w.publishMsg
 	tc.logChunkFailures = w.logChunkFailures
 	// Deny-by-default gate: grant a control-plane handle only when the

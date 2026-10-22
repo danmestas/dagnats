@@ -37,6 +37,21 @@ func startLoopEngine(
 	t *testing.T, name, taskType string,
 ) (*nats.Conn, nats.JetStreamContext, jetstream.JetStream, []byte) {
 	t.Helper()
+	return startLoopEngineDef(t, dag.WorkflowDef{
+		Name: name, Version: "1",
+		Steps: []dag.StepDef{{
+			ID: "s", Task: taskType, Type: dag.StepTypeAgentLoop,
+			Config: dag.MarshalConfig(&dag.AgentLoopConfig{MaxIterations: 10}),
+		}},
+	})
+}
+
+// startLoopEngineDef starts NATS and an orchestrator with wfDef
+// registered.
+func startLoopEngineDef(
+	t *testing.T, wfDef dag.WorkflowDef,
+) (*nats.Conn, nats.JetStreamContext, jetstream.JetStream, []byte) {
+	t.Helper()
 	_, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
@@ -48,13 +63,6 @@ func startLoopEngine(
 	jsNew, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
-	}
-	wfDef := dag.WorkflowDef{
-		Name: name, Version: "1",
-		Steps: []dag.StepDef{{
-			ID: "s", Task: taskType, Type: dag.StepTypeAgentLoop,
-			Config: dag.MarshalConfig(&dag.AgentLoopConfig{MaxIterations: 10}),
-		}},
 	}
 	defData, err := json.Marshal(wfDef)
 	if err != nil {
