@@ -131,6 +131,37 @@ func TestCheckStep_AcceptedCommitIsTheOneHistoryNames(t *testing.T) {
 	}
 }
 
+func TestCheckStep_RetryAfterFailureSupersedesTheFailedCommit(t *testing.T) {
+	// Attempt 1 failed iteration 0 (commit + step.failed), attempt 2
+	// retried it and continued. History names both commits; the latest
+	// lifecycle event for the iteration is the one that counts.
+	records := []Record{
+		rec(1, TypeClaim, 0, 1, `{}`), commitRec(2, 0, 1, ActionFail),
+		rec(3, TypeClaim, 0, 2, `{}`), commitRec(4, 0, 2, ActionContinue),
+		rec(5, TypeClaim, 1, 2, `{}`), commitRec(6, 1, 2, ActionComplete),
+	}
+	state := dag.StepState{Status: dag.StepStatusCompleted, Iterations: 1, Attempts: 2}
+	history := []protocol.Event{
+		started(0, 1), applied(protocol.EventStepFailed, 0, 1, 2),
+		started(0, 2), applied(protocol.EventStepContinue, 0, 2, 4),
+		started(1, 2), applied(protocol.EventStepCompleted, 1, 2, 6),
+	}
+	if v := checkStep("s", state, records, history).Violations; len(v) != 0 {
+		t.Fatalf("violations = %v, want none: the retry supersedes the failure", v)
+	}
+	// The same journal with the events reversed in history names the
+	// failure last: the continue is then not the accepted commit.
+	reversed := []protocol.Event{
+		started(0, 1), applied(protocol.EventStepContinue, 0, 2, 4),
+		started(0, 2), applied(protocol.EventStepFailed, 0, 1, 2),
+		started(1, 2), applied(protocol.EventStepCompleted, 1, 2, 6),
+	}
+	v := checkStep("s", state, records, reversed).Violations
+	if !hasViolation(v, "iteration 0") || !hasViolation(v, `"fail"`) {
+		t.Errorf("violations = %v, want iteration 0's accepted commit to be the fail", v)
+	}
+}
+
 func TestCheckStep_RecordAfterFencingClaimIsAViolation(t *testing.T) {
 	records := []Record{
 		rec(1, TypeClaim, 0, 1, `{}`),

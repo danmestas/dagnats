@@ -238,7 +238,7 @@ func checkCommits(
 		accepted := acceptedCommits(iteration, records, commits, history)
 		if len(accepted) != 1 {
 			violations = append(violations, fmt.Sprintf(
-				"iteration %d has %d commits accepted by the engine, want 1",
+				"iteration %d has %d commits named by its latest lifecycle event, want 1",
 				iteration, len(accepted)))
 			continue
 		}
@@ -269,11 +269,14 @@ func checkCommits(
 	return violations
 }
 
-// acceptedCommits returns the iteration's commits the engine accepted:
-// those a lifecycle event for the iteration names by journal_seq. When
-// history carries no such event for the iteration (events from a
-// worker without journal_seq), it falls back to the commits of the
-// attempt the engine adopted.
+// acceptedCommits returns the iteration's commit that stands: the one
+// named by journal_seq on the latest lifecycle event for the iteration
+// in history order. History records what workers published, not what
+// the engine applied, and an iteration can legitimately be named
+// twice: a failed attempt's step.failed and then the retry's
+// step.continue. The later event supersedes. When no event for the
+// iteration carries journal_seq (a worker without it), it falls back
+// to the commits of the attempt the engine adopted.
 func acceptedCommits(
 	iteration int, records []Record, commits map[int][]Record, history []protocol.Event,
 ) []Record {
@@ -283,17 +286,17 @@ func acceptedCommits(
 	if iteration < 0 {
 		panic("acceptedCommits: iteration must not be negative")
 	}
-	named := map[uint64]bool{}
+	var latest uint64
 	for _, evt := range history {
 		if evt.JournalSeq > 0 && evt.Iteration != nil && *evt.Iteration == iteration &&
 			fencedLifecycle(evt.Type) {
-			named[evt.JournalSeq] = true
+			latest = evt.JournalSeq
 		}
 	}
 	var accepted []Record
-	if len(named) > 0 {
+	if latest > 0 {
 		for _, c := range commits[iteration] {
-			if named[c.Seq] {
+			if c.Seq == latest {
 				accepted = append(accepted, c)
 			}
 		}
