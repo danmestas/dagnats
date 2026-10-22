@@ -234,6 +234,7 @@ func collectMetricPoints(
 		handleStreamError(err, flags.name)
 		return nil
 	}
+	defer cons.Close()
 
 	return fetchMetricPoints(cons)
 }

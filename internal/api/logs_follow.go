@@ -108,6 +108,7 @@ func serveLogsFollow(
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer cons.Close()
 
 	startSSE(w, flusher)
 
@@ -159,7 +160,7 @@ func startSSE(w http.ResponseWriter, flusher http.Flusher) {
 func openLogsFollowConsumer(
 	ctx context.Context, js jetstream.JetStream,
 	runID, stepID string, attempt, iteration int, cursor uint64,
-) (jetstream.Consumer, error) {
+) (*natsutil.OrderedConsumer, error) {
 	if js == nil {
 		panic("openLogsFollowConsumer: js must not be nil")
 	}

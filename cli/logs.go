@@ -103,6 +103,7 @@ func runLogsFollow(js jetstream.JetStream, subject string) {
 			subject, err)
 		os.Exit(1)
 	}
+	defer cons.Close()
 
 	iter, err := cons.Messages()
 	if err != nil {
@@ -110,6 +111,7 @@ func runLogsFollow(js jetstream.JetStream, subject string) {
 			subject, err)
 		os.Exit(1)
 	}
+	defer iter.Stop()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
@@ -289,6 +291,7 @@ func runLogsTail(
 			subject, err)
 		os.Exit(1)
 	}
+	defer cons.Close()
 
 	buf := collectTailMessages(cons, count)
 	for _, rec := range buf {

@@ -161,6 +161,7 @@ func serveJournalPage(
 		writeJournalReadError(w, err)
 		return
 	}
+	defer cons.Close()
 	records := make([]journal.Record, 0, 16)
 	for len(records) < journalPageMax && ctx.Err() == nil {
 		msg, err := cons.Next(jetstream.FetchMaxWait(logsFetchIdleWait))
@@ -241,6 +242,7 @@ func serveJournalFollow(
 		writeJournalReadError(w, err)
 		return
 	}
+	defer cons.Close()
 	startSSE(w, flusher)
 	runJournalFollowLoop(ctx, svc, w, flusher, cons, runID, stepID)
 }

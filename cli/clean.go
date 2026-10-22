@@ -662,6 +662,7 @@ func purgeStreamBefore(
 			info.Config.Name, err)
 		return false
 	}
+	defer cons.Close()
 
 	msg, err := cons.Next(
 		jetstream.FetchMaxWait(5 * time.Second),

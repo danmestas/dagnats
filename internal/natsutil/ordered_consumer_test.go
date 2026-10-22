@@ -13,6 +13,7 @@
 package natsutil
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -75,4 +76,68 @@ func TestOrderedConsumerConfig_PanicsOnConflictingStartFields(t *testing.T) {
 
 	// Negative: unreachable if the panic fired as expected.
 	t.Fatal("OrderedConsumerConfig did not panic")
+}
+
+// Close tests (integration, embedded server): an ordered consumer is
+// lazy, so Close before any fetch has nothing to delete; after a fetch
+// Close removes the server-side consumer, and a second Close or a
+// consumer the server already dropped is not an error.
+func TestOrderedConsumer_CloseDeletesAndIsIdempotent(t *testing.T) {
+	_, nc := StartTestServer(t)
+	if err := SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	spec := OrderedConsumerSpec{FilterSubjects: []string{"telemetry.logs.>"}}
+	lazy, err := OpenConsumer(ctx, js, "TELEMETRY", spec)
+	if err != nil {
+		t.Fatalf("OpenConsumer: %v", err)
+	}
+	lazy.Close() // never fetched: nothing to delete, must not panic
+	for open := 0; open < 3; open++ {
+		cons, err := OpenConsumer(ctx, js, "TELEMETRY", spec)
+		if err != nil {
+			t.Fatalf("OpenConsumer: %v", err)
+		}
+		if _, err := cons.Next(jetstream.FetchMaxWait(200 * time.Millisecond)); err == nil {
+			t.Fatal("Next on an empty subject returned a message")
+		}
+		if n := telemetryConsumerCount(t, js); n != 1 {
+			t.Fatalf("while open: %d consumers, want 1", n)
+		}
+		cons.Close()
+		cons.Close() // idempotent
+		if n := telemetryConsumerCount(t, js); n != 0 {
+			t.Fatalf("after Close: %d consumers, want 0", n)
+		}
+	}
+	gone, err := OpenConsumer(ctx, js, "TELEMETRY", spec)
+	if err != nil {
+		t.Fatalf("OpenConsumer: %v", err)
+	}
+	_, _ = gone.Next(jetstream.FetchMaxWait(200 * time.Millisecond))
+	if err := js.DeleteConsumer(ctx, "TELEMETRY", gone.CachedInfo().Name); err != nil {
+		t.Fatalf("DeleteConsumer: %v", err)
+	}
+	gone.Close() // already deleted server-side: tolerated
+}
+
+func telemetryConsumerCount(t *testing.T, js jetstream.JetStream) int {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := js.Stream(ctx, "TELEMETRY")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	info, err := stream.Info(ctx)
+	if err != nil {
+		t.Fatalf("Info: %v", err)
+	}
+	return info.State.Consumers
 }

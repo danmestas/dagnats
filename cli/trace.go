@@ -437,6 +437,7 @@ func searchTraces(
 		fmt.Fprintf(os.Stderr, "consumer: %v\n", err)
 		return nil
 	}
+	defer cons.Close()
 
 	return collectSearchResults(cons, flags)
 }

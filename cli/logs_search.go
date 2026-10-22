@@ -183,6 +183,7 @@ func fetchSearchResults(
 			subject, err)
 		os.Exit(1)
 	}
+	defer cons.Close()
 
 	return collectSearchRecords(cons, limit, searchText)
 }

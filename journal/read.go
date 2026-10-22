@@ -97,6 +97,7 @@ func fetchUpTo(
 	if err != nil {
 		return fmt.Errorf("journal: open reader on %s: %w", subject, err)
 	}
+	defer consumer.Close()
 	for read := 0; read < limit; {
 		batch, err := consumer.Fetch(readBatch, jetstream.FetchMaxWait(readWait))
 		if err != nil {

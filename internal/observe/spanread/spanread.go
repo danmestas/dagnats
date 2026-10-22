@@ -57,6 +57,7 @@ func CollectRunSpans(
 	if err != nil {
 		return nil, err
 	}
+	defer cons.Close()
 
 	spans := make([]*tracepb.Span, 0, 128)
 	for i := 0; i < maxSpans; i++ {

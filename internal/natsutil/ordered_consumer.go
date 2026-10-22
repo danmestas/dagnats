@@ -2,6 +2,8 @@ package natsutil
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -45,6 +47,19 @@ import (
 // hanging.
 const OrderedConsumerResetMax = 4
 
+// OrderedConsumerInactiveThreshold is the server-side backstop for a
+// consumer nobody released (a crashed process, a Close that could not
+// reach the server). nats.go defaults an ordered consumer to 5 minutes,
+// long enough for a busy reader to pile up toward the server's
+// 1000-consumers-per-stream cap, so it is shortened. It is only a
+// backstop: OrderedConsumer.Close deletes the consumer when the read
+// ends, and a live reader is never inactive (every fetch is a pull).
+const OrderedConsumerInactiveThreshold = time.Minute
+
+// orderedCloseTimeout bounds the delete in Close, which runs on its own
+// context because the read's context is often the thing that ended.
+const orderedCloseTimeout = 5 * time.Second
+
 // OrderedConsumerSpec is the caller-supplied half of an ordered
 // consumer's config — everything that legitimately varies by call
 // site (which subjects, where to start reading). MaxResetAttempts is
@@ -73,7 +88,8 @@ func OrderedConsumerConfig(spec OrderedConsumerSpec) jetstream.OrderedConsumerCo
 		OptStartSeq:    spec.OptStartSeq,
 		OptStartTime:   spec.OptStartTime,
 
-		MaxResetAttempts: OrderedConsumerResetMax,
+		MaxResetAttempts:  OrderedConsumerResetMax,
+		InactiveThreshold: OrderedConsumerInactiveThreshold,
 	}
 	if cfg.MaxResetAttempts <= 0 {
 		panic("OrderedConsumerConfig: bound must be positive")
@@ -81,35 +97,90 @@ func OrderedConsumerConfig(spec OrderedConsumerSpec) jetstream.OrderedConsumerCo
 	return cfg
 }
 
+// OrderedConsumer is an ordered consumer that must be Closed when the
+// read ends. It embeds jetstream.Consumer, so readers use it as one.
+// nats.go gives an ordered consumer no way to delete itself, and every
+// reader that skipped the delete left a server-side consumer behind
+// until the inactivity threshold, which exhausted the stream's
+// consumer cap under load.
+type OrderedConsumer struct {
+	jetstream.Consumer
+	stream string
+	remove func(ctx context.Context, name string) error
+}
+
+// Close deletes the server-side consumer the reader is currently on
+// (nats.go renames it on every reset, so the name is read now). It is
+// idempotent and best effort: a failure is logged, and the inactivity
+// threshold reaps the consumer. Stop any message iterator first.
+func (c *OrderedConsumer) Close() {
+	if c == nil || c.Consumer == nil {
+		panic("OrderedConsumer.Close: consumer must not be nil")
+	}
+	if c.remove == nil {
+		return
+	}
+	remove := c.remove
+	c.remove = nil
+	info := c.CachedInfo()
+	if info == nil {
+		return // lazy: no fetch ever created the server-side consumer
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), orderedCloseTimeout)
+	defer cancel()
+	err := remove(ctx, info.Name)
+	if err != nil && !errors.Is(err, jetstream.ErrConsumerNotFound) &&
+		!errors.Is(err, jetstream.ErrStreamNotFound) {
+		slog.Warn("delete ordered consumer failed",
+			"stream", c.stream, "consumer", info.Name, "error", err)
+	}
+}
+
 // OpenConsumer opens a bounded ordered consumer on streamName via js.
 // This is the ONLY sanctioned way to call jetstream.JetStream's
 // OrderedConsumer in this repo — the CI lint referenced above enforces
-// it by forbidding the raw call anywhere else.
+// it by forbidding the raw call anywhere else. The caller must Close
+// the result.
 func OpenConsumer(
 	ctx context.Context, js jetstream.JetStream, streamName string, spec OrderedConsumerSpec,
-) (jetstream.Consumer, error) {
+) (*OrderedConsumer, error) {
 	if js == nil {
 		panic("OpenConsumer: js must not be nil")
 	}
 	if streamName == "" {
 		panic("OpenConsumer: streamName must not be empty")
 	}
-	return js.OrderedConsumer(ctx, streamName, OrderedConsumerConfig(spec))
+	cons, err := js.OrderedConsumer(ctx, streamName, OrderedConsumerConfig(spec))
+	if err != nil {
+		return nil, err
+	}
+	return &OrderedConsumer{Consumer: cons, stream: streamName,
+		remove: func(ctx context.Context, name string) error {
+			return js.DeleteConsumer(ctx, streamName, name)
+		}}, nil
 }
 
 // OpenStreamConsumer opens a bounded ordered consumer directly on an
 // already-resolved jetstream.Stream handle (the shape cli/clean.go
 // needs — it has a Stream, not a JetStream + name). This is the ONLY
 // sanctioned way to call jetstream.Stream's OrderedConsumer in this
-// repo, for the same reason as OpenConsumer above.
+// repo, for the same reason as OpenConsumer above. The caller must
+// Close the result.
 func OpenStreamConsumer(
 	ctx context.Context, stream jetstream.Stream, spec OrderedConsumerSpec,
-) (jetstream.Consumer, error) {
+) (*OrderedConsumer, error) {
 	if stream == nil {
 		panic("OpenStreamConsumer: stream must not be nil")
 	}
 	if ctx == nil {
 		panic("OpenStreamConsumer: ctx must not be nil")
 	}
-	return stream.OrderedConsumer(ctx, OrderedConsumerConfig(spec))
+	cons, err := stream.OrderedConsumer(ctx, OrderedConsumerConfig(spec))
+	if err != nil {
+		return nil, err
+	}
+	return &OrderedConsumer{Consumer: cons, stream: "stream-handle",
+		remove: func(ctx context.Context, name string) error {
+			return stream.DeleteConsumer(ctx, name)
+		}}, nil
 }

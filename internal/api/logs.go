@@ -431,6 +431,7 @@ func fetchLogsPage(
 	if err != nil {
 		return nil, 0, fmt.Errorf("open BUILD_LOGS consumer: %w", err)
 	}
+	defer cons.Close()
 	var chunks []protocol.LogChunk
 	var lastStreamSeq uint64
 	for len(chunks) < max {
