@@ -22,7 +22,7 @@ Ten streams handle all durable messaging. `dagnats serve` creates these on first
 | `BUILD_LOGS` | `logs.>` | Limits | File | `DAGNATS_BUILD_LOGS_TTL`, default 7 days (1h to 8760h); 2-minute dedup window | Task log lines (`logs.{run}.{step}.{attempt}.{iteration}`) |
 | `AGENT_JOURNAL` | `journal.>` | Limits | File | 30-day max age, 2-minute dedup window, direct get off | Agent journal records (`journal.{run}.{step}`), one fenced subject per step |
 
-`TASK_QUEUES` and `SLEEP_TIMERS` have no max age because their messages are live work: an age limit would silently delete pending tasks and unfired timers. Every file-backed stream also gets a byte ceiling that is a share of the JetStream store budget (`max_store_bytes`): `WORKFLOW_HISTORY` 25%, `EVENTS` 15%, `TASK_QUEUES` 12%, `TELEMETRY` 10%, `BUILD_LOGS` 5%, `DEAD_LETTERS` 5%, `AGENT_JOURNAL` 4%, `TRIGGER_HISTORY` 4% and `SLEEP_TIMERS` 4%, 84% in all, with the rest left as headroom for the KV buckets and JetStream's own index. `AGENT_JOURNAL` is sized small on purpose: one record per claim, pause, entry and commit per step, aged out at 30 days like history. `STICKY_TASKS` is in memory and bounded by its age.
+`TASK_QUEUES` and `SLEEP_TIMERS` have no max age because their messages are live work: an age limit would silently delete pending tasks and unfired timers. Every file-backed stream also gets a byte ceiling that is a share of the JetStream store budget (`max_store_bytes`): `WORKFLOW_HISTORY` 25%, `EVENTS` 15%, `TASK_QUEUES` 12%, `TELEMETRY` 10%, `BUILD_LOGS` 5%, `DEAD_LETTERS` 5%, `AGENT_JOURNAL` 4%, `TRIGGER_HISTORY` 4% and `SLEEP_TIMERS` 4%, plus 1% for the `submissions` KV bucket, 85% in all, with the rest left as headroom for the other KV buckets and JetStream's own index. `AGENT_JOURNAL` is sized small on purpose: one record per claim, pause, entry and commit per step, aged out at 30 days like history. `STICKY_TASKS` is in memory and bounded by its age.
 
 ### WORKFLOW_HISTORY
 
@@ -80,6 +80,7 @@ These KV buckets store workflow state, coordination data, and operational metada
 | `worker_status` | 120s | default | Per-worker counter snapshots for `dagnats status` |
 | `console_audit` | 90 days | default | Audit log of console write actions |
 | `leases` | per key (1s-10m) | 1 | Coordination leases with revision fencing ([ADR-024](https://github.com/danmestas/dagnats/blob/main/docs/architecture/adr-024-leases.md)); changes republished on `dagnats.lease.changed.<key>` |
+| `submissions` | 7 days | 1 | Inputs submitted to running agent steps, keyed `{run}.{step}.{request_id}` ([ADR-027](https://github.com/danmestas/dagnats/blob/main/docs/architecture/adr-027-agent-inputs-and-waits.md)); values at most 1 MiB, the one bucket with a byte ceiling (1% of the store budget) |
 
 History `default` is the JetStream KV default of 1 revision. `console_audit` is created by `dagnats serve` for the console and control-plane audit log; every other bucket comes from `SetupAll`, so `dagnats-engine` and `dagnats-api` create them too.
 

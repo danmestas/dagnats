@@ -1247,7 +1247,7 @@ func (r StepRef) WithTimeout(d time.Duration) StepRef
 WithTimeout sets the per\-attempt timeout on this step.
 
 <a name="StepState"></a>
-## type [StepState](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L312-L372>)
+## type [StepState](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L312-L385>)
 
 StepState captures mutable runtime state for one step in a run. Output is kept as raw bytes to remain payload\-agnostic. Iterations tracks how many agent\-loop Continue cycles have completed; used to generate unique dedup IDs for each re\-enqueue. LoopStartedAt records when the first iteration began, for MaxDuration enforcement. MapInstances tracks state for each parallel map item when Type == StepTypeMap. WakeAt records when a sleep step should complete, for engine scheduling. ChildRunID links to the spawned child run for SubWorkflow steps.
 
@@ -1312,6 +1312,19 @@ type StepState struct {
     // iteration. Opaque to the engine; bounded by the engine's loop
     // state cap. Additive: legacy snapshots deserialize to nil.
     LoopState []byte `json:"loop_state,omitempty"`
+    // WaitUntil and WaitInput are the durable wait the step's last
+    // step.continue asked for (ADR-027): the next iteration is sent at
+    // WaitUntil, or as soon as an input is queued when WaitInput is set,
+    // whichever comes first. Both are cleared by the save that sends
+    // the iteration; a timer or input event that finds them cleared
+    // is stale. Additive: legacy snapshots deserialize to none.
+    WaitUntil *time.Time `json:"wait_until,omitempty"`
+    WaitInput bool       `json:"wait_input,omitempty"`
+    // HasInputs records that inputs were submitted to the step while it
+    // was unfinished, so the save that ends the step settles whatever
+    // is still queued as unanswered (ADR-027) and clears it. A step
+    // nobody wrote to costs no lookup on completion.
+    HasInputs bool `json:"has_inputs,omitempty"`
 }
 ```
 
@@ -1806,7 +1819,7 @@ func (def *WorkflowDef) UnmarshalJSON(data []byte) error
 UnmarshalJSON accepts duration fields as Go duration strings \("30s"\) or integer nanoseconds.
 
 <a name="WorkflowRun"></a>
-## type [WorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L377-L448>)
+## type [WorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L390-L461>)
 
 WorkflowRun holds live state for a single execution of a WorkflowDef. Steps maps step ID to its current StepState; initialized to pending for all steps. Input preserves the original user\-supplied payload so retries can reuse it.
 
@@ -1886,7 +1899,7 @@ type WorkflowRun struct {
 ```
 
 <a name="NewWorkflowRun"></a>
-### func [NewWorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L453>)
+### func [NewWorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L466>)
 
 ```go
 func NewWorkflowRun(def WorkflowDef, runID string) WorkflowRun
@@ -1895,7 +1908,7 @@ func NewWorkflowRun(def WorkflowDef, runID string) WorkflowRun
 NewWorkflowRun constructs a WorkflowRun with all steps initialized to pending. runID must be non\-empty — callers are responsible for providing a unique ID \(e.g. nuid.Next\(\)\) before calling this constructor.
 
 <a name="WorkflowRun.EffectiveTime"></a>
-### func \(WorkflowRun\) [EffectiveTime](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L477>)
+### func \(WorkflowRun\) [EffectiveTime](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L490>)
 
 ```go
 func (r WorkflowRun) EffectiveTime() time.Time

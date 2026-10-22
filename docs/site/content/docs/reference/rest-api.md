@@ -483,6 +483,61 @@ curl -X POST http://localhost:8080/runs/a1b2c3d4.../signal/approval \
   -d '{"approved": true}'
 ```
 
+### Step inputs
+
+Send input to a running agent step ([ADR-027](https://github.com/danmestas/dagnats/blob/main/docs/architecture/adr-027-agent-inputs-and-waits.md)). A `steer` joins the current turn after the step's next tool round; a `follow_up` starts the next turn after a final answer. The step's handler places inputs with `PlaceInputs`, which needs the step's journal. Submitting input is a write into the agent's context: it carries the same authorization as sending a signal.
+
+```
+POST   /runs/{id}/steps/{step}/inputs
+GET    /runs/{id}/steps/{step}/inputs/{request_id}?wait=30s&after=queued
+DELETE /runs/{id}/steps/{step}/inputs/{request_id}
+```
+
+**Request body (POST):**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `request_id` | string | Yes | Caller-chosen idempotency key, 1-128 characters of `[A-Za-z0-9_-]`. A repeat returns the original submission, whatever its content |
+| `mode` | string | Yes | `steer` or `follow_up` |
+| `content` | JSON | Yes | The input, at most 1 MiB |
+
+**Response:** `201 Created` for a new submission, `200 OK` for a repeat of the same `request_id`.
+
+```json
+{
+  "run_id": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6",
+  "step_id": "agent",
+  "request_id": "msg-42",
+  "mode": "steer",
+  "content": {"text": "use the staging database"},
+  "status": "queued",
+  "created_at": "2026-10-21T12:00:00Z",
+  "updated_at": "2026-10-21T12:00:00Z"
+}
+```
+
+`status` is `queued` (waiting for the step's next turn boundary), `placed` (in the conversation; `iteration` says which), `done` (the iteration that placed it committed) or `unanswered` (the step finished first). The journal's `input.placed` record is the record of placement; a status that disagrees with it is repaired when read.
+
+`GET` with `wait` (at most `60s`) returns as soon as the status is no longer `after` (default `queued`), or the current status at the deadline. `DELETE` withdraws a submission that is still `queued` and answers `204`; the same `request_id` may then be submitted again.
+
+| Status | Condition |
+|--------|-----------|
+| `200` / `201` | Submission read, or created (`201`) |
+| `204` | Withdrawn |
+| `400` | Invalid `request_id`, `mode`, `content` or `wait` |
+| `404` | Unknown run, step or submission (including a withdrawn one) |
+| `409` | The step has finished (POST); the submission is no longer queued (DELETE) |
+| `503` | The `submissions` bucket is not provisioned |
+
+**curl:**
+```bash
+curl -X POST http://localhost:8080/runs/a1b2c3d4.../steps/agent/inputs \
+  -d '{"request_id": "msg-42", "mode": "steer", "content": {"text": "use staging"}}'
+curl "http://localhost:8080/runs/a1b2c3d4.../steps/agent/inputs/msg-42?wait=30s"
+```
+
+The NATS micro equivalents are `api.inputs.submit`, `api.inputs.get` (`wait_ms`, `after`) and `api.inputs.withdraw`, each taking `{"run_id", "step_id", "request_id", ...}` and answering the submission (submit adds `"created"`), `{"status": "withdrawn"}`, or `{"error", "kind"}` with `kind` one of `invalid`, `not_found`, `conflict`, `unavailable`, `internal`, `transport`.
+
 ### Handle Approval
 
 Process an approval or rejection for a human-in-the-loop step. Uses atomic CAS to guarantee exactly-once token consumption.

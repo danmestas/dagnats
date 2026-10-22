@@ -236,7 +236,13 @@ Workers publish lifecycle events back to the history stream:
   without either leaves the saved state alone. The engine stores it in the run snapshot
   (`StepState.loop_state`) in the same compare-and-swap save that advances the
   iteration, so checkpoint and continue are one write. A `state` over the
-  engine's cap fails the loop step, naming the size and the cap.
+  engine's cap fails the loop step, naming the size and the cap. The payload
+  may also carry `wait` (ADR-027): `{"delay_ms", "until", "input"}`, a durable
+  wait the engine schedules before sending the next iteration, with no worker
+  claim held. A time is a `loop_wait` timer on `SLEEP_TIMERS` whose fire
+  publishes `step.wait.elapsed` naming the dispatch; `input` is a flag on the
+  step woken by `step.input.queued`, which the API publishes after creating a
+  submission (msg-id `{run}.{step}.step.input.queued.{request_id}`).
 
 Use `protocol.NewStepEvent()` to construct events with correct subject and dedup ID.
 
@@ -317,7 +323,7 @@ A step may keep a journal: one append-only subject `journal.{run_id}.{step_id}` 
 | `Dagnats-Journal-Index` | the record's position within its claim; the claim is `0` |
 | `Dagnats-Dispatch-Nonce` | `TaskPayload.dispatch_nonce` |
 
-Bodies: `claim` `{"iteration","attempt","dispatch_nonce","delivered"}`; `pause` `{"name","duration_ms"}`; `commit` `{"action":"continue"|"complete"|"fail","output","state","error","failure_type","retry_after_ms"}`; `tool.intent` `{"name","input","call","key","replay":"safe"|"unsafe"}`; `tool.result` `{"call","key","output","error","interrupted","partial"}`; `model.response` `{"call","output"}`; `entry` is the handler's JSON, opaque to dagnats.
+Bodies: `claim` `{"iteration","attempt","dispatch_nonce","delivered"}`; `pause` `{"name","duration_ms"}`; `commit` `{"action":"continue"|"complete"|"fail","output","state","error","failure_type","retry_after_ms","wait"}`; `tool.intent` `{"name","input","call","key","replay":"safe"|"unsafe"}`; `tool.result` `{"call","key","output","error","interrupted","partial"}`; `model.response` `{"call","output"}`; `input.placed` `{"request_id","mode","content"}` (ADR-027: the record of an input joining the conversation; the `submissions` bucket's status is a projection of it); `entry` is the handler's JSON, opaque to dagnats.
 
 **Tool calls and model responses.** `call` is the call's position in the iteration, counting tool and model calls separately from 0; `key` is the idempotency key `{run_id}.{step_id}.{iteration}.{call}`, the same on every delivery and attempt, for the tool to pass to external systems. The SDK writes `tool.intent` before running a tool and `tool.result` after. A claim that recovers an attempt matches calls by position, and the recorded call must be the same call (`name` and canonical `input`), else the SDK reports a replay mismatch and writes nothing. Within an attempt (across deliveries, before any commit): a `tool.result` already recorded is reused; a `tool.intent` without a result is rerun only when its recorded `replay` and the current declaration are both `safe`, and otherwise answered with a `tool.result` whose `interrupted` is true, `error` is `interrupted`, `key` is the call's key and `partial` is the JSON array of the `entry` bodies the previous holder appended after the intent. The successor writes no second intent, so every call has one intent answered by one result, possibly from different claims. On a new attempt of the iteration (after a fail commit, or a higher attempt from iteration 1) safe calls and model requests run afresh with new records, and only unsafe intents from the prior attempt are honoured, matched by `name` and canonical `input` rather than position: the first such intent not yet honoured in this attempt answers the call under its own `call` and `key`, with its recorded result, or `interrupted` when unfinished. The guarantee is one start per unsafe position, not one effect: a holder stalled between its intent and the effect may complete it after the takeover, and `key` is what an external system deduplicates on. A `model.response` this attempt recorded for a position is returned without a request; a failed request records nothing and does not consume the position. `PutStream` output is a non-durable preview: a crash mid-stream re-sends the request.
 
