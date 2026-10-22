@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/journal"
 	"github.com/danmestas/dagnats/server"
 	"github.com/danmestas/dagnats/worker"
 )
@@ -100,6 +101,10 @@ func (f *fakeTaskContext) Pause(
 	_ string, _ time.Duration,
 ) error {
 	return fmt.Errorf("Pause not expected")
+}
+
+func (f *fakeTaskContext) Journal() (*journal.Journal, error) {
+	return nil, fmt.Errorf("Journal not expected")
 }
 
 func (f *fakeTaskContext) WaitForSignal(

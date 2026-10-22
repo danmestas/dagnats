@@ -19,13 +19,14 @@ import (
 // topLevelCommands lists every top-level command for static completion.
 var topLevelCommands = []string{
 	"clean", "completion", "config", "demo", "dev", "dlq", "init",
-	"logs", "metrics", "observe", "run", "serve", "service",
+	"journal", "logs", "metrics", "observe", "run", "serve", "service",
 	"sidecar", "singleton", "status", "trace", "trigger",
 	"trigger-type", "workers", "workflow",
 }
 
 // subcommandMap maps parent commands to their subcommands.
 var subcommandMap = map[string][]string{
+	"journal": {"check"},
 	"run": {
 		"bulk", "cancel", "cancel-all", "events",
 		"inspect", "list", "output", "retry",

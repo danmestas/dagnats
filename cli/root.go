@@ -64,6 +64,8 @@ func Run(args []string) {
 		runTriggerTypeCmd(args[2:])
 	case "clean":
 		runCleanCmd(args[2:])
+	case "journal":
+		runJournalCmd(args[2:])
 	case "demo":
 		runDemoCmd(args[2:])
 	case "completion":
@@ -108,6 +110,7 @@ var usageCommands = []usageEntry{
 	{"singleton", "list and release singleton locks"},
 	{"service", "list registered services"},
 	{"clean", "purge run data (for testing)"},
+	{"journal", "check a run's agent journals"},
 	{"demo", "seed runs and drive them to terminal states"},
 	{"completion", "generate shell completion scripts"},
 }
