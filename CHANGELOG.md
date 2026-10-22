@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.31] - 2026-10-21
+
+### Upgrade notes
+
+- **Upgrade engines before workers.** A worker from this release on an older engine still works: it detects the old engine and also writes agent-loop state to the `checkpoints` bucket. The reverse is not covered.
+- **Workers and bridge clients built before this release keep working.** Their lifecycle events carry no dispatch identity, and the new engine setting `legacy_step_events` (env `DAGNATS_LEGACY_STEP_EVENTS`) accepts them by default, logging a warning at startup. Turn it off once every worker is upgraded. While it is on, a duplicate `step.continue` from an old worker can still advance an agent loop twice.
+- Workers using the HTTP bridge need no change: the bridge stamps the new fields itself.
+
+### Added
+
+- **Agent journal.** A handler that calls `tc.Journal()` gets a fenced, append-only journal for its step on the new `AGENT_JOURNAL` stream (30-day retention, 4% of the store budget). Every append is checked against the journal tail its writer last saw, so a worker whose claim lapsed (a stalled worker whose task was redelivered) can no longer write, commit or complete. An iteration commits as one record, and a worker that crashed after committing has its lifecycle event republished instead of the turn re-run. `dagnats journal check <run>` audits a run's journal against its history. Opting in must be fleet-wide per task type. Known limit: on an agent loop's first iteration, a crash between commit and publish repeats that turn (ADR-026).
+- **Idempotent child runs.** `api.runs.spawn` and the Go SDK's `ControlPlane.StartRun` take an optional key (`worker.WithSpawnKey`); a repeated spawn with the same key returns the existing child run instead of starting another.
+- **Cancellation reaches running handlers.** Cancelling a run ends `tc.Context()` for every handler still working on it, and `Heartbeat()` returns `worker.ErrRunCancelled`. The engine signals on `dagnats.cancel.{runID}`; because that signal is at-most-once, `Heartbeat()` also checks run state. Handlers should pass `tc.Context()` to their model and tool calls.
+- ADRs 025–029 describe the durable-agent design.
+
+### Changed
+
+- **Agent-loop state is committed with `Continue`.** `Checkpoint` now buffers state and `Continue` carries it in the `step.continue` event; the engine stores it with the run in the same save that advances the iteration and hands it to the next iteration and to any retry. State is capped per step by `loop_state_max_bytes` (256 KiB by default); `Continue` fails over the cap. `Checkpoint(nil)` clears it. Over the HTTP bridge, a `checkpoint` resolve is buffered for the next `continue`, and the next poll's task carries the state.
+- **`loop_delay` survives an engine restart.** It is scheduled on `SLEEP_TIMERS` instead of an in-memory timer.
+- The `checkpoints` bucket keeps entries for 30 days, applied in place on restart.
+
+### Fixed
+
+- **A crash between `Checkpoint` and `Continue` no longer repeats an agent turn.**
+- **A duplicate `step.continue` no longer advances an agent loop twice** and starts two workers.
+- **A stalled worker can no longer complete or fail a step after another worker took it over.** `step.continue`, `step.completed` and `step.failed` carry the iteration, attempt and dispatch nonce of the task they answer, and the engine drops events for any other dispatch (counted in `engine.step_events.rejected`). Message IDs now include the iteration, so a later iteration's completion is no longer deduplicated as a repeat of an earlier one.
+- A spawn event handled twice (a redelivery after an engine crash) no longer resets a child run that had already started; an existing child is left alone, or has its first step queued if that never happened.
+- A step-timeout watchdog still fires for an agent loop after its first iteration.
+- In a cluster, an event for a step that one engine still sees as queued (another engine is applying its `step.started`) is accepted when its dispatch nonce matches, and a late `step.started` for a dispatch the step has left no longer cancels a pending retry.
+
 ## [0.0.30] - 2026-10-19
 
 ### Changed
