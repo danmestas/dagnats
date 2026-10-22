@@ -46,15 +46,20 @@ Provisioned by `natsutil.SetupAll` with the other streams.
 
 Every append carries `Nats-Expected-Last-Subject-Sequence` set to the last
 journal sequence its writer saw, and `Nats-Msg-Id` set to
-`{run}.{step}.{attempt}.{iteration}.{delivered}.{index}`, where
-`delivered` is the task message's delivery count and `index` the record's
-position within its claim (the claim is 0). The delivery count is part of
+`{run}.{step}.{attempt}.{iteration}.{stream_seq}.{delivered}.{index}`,
+where `stream_seq` is the task message's sequence in the task stream,
+`delivered` its delivery count and `index` the record's position within
+its claim (the claim is 0). The delivery count is part of
 the claim identity because from iteration 1 the engine stamps the attempt
 on the payload (`dispatchIdentity`), so a stalled worker and the AckWait
 redelivery that replaces it hold the same run, step, iteration, attempt
 and nonce; without it their records would share msg-ids, the successor's
 claim would be answered with the stalled claim's sequence inside the
-dedup window, and nothing would ever fence. JetStream rejects an append
+dedup window, and nothing would ever fence. The stream sequence closes the
+same gap for a dispatch resend: a fresh task message, delivery count 1
+again, with the nonce, attempt and iteration of an original still in
+flight. Redeliveries share their message's stream sequence, a resend does
+not, so the resend's claim fences the original's. JetStream rejects an append
 whose expected sequence is stale (error 10071, naming the real tail), and,
 on a clustered stream, one that arrives while another expected-sequence
 publish on the subject is still in process (10164, found while running the
@@ -259,7 +264,9 @@ all capitals.
 
 - Recovery granularity becomes one model response or tool call.
 - An unsafe tool runs at most once, and the model is told when it was
-  interrupted.
+  interrupted. After a prefetched older delivery resumes, the claim can
+  move back to it: single-writer still holds, but a tool already
+  mid-flight on the successor completes its side effect.
 - The engine and worker can tell a stalled worker from its replacement.
 - A new stream to operate and retain, and a protocol the bridge must expose.
 - Claims are ordered by journal order, not by delivery count. A consumer

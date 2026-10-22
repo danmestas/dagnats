@@ -395,3 +395,67 @@ func TestBridgeJournalPauseResumesThroughLoadCheckpoint(t *testing.T) {
 		t.Fatalf("state = %s from %s, want the nap resume marker", got.State, got.Source)
 	}
 }
+
+// A dispatch resend is a fresh message: delivery 1 again, same nonce.
+// Its claim must fence the poller still holding the original.
+func TestBridgeJournalResendFencesOriginalWithSameDelivery(t *testing.T) {
+	rig := newJournalRig(t)
+	_, ts1 := rig.front(t)
+	_, ts2 := rig.front(t)
+	const runID, stepID = "run-jresend", "step-jresend"
+	payload := protocol.TaskPayload{RunID: runID, StepID: stepID, DispatchNonce: "n1"}
+	rig.publish(t, payload)
+	task1 := pollOne(t, ts1)
+	rig.publish(t, payload)
+	task2 := pollOne(t, ts2)
+	if status, body := resolveBody(t, ts1, task1,
+		`{"action":"journal.append","type":"entry","data":{"w":1}}`); status != 200 {
+		t.Fatalf("original append: %d %s", status, body)
+	}
+	if status, body := resolveBody(t, ts2, task2,
+		`{"action":"journal.append","type":"entry","data":{"w":2}}`); status != 200 {
+		t.Fatalf("resend append: %d %s", status, body)
+	}
+	status, body := resolveBody(t, ts1, task1,
+		`{"action":"journal.append","type":"entry","data":{"w":"late"}}`)
+	if status != http.StatusConflict || !strings.Contains(body, `"fenced"`) {
+		t.Fatalf("original append after resend = %d %s, want 409 fenced", status, body)
+	}
+}
+
+// A complete retried after its commit landed but its publish failed
+// must republish the commit's event and settle the task, so the 410
+// "committed" it answers is true.
+func TestBridgeJournalRetriedCompleteRepublishesCommit(t *testing.T) {
+	rig := newJournalRig(t)
+	b, ts := rig.front(t)
+	const runID, stepID = "run-jretry", "step-jretry"
+	rig.publish(t, protocol.TaskPayload{RunID: runID, StepID: stepID, DispatchNonce: "n1"})
+	taskID := pollOne(t, ts)
+	if status, body := resolveBody(t, ts, taskID,
+		`{"action":"journal.append","type":"entry","data":{"a":1}}`); status != 200 {
+		t.Fatalf("append: %d %s", status, body)
+	}
+	msg, ok := b.ackMap.Load(taskID)
+	if !ok {
+		t.Fatal("task not claimed")
+	}
+	// The first complete: its commit lands, then its publish "fails".
+	seq, err := b.commitJournal(context.Background(), taskID, "", msg, journal.Commit{
+		Action: journal.ActionComplete, Output: json.RawMessage(`{"r":1}`),
+	})
+	if err != nil || seq == 0 {
+		t.Fatalf("first commit: seq %d err %v", seq, err)
+	}
+	status, body := resolveBody(t, ts, taskID, `{"action":"complete","output":{"r":1}}`)
+	if status != http.StatusGone || !strings.Contains(body, `"committed"`) {
+		t.Fatalf("retried complete = %d %s, want 410 committed", status, body)
+	}
+	evt := consumeHistoryEvent(t, rig.nc, runID, protocol.EventStepCompleted, 5*time.Second)
+	if string(evt.Payload) != `{"r":1}` || evt.JournalSeq != seq {
+		t.Fatalf("republished event = %+v, want payload {\"r\":1} and journal_seq %d", evt, seq)
+	}
+	if _, ok := b.ackMap.Load(taskID); ok {
+		t.Fatal("committed task still in the ack map")
+	}
+}

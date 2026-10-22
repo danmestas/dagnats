@@ -434,6 +434,7 @@ func taskOf(r Record) Task {
 	return Task{
 		RunID: "-", StepID: "-", Iteration: r.Iteration, Attempt: r.Attempt,
 		DispatchNonce: r.DispatchNonce, Delivered: r.Delivered,
+		StreamSeq: r.StreamSeq,
 	}
 }
 

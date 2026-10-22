@@ -59,7 +59,7 @@ func (c *taskContext) Journal() (*journal.Journal, error) {
 	j, err := journal.Open(c.ctx, c.js, c.tp, journal.Task{
 		RunID: c.runID, StepID: c.stepID, Iteration: c.iteration,
 		Attempt: c.effectiveAttempt(), DispatchNonce: c.dispatchNonce,
-		Delivered: c.deliveredCount(),
+		Delivered: c.deliveredCount(), StreamSeq: c.streamSequence(),
 	})
 	switch {
 	case errors.Is(err, journal.ErrStale):
@@ -92,6 +92,20 @@ func (c *taskContext) deliveredCount() int {
 		panic("deliveredCount: delivery count out of range")
 	}
 	return int(meta.NumDelivered)
+}
+
+// streamSequence is the task message's sequence in the task stream,
+// zero when the message carries no metadata. It is part of the claim
+// identity: a dispatch resend is a fresh message with a new one.
+func (c *taskContext) streamSequence() uint64 {
+	if c.msg == nil {
+		panic("streamSequence: msg must not be nil")
+	}
+	meta, err := c.msg.Metadata()
+	if err != nil || meta == nil {
+		return 0
+	}
+	return meta.Sequence.Stream
 }
 
 // stopError maps the journal stop to the error the handler sees.

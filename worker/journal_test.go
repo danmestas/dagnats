@@ -66,10 +66,14 @@ func journalPayload(runID string, iteration int) protocol.TaskPayload {
 type deliveredMsg struct {
 	testJetstreamMsg
 	delivered uint64
+	streamSeq uint64
 }
 
 func (m *deliveredMsg) Metadata() (*jetstream.MsgMetadata, error) {
-	return &jetstream.MsgMetadata{NumDelivered: m.delivered}, nil
+	return &jetstream.MsgMetadata{
+		NumDelivered: m.delivered,
+		Sequence:     jetstream.SequencePair{Stream: m.streamSeq},
+	}, nil
 }
 
 // delivery builds the taskContext for the n-th delivery of payload,
@@ -413,5 +417,31 @@ func TestJournal_FencedAppendErrorLeavesMessageToSuccessor(t *testing.T) {
 	}
 	if stalled.journalStop != journalFenced {
 		t.Fatalf("journalStop = %v, want fenced", stalled.journalStop)
+	}
+}
+
+// A dispatch resend is a fresh task message: delivery count 1 again,
+// with the nonce, attempt and iteration of the original still in
+// flight. Its stream sequence is what makes its claim fence the
+// original's.
+func TestJournal_ResendClaimFencesOriginalWithSameDelivery(t *testing.T) {
+	nc, _ := journalServer(t)
+	payload := journalPayload("run-resend", 1)
+	original := delivery(t, nc, payload, 1)
+	original.msg.(*deliveredMsg).streamSeq = 10
+	j, err := original.Journal()
+	if err != nil {
+		t.Fatalf("original Journal: %v", err)
+	}
+	resend := delivery(t, nc, payload, 1)
+	resend.msg.(*deliveredMsg).streamSeq = 11
+	if _, err := resend.Journal(); err != nil {
+		t.Fatalf("resend Journal: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), journalTestTimeout)
+	defer cancel()
+	_, err = j.Append(ctx, journal.TypeEntry, []byte(`"late"`))
+	if !errors.Is(err, journal.ErrFenced) {
+		t.Fatalf("original append err = %v, want ErrFenced", err)
 	}
 }

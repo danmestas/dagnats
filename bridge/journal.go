@@ -99,8 +99,12 @@ func journalTask(taskID string, msg jetstream.Msg) (journal.Task, error) {
 		return journal.Task{}, err
 	}
 	delivered := dispatch.attempt
-	if meta, merr := msg.Metadata(); merr == nil && meta != nil && meta.NumDelivered >= 1 {
-		delivered = int(meta.NumDelivered)
+	var streamSeq uint64
+	if meta, merr := msg.Metadata(); merr == nil && meta != nil {
+		streamSeq = meta.Sequence.Stream
+		if meta.NumDelivered >= 1 {
+			delivered = int(meta.NumDelivered)
+		}
 	}
 	if delivered < 1 {
 		panic("journalTask: delivery count must be >= 1")
@@ -109,6 +113,7 @@ func journalTask(taskID string, msg jetstream.Msg) (journal.Task, error) {
 	return journal.Task{
 		RunID: runID, StepID: stepID, Iteration: dispatch.iteration,
 		Attempt: dispatch.attempt, DispatchNonce: dispatch.nonce, Delivered: delivered,
+		StreamSeq: streamSeq,
 	}, nil
 }
 
@@ -133,12 +138,8 @@ func (b *Bridge) openJournal(
 	if err != nil {
 		return nil, b.settleJournalStop(ctx, taskID, tokenID, msg, err)
 	}
-	if commit, ok := j.Committed(); ok {
-		err := b.republishCommitted(ctx, taskID, msg, task, commit, j.CommittedSeq())
-		if err != nil {
-			return nil, err
-		}
-		return nil, b.settleJournalStop(ctx, taskID, tokenID, msg, journal.ErrCommitted)
+	if _, ok := j.Committed(); ok {
+		return nil, b.finishCommitted(ctx, taskID, tokenID, msg, j)
 	}
 	if !b.ackMap.SetJournal(taskID, j) {
 		return nil, fmt.Errorf("task %q is no longer claimed", taskID)
@@ -239,13 +240,33 @@ func (b *Bridge) commitJournal(
 		return 0, nil
 	}
 	seq, err := j.Commit(ctx, commit)
-	if err != nil {
-		if errors.Is(err, journal.ErrFenced) {
-			return 0, b.settleJournalStop(ctx, taskID, tokenID, msg, err)
-		}
-		return 0, fmt.Errorf("journal commit: %w", err)
+	switch {
+	case err == nil:
+		return seq, nil
+	case errors.Is(err, journal.ErrFenced):
+		return 0, b.settleJournalStop(ctx, taskID, tokenID, msg, err)
+	case errors.Is(err, journal.ErrCommitted):
+		return 0, b.finishCommitted(ctx, taskID, tokenID, msg, j)
 	}
-	return seq, nil
+	return 0, fmt.Errorf("journal commit: %w", err)
+}
+
+// finishCommitted answers a resolve retried after its commit landed
+// but its publish did not: the commit's event is republished (the
+// stable msg-id dedups one that did land), then the task is settled, so
+// the "committed" outcome the worker sees is true.
+func (b *Bridge) finishCommitted(
+	ctx context.Context, taskID, tokenID string, msg jetstream.Msg, j *journal.Journal,
+) error {
+	commit, ok := j.Committed()
+	if !ok {
+		panic("finishCommitted: journal reports committed without a commit")
+	}
+	seq := j.CommittedSeq()
+	if err := b.republishCommitted(ctx, taskID, msg, j.Task(), commit, seq); err != nil {
+		return err
+	}
+	return b.settleJournalStop(ctx, taskID, tokenID, msg, journal.ErrCommitted)
 }
 
 // withJournal runs fn on the task's journal claim under its lock,

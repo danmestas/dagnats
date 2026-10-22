@@ -159,7 +159,7 @@ func newClient(t *testing.T, nc *nats.Conn) client {
 func task(runID string, iteration, attempt, delivered int) Task {
 	return Task{
 		RunID: runID, StepID: "s", Iteration: iteration, Attempt: attempt,
-		DispatchNonce: "nonce-" + runID, Delivered: delivered,
+		DispatchNonce: "nonce-" + runID, Delivered: delivered, StreamSeq: 100,
 	}
 }
 
@@ -581,6 +581,32 @@ func TestConformance_PauseRecordResumesOnRedelivery(t *testing.T) {
 		third := open(t, c, task(runID, d.iteration, d.redelivered, 3))
 		if _, ok := third.Resume(); ok {
 			t.Error("an entry after the pause means this delivery is not a resume")
+		}
+	})
+}
+
+// A dispatch resend is a fresh message: delivery 1 again, with the same
+// nonce, attempt and iteration as the original still in flight. Only
+// its stream sequence tells the two claims apart.
+func TestConformance_ResendWithSameDeliveryFencesOriginal(t *testing.T) {
+	forEachTopology(t, func(t *testing.T, nc *nats.Conn) {
+		c := newClient(t, nc)
+		const runID = "r-resend"
+		original := task(runID, 1, 1, 1)
+		resend := original
+		resend.StreamSeq = original.StreamSeq + 7
+		if MsgID(original, 0) == MsgID(resend, 0) {
+			t.Fatal("msg-id must differ between a message and its resend")
+		}
+		first := open(t, c, original)
+		second := open(t, c, resend)
+		ctx, cancel := context.WithTimeout(context.Background(), caseTimeout)
+		defer cancel()
+		if _, err := first.Append(ctx, TypeEntry, []byte(`1`)); !errors.Is(err, ErrFenced) {
+			t.Fatalf("original Append err = %v, want ErrFenced", err)
+		}
+		if _, err := second.Append(ctx, TypeEntry, []byte(`2`)); err != nil {
+			t.Fatalf("resend Append: %v", err)
 		}
 	})
 }

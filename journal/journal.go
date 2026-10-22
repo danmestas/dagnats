@@ -56,6 +56,7 @@ const (
 	HeaderAttempt   = "Dagnats-Journal-Attempt"
 	HeaderIndex     = "Dagnats-Journal-Index"
 	HeaderDelivered = "Dagnats-Journal-Delivered"
+	HeaderStreamSeq = "Dagnats-Journal-Stream-Seq"
 	HeaderNonce     = "Dagnats-Dispatch-Nonce"
 
 	headerExpectedLastSeq = "Nats-Expected-Last-Subject-Sequence"
@@ -113,6 +114,12 @@ type Task struct {
 	// only the delivery count tells their claims apart. It also feeds
 	// the crash-loop guard (#807).
 	Delivered int
+	// StreamSeq is the task message's sequence in the task stream.
+	// Redeliveries share it; a dispatch resend is a fresh message with
+	// a new one and delivery count 1 again, so only it tells a resend's
+	// claim from the original's while that is still in flight. Zero
+	// when unknown.
+	StreamSeq uint64
 }
 
 // Record is one journal message.
@@ -123,6 +130,7 @@ type Record struct {
 	Attempt       int             `json:"attempt"`
 	DispatchNonce string          `json:"dispatch_nonce,omitempty"`
 	Delivered     int             `json:"delivered"`
+	StreamSeq     uint64          `json:"stream_seq,omitempty"`
 	Index         int             `json:"index"`
 	Time          time.Time       `json:"time"`
 	Data          json.RawMessage `json:"data,omitempty"`
@@ -132,7 +140,8 @@ type Record struct {
 // same dispatch and the same delivery of it.
 func (r Record) sameClaim(task Task) bool {
 	return r.Iteration == task.Iteration && r.Attempt == task.Attempt &&
-		r.DispatchNonce == task.DispatchNonce && r.Delivered == task.Delivered
+		r.DispatchNonce == task.DispatchNonce && r.Delivered == task.Delivered &&
+		r.StreamSeq == task.StreamSeq
 }
 
 // Claim is the body of a claim record.
@@ -141,6 +150,7 @@ type Claim struct {
 	Attempt       int    `json:"attempt"`
 	DispatchNonce string `json:"dispatch_nonce,omitempty"`
 	Delivered     int    `json:"delivered"`
+	StreamSeq     uint64 `json:"stream_seq,omitempty"`
 }
 
 // Pause is the body of a pause record.
@@ -183,10 +193,11 @@ type Journal struct {
 }
 
 // MsgID is the stable dedup key of a record:
-// {run}.{step}.{attempt}.{iteration}.{delivered}.{index}. The delivery
-// count keeps a redelivery's records distinct from the stalled
-// delivery's inside the dedup window; without it the successor's
-// claim would be answered with the old claim's sequence.
+// {run}.{step}.{attempt}.{iteration}.{stream_seq}.{delivered}.{index}.
+// The delivery count keeps a redelivery's records distinct from the
+// stalled delivery's inside the dedup window; the stream sequence does
+// the same for a resend, which restarts the count. Without them the
+// successor's claim would be answered with the old claim's sequence.
 func MsgID(task Task, index int) string {
 	if task.RunID == "" || task.StepID == "" {
 		panic("MsgID: run and step must not be empty")
@@ -195,7 +206,8 @@ func MsgID(task Task, index int) string {
 		panic("MsgID: index must not be negative and delivered must be >= 1")
 	}
 	return task.RunID + "." + task.StepID + "." + strconv.Itoa(task.Attempt) +
-		"." + strconv.Itoa(task.Iteration) + "." + strconv.Itoa(task.Delivered) +
+		"." + strconv.Itoa(task.Iteration) + "." +
+		strconv.FormatUint(task.StreamSeq, 10) + "." + strconv.Itoa(task.Delivered) +
 		"." + strconv.Itoa(index)
 }
 
@@ -243,6 +255,7 @@ func Open(
 	claim, err := json.Marshal(Claim{
 		Iteration: task.Iteration, Attempt: task.Attempt,
 		DispatchNonce: task.DispatchNonce, Delivered: task.Delivered,
+		StreamSeq: task.StreamSeq,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal claim: %w", err)
@@ -302,7 +315,8 @@ func (j *Journal) State() []byte { return j.state }
 // in journal order: what a recovering attempt may reuse.
 func (j *Journal) Records() []Record { return j.records }
 
-// Committed returns this attempt's own commit when Open found one.
+// Committed returns this attempt's own commit: the one Open found, or
+// the one Commit stored.
 func (j *Journal) Committed() (Commit, bool) {
 	if j.committed == nil {
 		return Commit{}, false
@@ -373,6 +387,7 @@ func (j *Journal) Commit(ctx context.Context, c Commit) (uint64, error) {
 		return 0, err
 	}
 	j.done = true
+	j.committed, j.committedSeq = &c, seq
 	return seq, nil
 }
 
@@ -582,6 +597,7 @@ func recordMessage(
 			HeaderAttempt:         {strconv.Itoa(task.Attempt)},
 			HeaderIndex:           {strconv.Itoa(index)},
 			HeaderDelivered:       {strconv.Itoa(task.Delivered)},
+			HeaderStreamSeq:       {strconv.FormatUint(task.StreamSeq, 10)},
 			HeaderNonce:           {task.DispatchNonce},
 		},
 	}
@@ -602,6 +618,7 @@ func decodeRecord(seq uint64, hdr nats.Header, data []byte, at time.Time) Record
 		Attempt:       headerInt(hdr, HeaderAttempt),
 		DispatchNonce: hdr.Get(HeaderNonce),
 		Delivered:     headerInt(hdr, HeaderDelivered),
+		StreamSeq:     uint64(headerInt(hdr, HeaderStreamSeq)),
 		Index:         headerInt(hdr, HeaderIndex),
 		Time:          at,
 		Data:          json.RawMessage(data),
