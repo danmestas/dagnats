@@ -3,11 +3,13 @@ title: Checkpoints
 weight: 2
 ---
 
-Checkpoints persist arbitrary handler state to NATS KV, enabling recovery across retries, redeliveries, and agent loop iterations.
+Checkpoints carry handler state from one agent loop iteration to the next, and to a retry of that iteration.
 
 ## Overview
 
-When a step handler crashes, times out, or calls `Continue()` in an agent loop, the engine re-enqueues the task. Without checkpoints, the handler restarts from scratch every time. The **checkpoints** KV bucket gives handlers a key-value store to save and restore state at `{runID}.{stepID}`.
+When a step handler crashes, times out, or calls `Continue()` in an agent loop, the engine re-enqueues the task. Without checkpoints, the handler restarts from scratch every time. `Checkpoint()` and `LoadCheckpoint()` give an agent loop a place to keep its state between iterations.
+
+`Checkpoint()` writes nothing by itself. It buffers the state, and `Continue()` sends it inside the `step.continue` event. The engine saves the state with the run in the same write that advances the iteration, and hands it back in the next task. So saving and continuing are one step: a crash before `Continue()` leaves nothing saved, and the redelivered iteration starts from the state the crashed one started from. State is capped per step by the engine setting `loop_state_max_bytes` (256 KiB by default). For a step that calls `Journal()`, the state is part of the iteration's `commit` record in the [agent journal](/docs/ai-patterns/durable-agents) and the cap does not apply.
 
 Checkpoints are especially important for LLM agent loops where conversation history accumulates over many iterations. Losing that history means replaying expensive API calls. With `Checkpoint()` and `LoadCheckpoint()`, the handler saves its conversation state after each LLM call and restores it on the next iteration or retry.
 
@@ -15,7 +17,7 @@ Checkpoints are especially important for LLM agent loops where conversation hist
 
 ### Checkpoint
 
-Saves state to KV. Overwrites any previous value for this step.
+Buffers state for the next `Continue()`. Overwrites any value buffered earlier in the same iteration. `Checkpoint(nil)` clears the state. State is only saved by a `Continue()`: a step that calls `Complete()` or `Fail()` after `Checkpoint()` saves nothing.
 
 ```go
 w.Handle("summarize", func(ctx worker.TaskContext) error {
@@ -33,7 +35,7 @@ w.Handle("summarize", func(ctx worker.TaskContext) error {
 
 ### LoadCheckpoint
 
-Retrieves the last saved state. Returns `(nil, nil)` if no checkpoint exists or the KV bucket is not configured.
+Returns the state this iteration should start from: what `Checkpoint()` buffered earlier in this same call, else the state the engine committed with the step's last accepted `Continue()`. Returns `(nil, nil)` if there is none.
 
 ```go
 w.Handle("agent-step", func(ctx worker.TaskContext) error {
@@ -67,41 +69,38 @@ w.Handle("rate-limited", func(ctx worker.TaskContext) error {
 })
 ```
 
-Under the hood, `Pause()` writes a JSON checkpoint with a `{"pause_resume": "name"}` marker, then calls `msg.NakWithDelay(duration)`. On the next delivery, `LoadCheckpoint()` returns the marker so the handler knows it is resuming from a pause.
+Under the hood, `Pause()` writes a JSON checkpoint with a `{"pause_resume": "name"}` marker, then calls `msg.NakWithDelay(duration)`. On the next delivery, `LoadCheckpoint()` returns the marker so the handler knows it is resuming from a pause. On a step that calls `Journal()`, `Pause()` appends a `pause` record to the journal instead, and `LoadCheckpoint()` returns the same marker.
 
 The marker **replaces** any checkpoint the step saved earlier, because both live at the same key. If the handler needs its own state after a pause, it has to rebuild it, or keep it somewhere else. The step stays `Running` the whole time, and the paused time counts toward the step's timeout, so a step that pauses repeatedly needs a `Timeout` that covers its whole run.
 
 ## Persistence Across Retries
 
-When a step fails and the engine retries it (via [retry policy](/docs/reliability/retry-policies)), the checkpoint from the previous attempt is still in KV. The new attempt can load it and skip already-completed work:
+When an iteration fails and the engine retries it (via [retry policy](/docs/reliability/retry-policies)), the retry is a new attempt of the same iteration. It loads the state the last accepted `Continue()` committed, which is the state the failed attempt started from. State the failed attempt checkpointed but never continued with is gone. The retry skips work that earlier iterations finished:
 
 ```mermaid
 sequenceDiagram
-    participant W1 as Attempt 1
-    participant KV as checkpoints KV
-    participant W2 as Attempt 2
+    participant W1 as Iteration 2, attempt 1
+    participant E as Engine
+    participant W2 as Iteration 2, attempt 2
 
-    W1->>KV: Checkpoint(partial_result)
-    W1->>W1: crashes
+    E->>W1: task with state from iteration 1
+    W1->>W1: crashes before Continue()
     Note over W1,W2: engine retries after backoff
-    W2->>KV: LoadCheckpoint()
-    KV-->>W2: partial_result
-    W2->>W2: resumes from partial_result
+    E->>W2: task with the same state
+    W2->>W2: LoadCheckpoint() returns it
 ```
 
-This is critical for idempotent processing. If a step processes 100 items and crashes at item 73, the retry can checkpoint the list of completed items and skip them.
+To keep partial work inside one iteration, use the [agent journal](/docs/ai-patterns/durable-agents): it records each model response and tool result as it happens, and a retry or redelivery reuses them.
 
 ## Storage Details
 
 | Property | Value |
 |----------|-------|
-| KV bucket | `checkpoints` |
-| Key format | `{runID}.{stepID}` |
-| Value | arbitrary bytes (handler-defined) |
-| TTL | none: a checkpoint stays until it is overwritten or the bucket is purged |
-| Max value size | bounded by the server's `max_payload` (1 MiB by default) |
+| Where state lives | The run snapshot, as part of the step's state, or the journal's `commit` record for a journal step |
+| Cap | `loop_state_max_bytes`, 256 KiB by default; none for a journal step |
+| `checkpoints` KV bucket | Holds only the `Pause()` marker, key `{runID}.{stepID}`, kept 30 days |
 
-`natsutil.SetupAll` provisions the `checkpoints` bucket, so `dagnats serve`, `dagnats-engine` and `dagnats-api` all create it at startup. Where the bucket does not exist (a NATS server no dagnats binary has provisioned), `Checkpoint()` returns an error and `LoadCheckpoint()` returns `(nil, nil)`, so handlers that do not need checkpoints work without it. In a cluster the bucket uses the cluster's replication factor; see [Clustering]({{< ref "/docs/operations/clustering" >}}).
+`natsutil.SetupAll` provisions the `checkpoints` bucket, so `dagnats serve`, `dagnats-engine` and `dagnats-api` all create it at startup. Against an engine older than the state-in-the-event behaviour, the worker also writes `Checkpoint()` state to this bucket, so a rollout that upgrades workers first loses no state. In a cluster the bucket uses the cluster's replication factor; see [Clustering]({{< ref "/docs/operations/clustering" >}}).
 
 ## LLM Pattern: Checkpointing Conversation History
 
@@ -130,7 +129,7 @@ w.Handle("llm-agent", func(ctx worker.TaskContext) error {
 })
 ```
 
-Each iteration adds to the conversation. If the worker crashes mid-iteration, the retry loads the last checkpoint and re-does only the current LLM call, not the entire conversation.
+Each iteration adds to the conversation. If the worker crashes mid-iteration, the retry loads the state the last `Continue()` committed and repeats only the current iteration, not the entire conversation. With `Journal()`, it repeats only the calls that had not finished.
 
 ## Related
 

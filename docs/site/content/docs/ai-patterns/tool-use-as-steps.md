@@ -126,6 +126,7 @@ w.Handle("llm-synthesize", func(ctx worker.TaskContext) error {
 | Tools are slow or unreliable | Separate steps with retries |
 | LLM requests multiple tools at once | Map step for parallel execution |
 | Tools need different timeout/retry configs | Separate steps |
+| Tools run inline but must not run twice after a crash | Inline, through the [agent journal](/docs/ai-patterns/durable-agents#tools) with `Unsafe` |
 | You need per-tool observability | Separate steps |
 
 For simple agents with fast tools, inlining tool execution in the [agent loop handler](/docs/ai-patterns/agent-loop-pattern) is simpler. Break tools into steps when reliability or parallelism matters.

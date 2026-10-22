@@ -108,7 +108,7 @@ func handleCounter(ctx worker.TaskContext) error {
 	return ctx.Continue(data)  // request another iteration
 }
 
-// loadCounter reads the checkpoint from KV. Returns a zero-value
+// loadCounter reads the checkpoint. Returns a zero-value
 // counterState if no checkpoint exists yet.
 func loadCounter(ctx worker.TaskContext) counterState {
 	raw, err := ctx.LoadCheckpoint()
@@ -155,7 +155,7 @@ func loadCounter(ctx worker.TaskContext) counterState {
 ## What's Happening
 
 1. The engine dispatches the `counter` task for the first time. No checkpoint exists, so the counter starts at 0.
-2. The handler increments to 1, saves a checkpoint `{"count":1}` to NATS KV, and calls `ctx.Continue(data)`.
+2. The handler increments to 1, buffers a checkpoint `{"count":1}`, and calls `ctx.Continue(data)`, which sends it to the engine with the event.
 3. `Continue()` tells the engine to re-dispatch the same step after the configured `loop_delay` (1 second).
 4. On each subsequent iteration, `LoadCheckpoint()` restores the previous state. The handler increments, saves, and continues.
 5. When the counter reaches 5, the handler calls `ctx.Complete(data)` instead, which marks the step as finished.
@@ -163,7 +163,7 @@ func loadCounter(ctx worker.TaskContext) counterState {
 
 Key concepts demonstrated:
 - **`Continue()` vs `Complete()`** -- the handler controls the loop by choosing which to call.
-- **Checkpoints** persist state across iterations in NATS KV. If the worker crashes mid-loop, it resumes from the last checkpoint.
+- **Checkpoints** carry state across iterations, committed with each `Continue()`. If the worker crashes mid-loop, it resumes from the last committed state.
 - **`max_iterations`** provides a hard upper bound, preventing runaway loops.
 - **`loop_delay`** adds backoff between iterations, useful for rate-limiting API calls in LLM agent patterns.
 

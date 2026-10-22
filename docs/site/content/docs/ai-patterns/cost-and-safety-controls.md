@@ -42,7 +42,9 @@ agent := wf.AgentLoop("agent", "llm-task").
     WithLoopDelay(500 * time.Millisecond)
 ```
 
-`MaxDuration` is the hard ceiling. The engine checks it each time the handler calls `Continue()`, measured from the first `Continue()`, and fails the loop once it has passed. `Timeout` catches individual LLM calls that hang (model provider issues, network problems). It runs from when the iteration first started, so a redelivery does not restart it.
+`MaxDuration` is the hard ceiling. The engine checks it each time the handler calls `Continue()`, measured from the first `Continue()`, and fails the loop once it has passed. `Timeout` catches individual LLM calls that hang (model provider issues, network problems). It runs from when the iteration first started, so a redelivery does not restart it. Both keep counting while a step waits for an input or a delay, so a step that waits for a person needs a bound that allows for the wait.
+
+A crash loop is bounded too. A step that calls `Journal()` fails with `restart_limit` after five claims in a row with no progress (`worker.WithRestartLimit(n)` changes it), and the retry policy resumes it from the journal. See [Durable Agents](/docs/ai-patterns/durable-agents#restart-limit).
 
 For normal (non-loop) steps that call LLMs, the step-level [timeout](/docs/reliability/timeouts) serves the same purpose.
 

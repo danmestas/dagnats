@@ -36,8 +36,12 @@ Zero-config starts everything on defaults. Environment variables always win.
 | `nats_ws_no_tls` | bool | `false` | `false` |
 | `max_payload` | int32 | unset (NATS default, 1 MiB) | unset (NATS default, 1 MiB) |
 | `otlp_endpoint` | string | (none) | (none) |
+| `legacy_step_events` | bool | `true` | `true` |
+| `loop_state_max_bytes` | int | `262144` (256 KiB) | `262144` (256 KiB) |
 
 `max_payload` sets the embedded NATS server's largest accepted message in bytes. Unset keeps the nats-server default of 1 MiB; raise it (for example to `4194304`, 4 MiB) when producers publish larger messages. Values must be between 1 and 8388608 (8 MiB). Clients learn the limit from the server's INFO. In a cluster or leaf topology, set the same value on every node.
+
+`legacy_step_events` (`DAGNATS_LEGACY_STEP_EVENTS`) makes the engine accept `step.continue`, `step.completed` and `step.failed` events that carry no dispatch identity, from workers and bridge clients older than the fence. While it is on, a duplicate continue from such a worker can still advance a loop twice, and the engine logs a warning at startup. Set it to `false` once every worker is upgraded. `loop_state_max_bytes` (`DAGNATS_LOOP_STATE_MAX_BYTES`) caps the state an agent loop commits per iteration; it must stay below `max_payload`, and it does not apply to a step that uses the [agent journal](/docs/ai-patterns/durable-agents). Upgrade engines before workers; see [Durable Agents](/docs/ai-patterns/durable-agents#upgrading).
 
 On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 

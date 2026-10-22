@@ -12,7 +12,7 @@ DagNats supports 10 step types. Each has distinct execution semantics:
 | Type | Purpose | When to use |
 |------|---------|-------------|
 | `normal` | Execute a task once, complete or fail | Standard compute, API calls, data transforms |
-| `agent_loop` | Iterative execution with `Continue()`, bounded by max iterations/duration | LLM agent loops, polling, convergence tasks |
+| `agent_loop` | Iterative execution with `Continue()`, bounded by max iterations/duration; see [Durable Agents](/docs/ai-patterns/durable-agents) | LLM agent loops, polling, convergence tasks |
 | `agent` | Routed to agent SDK via metadata | Claude Agent SDK integration |
 | `sub_workflow` | Spawn a child workflow, wait for completion | Reusable workflow composition, nested pipelines |
 | `map` | Fan-out over an array (one task per item), fan-in on completion | Parallel batch processing, list transforms |

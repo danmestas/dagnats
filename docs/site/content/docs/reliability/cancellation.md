@@ -30,7 +30,11 @@ When a run is cancelled, the engine:
 3. Marks all **queued** and **running** steps `cancelled` in the run snapshot, and frees the task concurrency slots they held
 4. Removes the run's event waiters and approval tokens, and cancels its non-detached child workflows
 
-Workers do not receive an explicit cancellation signal mid-execution. A queued task message stays on `TASK_QUEUES` until a worker picks it up; the worker checks the run's state first and skips the task if the run is already cancelled. A task already running finishes, and the engine ignores result events for cancelled runs. This design avoids the complexity of distributed cancellation protocols.
+A queued task message stays on `TASK_QUEUES` until a worker picks it up; the worker checks the run's state first and skips the task if the run is already cancelled.
+
+A task already running is told. The engine publishes an empty message on the core NATS subject `dagnats.cancel.{runID}`, and the worker SDK cancels the `Context()` of every in-flight handler of that run. A handler that passes `ctx.Context()` to its model calls, tool calls and HTTP requests stops promptly. A handler that ignores the context runs to the end, and the engine drops its events because the run is terminal.
+
+Core NATS delivery is at-most-once, so the signal can be missed. The worker therefore also checks the run's state on each `Heartbeat()`, which returns `worker.ErrRunCancelled` once the run is cancelled. Over the [HTTP bridge](/docs/workers/http-bridge), a cancelled run is a `409 Conflict` on resolve and heartbeat. The cancel subject carries only a run ID; a deployment that grants broad publish rights should restrict `dagnats.cancel.>` to the engine.
 
 ## Event-Driven Cancellation
 

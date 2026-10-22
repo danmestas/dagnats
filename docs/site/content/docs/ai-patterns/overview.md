@@ -21,7 +21,7 @@ Each of these is solvable individually. Solving all of them together, reliably, 
 | Concern | Raw Script | DagNats |
 |---------|-----------|---------|
 | Retry on failure | Manual retry loops | [Retry policies](/docs/reliability/retry-policies) with configurable backoff |
-| State persistence | None (or ad-hoc files) | [Checkpoints](/docs/coordination/checkpoints) in NATS KV |
+| State persistence | None (or ad-hoc files) | [Checkpoints](/docs/coordination/checkpoints), committed with each iteration |
 | Execution bounds | Manual counters | [MaxIterations, MaxDuration](/docs/step-types/agent-loops) on agent loops |
 | Human intervention | Not possible mid-run | [Signals](/docs/coordination/signals) and [approval gates](/docs/step-types/approval-gates) |
 | Parallel execution | threading/async | [Map steps](/docs/step-types/map-steps) with bounded concurrency |
@@ -35,7 +35,7 @@ DagNats was not designed exclusively for AI. But the primitives it provides map 
 
 **Agent Loops** solve the variable-iteration problem. An LLM agent reasons in cycles (prompt, tool call, observe, decide). The number of cycles is unknown at design time. `StepTypeAgentLoop` with `Continue()` handles this natively with `MaxIterations` and `MaxDuration` as hard bounds.
 
-**Checkpoints** solve the state persistence problem. Conversation history, tool results, and intermediate reasoning are saved to KV after each iteration. A crash replays only the current iteration, not the entire conversation.
+**Checkpoints** solve the state persistence problem. Conversation history, tool results, and intermediate reasoning are saved with each iteration. A crash replays only the current iteration, not the entire conversation. A handler that opts into the [agent journal](/docs/ai-patterns/durable-agents) narrows that to the current model or tool call, never restarts an unsafe tool, and can take input from outside while it runs.
 
 **Signals** solve the human-in-the-loop problem. A running agent can pause and wait for human input via `WaitForSignal()`. An external system (CLI, API, Slack bot) sends the signal when the human responds.
 
@@ -52,6 +52,7 @@ The pages in this section show how to compose these primitives into practical LL
 | [Agent Loop Pattern](/docs/ai-patterns/agent-loop-pattern) | Core reasoning cycle with checkpointed state |
 | [Tool Use as Steps](/docs/ai-patterns/tool-use-as-steps) | Each LLM tool call as a typed DAG step |
 | [Planner Pattern](/docs/ai-patterns/planner-pattern) | LLM generates DAG dynamically |
+| [Durable Agents](/docs/ai-patterns/durable-agents) | Journal, tool replay, inputs, durable waits |
 | [Human in the Loop](/docs/ai-patterns/human-in-the-loop) | Approval gates and signal-based review |
 | [Context Management](/docs/ai-patterns/context-management) | Conversation state across iterations and retries |
 | [Multi-Agent Orchestration](/docs/ai-patterns/multi-agent-orchestration) | Delegation, fan-out, inter-agent communication |

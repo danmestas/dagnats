@@ -50,7 +50,7 @@ A step with a `Timeout` fails with a retriable `step timeout exceeded` error whe
 
 - **Handler too slow**: the attempt ran past the step's `Timeout`. `ctx.Heartbeat()` keeps the claim on the task message (it calls NATS `InProgress()`), but it does not extend the step timeout.
 - **Time spent paused**: time in `Pause()` counts toward the timeout, so a step that pauses repeatedly needs a `Timeout` that covers its whole run.
-- **Worker crashed mid-task**: when the worker stops extending its claim, NATS redelivers the task after `AckWait` to another worker (or the same one after restart). The redelivery does not restart the step timeout. If the handler uses [checkpoints](/docs/coordination/checkpoints), it resumes from the last checkpoint.
+- **Worker crashed mid-task**: when the worker stops extending its claim, NATS redelivers the task after `AckWait` to another worker (or the same one after restart). The redelivery does not restart the step timeout. If the handler is an agent loop, the redelivered iteration starts from the last state committed by `Continue()`. If it calls `Journal()`, it also reuses the model responses and tool results the crashed worker recorded, and the engine fails the step with `restart_limit` if the worker crashes on five deliveries in a row. See [Durable Agents](/docs/ai-patterns/durable-agents). Run `dagnats journal check <run-id>` to audit what a journal step recorded.
 - **Network partition**: the worker lost its NATS connection. NATS redelivers to another consumer.
 
 **Diagnosis:**

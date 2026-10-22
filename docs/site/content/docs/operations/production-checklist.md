@@ -152,6 +152,10 @@ For stateful workers (large model caches, local file context), use **sticky bind
 
 A single `dagnats serve` node is a single point of failure for its data. To survive losing a node, run three or five nodes as a self-contained cluster, or connect leaf nodes to an external NATS cluster. See [Clustering]({{< ref "/docs/operations/clustering" >}}) and [Deployment Models]({{< ref "/docs/operations/deployment-models" >}}).
 
+## Agent Journal
+
+Steps that call `Journal()` write to the `AGENT_JOURNAL` stream, and their inputs go to the `submissions` bucket. Both are file-backed and use the cluster's replica count, so a single node loses them with its disk. The journal holds model inputs, model outputs and tool results: give `journal.>` the same access control as run history, and keep secrets out of records. Roll out engines before workers, then turn `legacy_step_events` off once every worker is upgraded. See [Durable Agents](/docs/ai-patterns/durable-agents#upgrading).
+
 ## Security
 
 ### Network Isolation

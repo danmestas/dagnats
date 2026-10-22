@@ -84,7 +84,7 @@ Every handler receives a `TaskContext` -- the deep interface that hides all NATS
 | `StepID()` | `string` | Step identifier within the run |
 | `RetryCount()` | `int` | Retry attempt number the engine stamped on the task; 0 on the first dispatch |
 | `Metadata()` | `map[string]string` | The step's static `metadata` from the workflow definition; `nil` if none |
-| `Context()` | `context.Context` | The task's context, carrying its trace span |
+| `Context()` | `context.Context` | The task's context, carrying its trace span. It is cancelled when the run is cancelled; pass it to model and tool calls |
 
 ### Step completion
 
@@ -96,7 +96,7 @@ Call exactly one of these per execution:
 | `Fail(err)` | Mark as retriable failure (retries apply) |
 | `FailPermanent(err)` | Mark as non-retriable failure (skip all retries) |
 | `FailRetryAfter(err, d)` | Fail with explicit retry delay, bypassing backoff |
-| `Continue(output)` | Agent loop: signal another iteration |
+| `Continue(output, opts...)` | Agent loop: signal another iteration. Options `Delay(d)`, `Until(t)` and `UntilInput()` make the engine wait first, holding no worker |
 
 ### Streaming and heartbeat
 
@@ -118,9 +118,11 @@ Every terminal method flushes buffered log bytes and writes an attempt-ending ma
 
 | Method | Purpose |
 |--------|---------|
-| `Checkpoint(state)` | Save arbitrary state to KV at `{runID}.{stepID}` |
-| `LoadCheckpoint()` | Retrieve saved state (returns `nil, nil` if none exists) |
-| `Pause(name, d)` | Checkpoint + NakWithDelay for mid-task durable delay |
+| `Checkpoint(state)` | Buffer the state the next `Continue()` commits with the iteration |
+| `LoadCheckpoint()` | The state this iteration starts from (returns `nil, nil` if none exists) |
+| `Pause(name, d)` | Resume marker + NakWithDelay for mid-task durable delay |
+| `Journal()` | Claim the step's [agent journal](/docs/ai-patterns/durable-agents); its `Model` and `Tool` helpers record each call so a recovery reuses it |
+| `PlaceInputs(mode)` | Move inputs submitted for the step into the conversation (needs `Journal()`) |
 
 ### Signals
 

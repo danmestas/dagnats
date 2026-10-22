@@ -7,6 +7,7 @@ weight: 8
   {{< card link="agent-loop-pattern" title="Agent Loop Pattern" >}}
   {{< card link="context-management" title="Context Management" >}}
   {{< card link="cost-and-safety-controls" title="Cost and Safety Controls" >}}
+  {{< card link="durable-agents" title="Durable Agents" >}}
   {{< card link="human-in-the-loop" title="Human in the Loop" >}}
   {{< card link="multi-agent-orchestration" title="Multi-Agent Orchestration" >}}
   {{< card link="overview" title="Overview" >}}

@@ -26,7 +26,7 @@ The number of cycles is unknown at definition time. A simple question might reso
 | LLM Concept | DagNats Primitive |
 |------------|-------------------|
 | One reasoning cycle | One agent loop iteration |
-| Conversation history | [Checkpoint](/docs/coordination/checkpoints) in KV |
+| Conversation history | [Checkpoint](/docs/coordination/checkpoints), committed with each iteration |
 | "Keep going" decision | `Continue(output)` |
 | "I'm done" decision | `Complete(output)` |
 | Iteration cap | `MaxIterations` |
@@ -49,6 +49,8 @@ def, err := wf.Build()
 ```
 
 `MaxIterations` is your hard bound on LLM calls. `MaxDuration` caps total wall-clock time. `Timeout` applies per-iteration -- if a single LLM call hangs, that iteration times out and retries. `LoopDelay` adds spacing between iterations for rate-limited APIs.
+
+A crash inside an iteration repeats that iteration's model and tool calls. If a repeated tool call would do harm (send a message, open a pull request), have the handler call `Journal()` and run its model and tool calls through it. See [Durable Agents](/docs/ai-patterns/durable-agents).
 
 ## Handler Implementation
 
@@ -127,6 +129,7 @@ Clients subscribe to `stream.{runID}.{stepID}` to see tokens as they arrive acro
 
 ## Related
 
+- [Durable Agents](/docs/ai-patterns/durable-agents) -- recovery at the level of one tool call, inputs, waits
 - [Agent Loops](/docs/step-types/agent-loops) -- step type mechanics (Continue, iteration tracking)
 - [Context Management](/docs/ai-patterns/context-management) -- conversation state strategies
 - [Cost and Safety Controls](/docs/ai-patterns/cost-and-safety-controls) -- bounding agent execution

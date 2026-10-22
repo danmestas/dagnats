@@ -17,7 +17,7 @@ Without a strategy, context is lost on any of these events, forcing expensive re
 
 ## Checkpoints for Conversation State
 
-[Checkpoints](/docs/coordination/checkpoints) are the primary mechanism for persisting context. Save the full conversation after each LLM call:
+[Checkpoints](/docs/coordination/checkpoints) are the primary mechanism for persisting context. Save the full conversation at the end of each iteration:
 
 ```go
 w.Handle("agent", func(ctx worker.TaskContext) error {
@@ -45,7 +45,7 @@ w.Handle("agent", func(ctx worker.TaskContext) error {
 })
 ```
 
-The checkpoint saves **before** the decision to continue or complete. If the worker crashes after `Checkpoint()` but before `Continue()`, the retry loads the saved state and re-executes only the current decision, not the LLM call.
+`Checkpoint()` buffers the state and `Continue()` sends it with the event that advances the loop, so the two are one write. If the worker crashes before `Continue()`, nothing was saved and the redelivered iteration starts again from the state the crashed one started from. That repeats the iteration's LLM and tool calls. A handler that calls `Journal()` repeats none of the calls that already finished; see [Durable Agents](/docs/ai-patterns/durable-agents).
 
 ## Streaming for Real-Time Tokens
 
@@ -130,7 +130,7 @@ conv.Messages = append(conv.Messages, toolResultMessage(
 
 ```mermaid
 graph TD
-    CP[Checkpoint KV] -->|LoadCheckpoint| H[Handler]
+    CP[Committed state] -->|LoadCheckpoint| H[Handler]
     H -->|Checkpoint| CP
     H -->|PutStream| S[NATS Core Pub/Sub]
     S -->|subscribe| C[Client]
@@ -141,7 +141,8 @@ graph TD
 
 ## Related
 
-- [Checkpoints](/docs/coordination/checkpoints) -- KV storage API
+- [Checkpoints](/docs/coordination/checkpoints) -- state API
+- [Durable Agents](/docs/ai-patterns/durable-agents) -- per-call recovery and inputs
 - [Streaming](/docs/coordination/streaming) -- real-time pub/sub
 - [Signals](/docs/coordination/signals) -- cross-step and external communication
 - [Agent Loop Pattern](/docs/ai-patterns/agent-loop-pattern) -- the iteration cycle that needs context

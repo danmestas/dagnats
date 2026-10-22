@@ -134,7 +134,7 @@ Without cluster routes the response is `{"mode":"standalone","ok":true}`.
 
 ### Assets outside SetupAll
 
-Every stream and bucket uses the cluster's replication factor: everything `SetupAll` provisions, including `TELEMETRY`, `STICKY_TASKS`, `TRIGGER_HISTORY`, `leases`, `triggers`, `trigger_state`, `signals`, `checkpoints` and `concurrency_runs`, and the `console_audit` bucket `dagnats serve` creates for the console. Before 0.0.27 the first three streams were single-replica in a cluster, and through 0.0.27 so were the five buckets and `console_audit`. An existing deployment is upgraded in place when its nodes restart. All of them are in the health report. See [NATS Infrastructure]({{< ref "/docs/operations/nats-infrastructure" >}}).
+Every stream and bucket uses the cluster's replication factor: everything `SetupAll` provisions, including `TELEMETRY`, `STICKY_TASKS`, `TRIGGER_HISTORY`, `leases`, `triggers`, `trigger_state`, `signals`, `checkpoints`, `submissions` and `concurrency_runs`, and the `AGENT_JOURNAL` stream, and the `console_audit` bucket `dagnats serve` creates for the console. Before 0.0.27 the first three streams were single-replica in a cluster, and through 0.0.27 so were the five buckets and `console_audit`. An existing deployment is upgraded in place when its nodes restart. All of them are in the health report. See [NATS Infrastructure]({{< ref "/docs/operations/nats-infrastructure" >}}).
 
 ## Rolling upgrade
 

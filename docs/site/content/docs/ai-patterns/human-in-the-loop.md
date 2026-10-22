@@ -120,10 +120,15 @@ This three-phase pattern (reason, approve, execute) is the safest way to run LLM
 | Component | Recommended Timeout | Rationale |
 |-----------|-------------------|-----------|
 | `WaitForSignal` in agent loop | 30-60 minutes | Human may be away; heartbeat to prevent redelivery |
+| `Continue(UntilInput())` | no step timeout; bound with a delay | Holds no worker; see Inputs below |
 | Approval gate | 4-24 hours | Async review; the step fails on expiry |
 | Per-iteration timeout | 60-120 seconds | Prevent hung LLM calls |
 
 For `WaitForSignal`, remember to call `Heartbeat()` periodically if the wait exceeds the NATS AckWait period (5 minutes by default). Or use `Pause()` to NAK with delay and resume when the human responds. Either way the wait counts toward the step's timeout, so set one that covers the longest expected response.
+
+## Inputs for Running Agents
+
+Signals hold one value per name and are never consumed, and `WaitForSignal` holds a worker for the whole wait. For a conversation with a running agent, use inputs. A caller sends `POST /runs/{id}/steps/{step}/inputs` with a `request_id`, a `mode` (`steer` or `follow_up`) and `content`. The handler moves queued inputs into the conversation with `PlaceInputs`, and it can wait for the next one with `Continue(nil, worker.UntilInput())`, which holds no worker while it waits. A repeated `request_id` is ignored, so a client can retry. Inputs need the step's journal. See [Durable Agents](/docs/ai-patterns/durable-agents#inputs-and-steering).
 
 ## Related
 

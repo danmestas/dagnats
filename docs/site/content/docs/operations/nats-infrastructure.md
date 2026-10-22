@@ -69,7 +69,7 @@ These KV buckets store workflow state, coordination data, and operational metada
 | `idempotency_keys` | 24 hours | default | Workflow dedup key-to-runID mapping |
 | `sticky_bindings` | ~25 hours | default | Run-to-worker affinity binding |
 | `singleton_locks` | -- | default | Singleton execution locks |
-| `checkpoints` | -- | default | Worker step state persistence |
+| `checkpoints` | 30 days | default | Resume markers written by `Pause()`, and loop state for workers on an older engine |
 | `signals` | -- | default | Cross-workflow KV-based signaling |
 | `triggers` | -- | default | Trigger definitions |
 | `trigger_state` | -- | default | Cron last-run timestamps |
