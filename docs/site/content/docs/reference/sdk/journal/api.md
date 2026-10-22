@@ -24,21 +24,35 @@ A Journal is one claim on one dispatch of a step. Open reads the tail from the s
   - [func \(j \*Journal\) Committed\(\) \(Commit, bool\)](<#Journal.Committed>)
   - [func \(j \*Journal\) CommittedSeq\(\) uint64](<#Journal.CommittedSeq>)
   - [func \(j \*Journal\) Fenced\(\) bool](<#Journal.Fenced>)
+  - [func \(j \*Journal\) Model\(ctx context.Context, fn ModelFunc\) \(\[\]byte, error\)](<#Journal.Model>)
   - [func \(j \*Journal\) Pause\(ctx context.Context, name string, duration time.Duration\) \(uint64, error\)](<#Journal.Pause>)
   - [func \(j \*Journal\) Records\(\) \[\]Record](<#Journal.Records>)
+  - [func \(j \*Journal\) Restarts\(\) int](<#Journal.Restarts>)
   - [func \(j \*Journal\) Resume\(\) \(string, bool\)](<#Journal.Resume>)
   - [func \(j \*Journal\) Seq\(\) uint64](<#Journal.Seq>)
   - [func \(j \*Journal\) State\(\) \[\]byte](<#Journal.State>)
   - [func \(j \*Journal\) Task\(\) Task](<#Journal.Task>)
+  - [func \(j \*Journal\) Tool\(ctx context.Context, call ToolCall, replay Replay, fn ToolFunc\) \(ToolResult, error\)](<#Journal.Tool>)
+- [type ModelFunc](<#ModelFunc>)
+- [type ModelResponse](<#ModelResponse>)
 - [type Pause](<#Pause>)
 - [type Record](<#Record>)
   - [func DecodeMsg\(msg jetstream.Msg\) \(Record, error\)](<#DecodeMsg>)
   - [func Read\(ctx context.Context, js jetstream.JetStream, runID, stepID string\) \(\[\]Record, error\)](<#Read>)
+- [type Replay](<#Replay>)
 - [type Report](<#Report>)
   - [func Check\(ctx context.Context, nc \*nats.Conn, runID string\) \(Report, error\)](<#Check>)
   - [func \(r Report\) OK\(\) bool](<#Report.OK>)
+- [type ScriptedModel](<#ScriptedModel>)
+  - [func NewScriptedModel\(responses ...\[\]byte\) \*ScriptedModel](<#NewScriptedModel>)
+  - [func \(m \*ScriptedModel\) Requests\(\) int](<#ScriptedModel.Requests>)
+  - [func \(m \*ScriptedModel\) Respond\(ctx context.Context\) \(\[\]byte, error\)](<#ScriptedModel.Respond>)
 - [type StepReport](<#StepReport>)
 - [type Task](<#Task>)
+- [type ToolCall](<#ToolCall>)
+- [type ToolFunc](<#ToolFunc>)
+- [type ToolIntent](<#ToolIntent>)
+- [type ToolResult](<#ToolResult>)
 
 
 ## Constants
@@ -82,6 +96,12 @@ const (
 )
 ```
 
+<a name="ErrInterrupted"></a>ErrInterrupted is the error text of a tool result recorded for a call a previous holder of the step started but never finished.
+
+```go
+const ErrInterrupted = "interrupted"
+```
+
 ## Variables
 
 <a name="ErrStale"></a>Sentinel errors a handler is expected to check.
@@ -97,6 +117,9 @@ var (
     // ErrCommitted: this attempt already committed the iteration.
     // Open found the commit; the caller republishes its event.
     ErrCommitted = errors.New("journal: iteration already committed by this attempt")
+    // ErrRestartLimit: the crash-loop guard failed the step (ADR-028).
+    // The worker has published step.failed; the handler must return.
+    ErrRestartLimit = errors.New("journal: restart limit reached, the step has been failed")
     // ErrNotProvisioned: the stream is missing.
     ErrNotProvisioned = errors.New(
         "journal: AGENT_JOURNAL stream not provisioned" +
@@ -106,8 +129,14 @@ var (
 )
 ```
 
+<a name="ErrReplayMismatch"></a>ErrReplayMismatch: the call at this position was recorded with another name or input. The handler is not replaying the sequence of calls it recorded; nothing is reused or written.
+
+```go
+var ErrReplayMismatch = errors.New("journal: tool call does not match the recorded call")
+```
+
 <a name="MsgID"></a>
-## func [MsgID](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L201>)
+## func [MsgID](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L218>)
 
 ```go
 func MsgID(task Task, index int) string
@@ -116,7 +145,7 @@ func MsgID(task Task, index int) string
 MsgID is the stable dedup key of a record: \{run\}.\{step\}.\{attempt\}.\{iteration\}.\{stream\_seq\}.\{delivered\}.\{index\}. The delivery count keeps a redelivery's records distinct from the stalled delivery's inside the dedup window; the stream sequence does the same for a resend, which restarts the count. Without them the successor's claim would be answered with the old claim's sequence.
 
 <a name="Claim"></a>
-## type [Claim](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L148-L154>)
+## type [Claim](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L151-L157>)
 
 Claim is the body of a claim record.
 
@@ -131,7 +160,7 @@ type Claim struct {
 ```
 
 <a name="Commit"></a>
-## type [Commit](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L164-L171>)
+## type [Commit](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L167-L174>)
 
 Commit is the body of a commit record: the iteration's outcome and the state the next iteration starts from.
 
@@ -147,7 +176,7 @@ type Commit struct {
 ```
 
 <a name="Journal"></a>
-## type [Journal](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L174-L193>)
+## type [Journal](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L177-L210>)
 
 Journal is one claim on one dispatch of a step.
 
@@ -158,7 +187,7 @@ type Journal struct {
 ```
 
 <a name="Open"></a>
-### func [Open](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L220-L223>)
+### func [Open](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L237-L240>)
 
 ```go
 func Open(ctx context.Context, js jetstream.JetStream, pub *natsutil.TracingPublisher, task Task) (*Journal, error)
@@ -167,7 +196,7 @@ func Open(ctx context.Context, js jetstream.JetStream, pub *natsutil.TracingPubl
 Open claims task's dispatch. It returns ErrStale when the tail belongs to a later iteration \(nothing written\), ErrFenced when a rival claim for the same iteration won, and a journal whose Committed reports this attempt's own commit when the previous holder crashed between committing and publishing \(no claim is appended then\).
 
 <a name="Journal.Append"></a>
-### func \(\*Journal\) [Append](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L338-L340>)
+### func \(\*Journal\) [Append](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L363-L365>)
 
 ```go
 func (j *Journal) Append(ctx context.Context, recordType string, data []byte) (uint64, error)
@@ -176,7 +205,7 @@ func (j *Journal) Append(ctx context.Context, recordType string, data []byte) (u
 Append writes a record of recordType with data as its body.
 
 <a name="Journal.Commit"></a>
-### func \(\*Journal\) [Commit](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L372>)
+### func \(\*Journal\) [Commit](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L397>)
 
 ```go
 func (j *Journal) Commit(ctx context.Context, c Commit) (uint64, error)
@@ -185,7 +214,7 @@ func (j *Journal) Commit(ctx context.Context, c Commit) (uint64, error)
 Commit ends the iteration with one record: the action its lifecycle event will carry and the state the next iteration starts from. One message, not an atomic batch \(ADR\-026\). After it nothing more may be appended under this claim.
 
 <a name="Journal.Committed"></a>
-### func \(\*Journal\) [Committed](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L320>)
+### func \(\*Journal\) [Committed](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L337>)
 
 ```go
 func (j *Journal) Committed() (Commit, bool)
@@ -194,7 +223,7 @@ func (j *Journal) Committed() (Commit, bool)
 Committed returns this attempt's own commit: the one Open found, or the one Commit stored.
 
 <a name="Journal.CommittedSeq"></a>
-### func \(\*Journal\) [CommittedSeq](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L329>)
+### func \(\*Journal\) [CommittedSeq](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L346>)
 
 ```go
 func (j *Journal) CommittedSeq() uint64
@@ -203,7 +232,7 @@ func (j *Journal) CommittedSeq() uint64
 CommittedSeq returns the journal sequence of the commit Committed reports, 0 when there is none.
 
 <a name="Journal.Fenced"></a>
-### func \(\*Journal\) [Fenced](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L308>)
+### func \(\*Journal\) [Fenced](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L325>)
 
 ```go
 func (j *Journal) Fenced() bool
@@ -211,8 +240,17 @@ func (j *Journal) Fenced() bool
 
 Fenced reports whether a record from another claim fenced this one.
 
+<a name="Journal.Model"></a>
+### func \(\*Journal\) [Model](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L392>)
+
+```go
+func (j *Journal) Model(ctx context.Context, fn ModelFunc) ([]byte, error)
+```
+
+Model requests one model response durably: the response a previous holder of this attempt recorded for the call at this position is returned without calling fn; otherwise fn runs and its response is appended as model.response. A request that fails records nothing and leaves the position free, and a new attempt of the iteration requests afresh. Streaming tokens are not the journal's business: PutStream is a non\-durable preview, and a crash mid\-stream re\-sends the request on the next delivery.
+
 <a name="Journal.Pause"></a>
-### func \(\*Journal\) [Pause](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L352-L354>)
+### func \(\*Journal\) [Pause](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L377-L379>)
 
 ```go
 func (j *Journal) Pause(ctx context.Context, name string, duration time.Duration) (uint64, error)
@@ -221,7 +259,7 @@ func (j *Journal) Pause(ctx context.Context, name string, duration time.Duration
 Pause writes the pause record Pause publishes before its delayed redelivery; the next claim on this iteration sees it in Resume.
 
 <a name="Journal.Records"></a>
-### func \(\*Journal\) [Records](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L316>)
+### func \(\*Journal\) [Records](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L333>)
 
 ```go
 func (j *Journal) Records() []Record
@@ -229,8 +267,17 @@ func (j *Journal) Records() []Record
 
 Records returns this iteration's records written before this claim, in journal order: what a recovering attempt may reuse.
 
+<a name="Journal.Restarts"></a>
+### func \(\*Journal\) [Restarts](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L360>)
+
+```go
+func (j *Journal) Restarts() int
+```
+
+Restarts returns how many claims on this iteration sat at the tail before this claim with nothing between them: deliveries that claimed and then made no progress. A pause, an entry, a tool or model record, or a commit resets the count; a claim after a commit \(a retry\) starts from 0. Feeds the worker's restart limit \(ADR\-028\).
+
 <a name="Journal.Resume"></a>
-### func \(\*Journal\) [Resume](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L333>)
+### func \(\*Journal\) [Resume](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L350>)
 
 ```go
 func (j *Journal) Resume() (string, bool)
@@ -239,7 +286,7 @@ func (j *Journal) Resume() (string, bool)
 Resume returns the pause name when the newest record of this iteration before the claim is a pause: this delivery resumes it.
 
 <a name="Journal.Seq"></a>
-### func \(\*Journal\) [Seq](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L305>)
+### func \(\*Journal\) [Seq](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L322>)
 
 ```go
 func (j *Journal) Seq() uint64
@@ -248,7 +295,7 @@ func (j *Journal) Seq() uint64
 Seq returns the last journal sequence this writer saw.
 
 <a name="Journal.State"></a>
-### func \(\*Journal\) [State](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L312>)
+### func \(\*Journal\) [State](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L329>)
 
 ```go
 func (j *Journal) State() []byte
@@ -257,7 +304,7 @@ func (j *Journal) State() []byte
 State returns the state of the last commit before this iteration, nil when there is none.
 
 <a name="Journal.Task"></a>
-### func \(\*Journal\) [Task](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L302>)
+### func \(\*Journal\) [Task](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L319>)
 
 ```go
 func (j *Journal) Task() Task
@@ -265,8 +312,40 @@ func (j *Journal) Task() Task
 
 Task returns the dispatch this journal claims.
 
+<a name="Journal.Tool"></a>
+### func \(\*Journal\) [Tool](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L107-L109>)
+
+```go
+func (j *Journal) Tool(ctx context.Context, call ToolCall, replay Replay, fn ToolFunc) (ToolResult, error)
+```
+
+Tool runs one tool call durably: it appends the call's intent with its replay declaration, runs fn, and appends the result. Calls are matched by position within the iteration, and a recorded call at the position must be the same call \(name and input\), else ErrReplayMismatch. On a claim that recovers an attempt a previous holder started: a recorded result is returned without running fn; an intent without a result is rerun only when the recorded and the current declaration both say Safe, and otherwise answered with an interrupted result carrying the partial output and the call's key, which the model then sees. On a new attempt of the iteration \(after a commit, or a higher attempt from iteration 1\) only unsafe intents are honoured, matched by content rather than position: the first prior unsafe intent with the same name and input not yet honoured in this attempt answers the call under its own key, with its recorded result or as interrupted; safe calls run afresh.
+
+The guarantee is that the SDK starts an unsafe call at most once per position. A holder stalled between its intent and the tool's effect may still complete that effect after a successor recorded the call as interrupted; the key is what an external system deduplicates on. The returned error is the journal's \(ErrFenced, ErrCommitted, transport\), never the tool's own, which is in the result.
+
+<a name="ModelFunc"></a>
+## type [ModelFunc](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L82>)
+
+ModelFunc requests one model response. An error means no response: nothing is recorded and the next holder requests again.
+
+```go
+type ModelFunc func(ctx context.Context) ([]byte, error)
+```
+
+<a name="ModelResponse"></a>
+## type [ModelResponse](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L75-L78>)
+
+ModelResponse is the body of a model.response record.
+
+```go
+type ModelResponse struct {
+    Call   int             `json:"call"`
+    Output json.RawMessage `json:"output,omitempty"`
+}
+```
+
 <a name="Pause"></a>
-## type [Pause](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L157-L160>)
+## type [Pause](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L160-L163>)
 
 Pause is the body of a pause record.
 
@@ -278,7 +357,7 @@ type Pause struct {
 ```
 
 <a name="Record"></a>
-## type [Record](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L126-L137>)
+## type [Record](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L129-L140>)
 
 Record is one journal message.
 
@@ -315,6 +394,24 @@ func Read(ctx context.Context, js jetstream.JetStream, runID, stepID string) ([]
 
 Read returns every record of the step's journal, in order. An unprovisioned stream is ErrNotProvisioned; an empty journal is an empty slice.
 
+<a name="Replay"></a>
+## type [Replay](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L16>)
+
+Replay is a tool's declaration of what a rerun costs: Safe when running the call twice is harmless \(a read, an idempotent write keyed on ToolCall.Key\), Unsafe when it is not \(send a message, open a pull request, charge a card\).
+
+```go
+type Replay string
+```
+
+<a name="Safe"></a>
+
+```go
+const (
+    Safe   Replay = "safe"
+    Unsafe Replay = "unsafe"
+)
+```
+
 <a name="Report"></a>
 ## type [Report](<https://github.com/danmestas/dagnats/blob/main/journal/check.go#L18-L23>)
 
@@ -347,6 +444,44 @@ func (r Report) OK() bool
 
 OK reports whether no step has a violation.
 
+<a name="ScriptedModel"></a>
+## type [ScriptedModel](<https://github.com/danmestas/dagnats/blob/main/journal/fakemodel.go#L17-L21>)
+
+ScriptedModel is a fake model for tests: it answers Model calls with its scripted responses in order and counts the requests it served, so a test can tell a reused response from a re\-requested one. Safe for concurrent use.
+
+```go
+type ScriptedModel struct {
+    // contains filtered or unexported fields
+}
+```
+
+<a name="NewScriptedModel"></a>
+### func [NewScriptedModel](<https://github.com/danmestas/dagnats/blob/main/journal/fakemodel.go#L24>)
+
+```go
+func NewScriptedModel(responses ...[]byte) *ScriptedModel
+```
+
+NewScriptedModel scripts the responses, in order.
+
+<a name="ScriptedModel.Requests"></a>
+### func \(\*ScriptedModel\) [Requests](<https://github.com/danmestas/dagnats/blob/main/journal/fakemodel.go#L58>)
+
+```go
+func (m *ScriptedModel) Requests() int
+```
+
+Requests is how many responses the model has served.
+
+<a name="ScriptedModel.Respond"></a>
+### func \(\*ScriptedModel\) [Respond](<https://github.com/danmestas/dagnats/blob/main/journal/fakemodel.go#L40>)
+
+```go
+func (m *ScriptedModel) Respond(ctx context.Context) ([]byte, error)
+```
+
+Respond is the ModelFunc: the next scripted response, or an error once the script is exhausted.
+
 <a name="StepReport"></a>
 ## type [StepReport](<https://github.com/danmestas/dagnats/blob/main/journal/check.go#L36-L41>)
 
@@ -362,7 +497,7 @@ type StepReport struct {
 ```
 
 <a name="Task"></a>
-## type [Task](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L104-L123>)
+## type [Task](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L107-L126>)
 
 Task identifies one dispatch of a step: the identity every record carries and every lifecycle event names \(ADR\-025\).
 
@@ -386,6 +521,57 @@ type Task struct {
     // claim from the original's while that is still in flight. Zero
     // when unknown.
     StreamSeq uint64
+}
+```
+
+<a name="ToolCall"></a>
+## type [ToolCall](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L41-L46>)
+
+ToolCall is one tool invocation. The handler sets Name and Input; Tool fills Call \(the call's position in the iteration, counting from 0\) and Key, the idempotency key \{run\}.\{step\}.\{iteration\}.\{call\}, which is the same on every delivery and attempt of the iteration so the tool can hand it to an external system that deduplicates.
+
+```go
+type ToolCall struct {
+    Name  string          `json:"name"`
+    Input json.RawMessage `json:"input,omitempty"`
+    Call  int             `json:"call"`
+    Key   string          `json:"key"`
+}
+```
+
+<a name="ToolFunc"></a>
+## type [ToolFunc](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L51>)
+
+ToolFunc runs the tool. The error it returns is the tool's own failure, recorded in the result for the model to see; it is not a reason to stop the step.
+
+```go
+type ToolFunc func(ctx context.Context, call ToolCall) ([]byte, error)
+```
+
+<a name="ToolIntent"></a>
+## type [ToolIntent](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L55-L58>)
+
+ToolIntent is the body of a tool.intent record: the call and its replay declaration, written before the tool runs.
+
+```go
+type ToolIntent struct {
+    ToolCall
+    Replay Replay `json:"replay"`
+}
+```
+
+<a name="ToolResult"></a>
+## type [ToolResult](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L65-L72>)
+
+ToolResult is the body of a tool.result record. Key is the call's idempotency key. Interrupted marks a call a previous holder started and never finished, which was not rerun; Partial then holds, as a JSON array, the entry records that holder appended while the tool ran.
+
+```go
+type ToolResult struct {
+    Call        int             `json:"call"`
+    Key         string          `json:"key"`
+    Output      json.RawMessage `json:"output,omitempty"`
+    Error       string          `json:"error,omitempty"`
+    Interrupted bool            `json:"interrupted,omitempty"`
+    Partial     json.RawMessage `json:"partial,omitempty"`
 }
 ```
 
