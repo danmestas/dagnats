@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
@@ -30,7 +31,12 @@ func Read(
 		}
 		return nil, fmt.Errorf("journal: stream: %w", err)
 	}
-	raw, err := stream.GetLastMsgForSubject(ctx, natsutil.JournalSubject(runID, stepID))
+	var raw *jetstream.RawStreamMsg
+	err = retryTransient(ctx, func() error {
+		var getErr error
+		raw, getErr = stream.GetLastMsgForSubject(ctx, natsutil.JournalSubject(runID, stepID))
+		return getErr
+	})
 	if err != nil {
 		if errors.Is(err, jetstream.ErrMsgNotFound) {
 			return []Record{}, nil
@@ -50,13 +56,19 @@ func readSubject(
 	if js == nil {
 		panic("readSubject: js must not be nil")
 	}
-	records := make([]Record, 0, readBatch)
-	err := fetchUpTo(ctx, js, natsutil.AgentJournalStream,
-		natsutil.JournalSubject(runID, stepID), tailSeq, recordsMax,
-		func(seq uint64, msg jetstream.Msg, meta *jetstream.MsgMetadata) error {
-			records = append(records, decodeRecord(seq, msg.Headers(), msg.Data(), meta.Timestamp))
-			return nil
-		})
+	var records []Record
+	// Each attempt reads from the start, so a retried read never holds
+	// records twice.
+	err := retryTransient(ctx, func() error {
+		records = make([]Record, 0, readBatch)
+		return fetchUpTo(ctx, js, natsutil.AgentJournalStream,
+			natsutil.JournalSubject(runID, stepID), tailSeq, recordsMax,
+			func(seq uint64, msg jetstream.Msg, meta *jetstream.MsgMetadata) error {
+				records = append(records,
+					decodeRecord(seq, msg.Headers(), msg.Data(), meta.Timestamp))
+				return nil
+			})
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -129,4 +141,45 @@ func headerInt(hdr nats.Header, key string) int {
 		return -1
 	}
 	return n
+}
+
+// transientReadMax bounds the attempts of a journal read that failed
+// because the stream briefly had no leader. A leader election or a node
+// restart makes JetStream answer "no responders" or time out; the read
+// is safe to repeat, so it is retried rather than surfaced.
+const transientReadMax = 6
+
+// transientReadBackoff is the base wait between attempts; attempt n
+// waits n times this, about 5s in total across transientReadMax.
+const transientReadBackoff = 250 * time.Millisecond
+
+// isTransientRead reports whether err means the stream had no leader to
+// answer, as opposed to a real failure.
+func isTransientRead(err error) bool {
+	return errors.Is(err, nats.ErrNoResponders) || errors.Is(err, nats.ErrTimeout)
+}
+
+// retryTransient runs op until it succeeds, fails with a non-transient
+// error, ctx ends, or transientReadMax attempts are spent. op must be
+// safe to repeat from scratch.
+func retryTransient(ctx context.Context, op func() error) error {
+	if ctx == nil {
+		panic("retryTransient: ctx must not be nil")
+	}
+	if op == nil {
+		panic("retryTransient: op must not be nil")
+	}
+	var err error
+	for attempt := 1; attempt <= transientReadMax; attempt++ {
+		err = op()
+		if err == nil || !isTransientRead(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(time.Duration(attempt) * transientReadBackoff):
+		}
+	}
+	return err
 }

@@ -467,9 +467,14 @@ func (j *Journal) readTail(ctx context.Context) (tailRecord, error) {
 	if ctx == nil {
 		panic("journal.readTail: ctx must not be nil")
 	}
-	raw, err := j.stream.GetLastMsgForSubject(
-		ctx, natsutil.JournalSubject(j.task.RunID, j.task.StepID),
-	)
+	var raw *jetstream.RawStreamMsg
+	err := retryTransient(ctx, func() error {
+		var getErr error
+		raw, getErr = j.stream.GetLastMsgForSubject(
+			ctx, natsutil.JournalSubject(j.task.RunID, j.task.StepID),
+		)
+		return getErr
+	})
 	if err != nil {
 		if errors.Is(err, jetstream.ErrMsgNotFound) {
 			return tailRecord{}, nil

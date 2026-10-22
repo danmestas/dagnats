@@ -146,15 +146,42 @@ func readHistory(
 		return nil, fmt.Errorf("journal: history stream: %w", err)
 	}
 	subject := "history." + runID
-	tail, err := stream.GetLastMsgForSubject(ctx, subject)
+	var tail *jetstream.RawStreamMsg
+	err = retryTransient(ctx, func() error {
+		var getErr error
+		tail, getErr = stream.GetLastMsgForSubject(ctx, subject)
+		return getErr
+	})
 	if err != nil {
 		if errors.Is(err, jetstream.ErrMsgNotFound) {
 			return map[string][]protocol.Event{}, nil
 		}
 		return nil, fmt.Errorf("journal: history tail: %w", err)
 	}
-	out := map[string][]protocol.Event{}
-	err = fetchUpTo(ctx, js, historyStream, subject, tail.Sequence, historyEventsMax,
+	var out map[string][]protocol.Event
+	err = retryTransient(ctx, func() error {
+		out = map[string][]protocol.Event{}
+		return readHistoryEvents(ctx, js, subject, tail.Sequence, out)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// readHistoryEvents reads the run's history up to tailSeq into out,
+// grouped by step.
+func readHistoryEvents(
+	ctx context.Context, js jetstream.JetStream, subject string, tailSeq uint64,
+	out map[string][]protocol.Event,
+) error {
+	if out == nil {
+		panic("readHistoryEvents: out must not be nil")
+	}
+	if tailSeq == 0 {
+		panic("readHistoryEvents: tailSeq must be positive")
+	}
+	return fetchUpTo(ctx, js, historyStream, subject, tailSeq, historyEventsMax,
 		func(_ uint64, msg jetstream.Msg, _ *jetstream.MsgMetadata) error {
 			evt, err := protocol.UnmarshalEvent(msg.Data())
 			if err != nil {
@@ -167,10 +194,6 @@ func readHistory(
 			}
 			return nil
 		})
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 
 // checkStep applies the invariants to one step's journal. history is
