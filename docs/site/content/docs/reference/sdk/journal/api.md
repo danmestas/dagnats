@@ -297,7 +297,7 @@ type Record struct {
 ```
 
 <a name="Read"></a>
-### func [Read](<https://github.com/danmestas/dagnats/blob/main/journal/read.go#L17-L19>)
+### func [Read](<https://github.com/danmestas/dagnats/blob/main/journal/read.go#L18-L20>)
 
 ```go
 func Read(ctx context.Context, js jetstream.JetStream, runID, stepID string) ([]Record, error)
