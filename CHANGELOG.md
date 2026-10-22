@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.32] - 2026-10-22
+
+### Upgrade notes
+
+- **Upgrade engines before workers**, as for 0.0.31. A worker on an older engine keeps working, but on an agent loop's first iteration it falls back to numbering attempts by delivery count, so the iteration-0 durability fix below needs the engine upgraded first.
+- **Crash redeliveries no longer use up retry budget.** Every new dispatch now carries its attempt number, starting at 1, instead of the worker counting NATS deliveries. A worker that crashes repeatedly is stopped by `restart_limit` for journal steps, or by the step timeout otherwise. A step with neither was unbounded before as well.
+- **Journal handles are single-goroutine.** A handler that runs a model's parallel tool calls must issue them through the journal one at a time.
+
+### Added
+
+- **Tool and model replay in the agent journal.** `j.Tool(ctx, call, Safe|Unsafe, fn)` records the call's intent and result, and `j.Model(ctx, fn)` records each model response. After a crash or takeover a recorded result is reused. An unfinished unsafe call is not rerun: the model gets an `interrupted` result carrying the call's idempotency key. A retry after a failure reruns safe calls and model calls, and keeps a prior unsafe call's outcome.
+- **Crash-loop guard.** `worker.WithRestartLimit(n)` (default 5) fails a journal step with `restart_limit` after that many consecutive claims of one iteration with no progress. A run retry resumes from the journal.
+- **Inputs, steering and durable waits.** `POST /runs/{run}/steps/{step}/inputs` (and `api.inputs.*`) sends a running agent a `steer` or `follow_up` input, idempotent by `request_id`, with status, long-poll and withdraw. `Continue(out, worker.Delay(d) | worker.Until(t) | worker.UntilInput())` waits without holding a worker. Inputs are capped at 256 KiB. A new `submissions` bucket is added.
+- **Journal stream.** `GET /runs/{run}/steps/{step}/journal` pages a step's journal, and `follow=1` streams it as SSE, resuming from any sequence with `Last-Event-ID`.
+- **The journal over the HTTP bridge.** New `journal.append`, `journal.read` and `load_checkpoint` resolve actions. Once a bridge worker has claimed, `complete`, `fail`, `continue` and `pause` commit to the journal before publishing.
+- **Durability verification.** A crash-point matrix (`e2e/durability`) runs in the test suite, and a seeded chaos soak (`DAGNATS_CHAOS=1`, `make test-chaos`) runs nightly and on the `chaos` PR label.
+
+### Changed
+
+- `agent.loop.iteration` is removed; it was declared but never emitted. A journal commit with `action: continue` marks each iteration.
+- The `checkpoints` bucket keeps entries for 30 days, applied in place on restart.
+
+### Fixed
+
+- **A redelivery on an agent loop's first iteration no longer wedges the run.** The worker numbered the redelivery as a new attempt, so the engine dropped the winning worker's continue.
+- **A continue accepted while its step was still queued is no longer lost** if the engine dies before publishing the next task.
+- **A stalled worker and its replacement can always be told apart**, including after a dispatch resend: a claim now carries the task message's stream sequence and delivery count, and a newer delivery of a message fences an older one.
+- **Journal reads, the journal and logs streams, span reads and several CLI commands no longer leak NATS consumers.** Each left one behind, and after about 300 journal runs claims failed at the server's limit of 1,000 consumers per stream.
+- **Journal reads retry** when the stream briefly has no leader or JetStream is temporarily unavailable, instead of failing.
+- A retried `Complete`, `Continue` or `Fail` after a commit whose publish failed now republishes the stored commit, from both the Go SDK and the bridge.
+- A handler that hit its own fenced journal append no longer hands the task back to the stalled worker.
+
 ## [0.0.31] - 2026-10-21
 
 ### Upgrade notes
