@@ -104,6 +104,9 @@ func TestMaxBytesSumUnderBudget(t *testing.T) {
 	for _, cfg := range cfgs {
 		sum += cfg.MaxBytes
 	}
+	// The submissions bucket (ADR-027) is the one KV bucket with a
+	// ceiling from the same budget; it counts against the guard too.
+	sum += submissionsBucketConfig(1, budget).MaxBytes
 	if sum >= budget {
 		t.Fatalf("sum of MaxBytes = %d, want < budget %d", sum, budget)
 	}

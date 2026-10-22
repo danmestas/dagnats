@@ -50,9 +50,30 @@ func ListKeys(
 	if bucket == "" {
 		panic("ListKeys: bucket must not be empty")
 	}
+	return ListKeysUnder(ctx, stream, bucket, "")
+}
+
+// ListKeysUnder is ListKeys narrowed to the keys under keyPrefix (a
+// key path without its trailing dot; "" is the whole bucket). The
+// filter is applied server-side, so a bucket shared by many owners
+// (the submissions bucket, keyed {run}.{step}.{request_id}) answers
+// one owner's listing without paging the others.
+func ListKeysUnder(
+	ctx context.Context, stream jetstream.Stream, bucket, keyPrefix string,
+) ([]string, error) {
+	if stream == nil {
+		panic("ListKeysUnder: stream must not be nil")
+	}
+	if bucket == "" {
+		panic("ListKeysUnder: bucket must not be empty")
+	}
 	prefix := "$KV." + bucket + "."
+	filter := prefix + ">"
+	if keyPrefix != "" {
+		filter = prefix + keyPrefix + ".>"
+	}
 	info, err := stream.Info(
-		ctx, jetstream.WithSubjectFilter(prefix+">"),
+		ctx, jetstream.WithSubjectFilter(filter),
 	)
 	if err != nil {
 		return nil, err

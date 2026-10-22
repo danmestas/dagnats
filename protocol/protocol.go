@@ -86,6 +86,46 @@ type StepContinuePayload struct {
 	// empty: a handler that checkpointed nil clears the saved state,
 	// where an absent State (an event without it) leaves it alone.
 	StateSet bool `json:"state_set,omitempty"`
+	// Wait is the durable wait the handler asked for before the next
+	// iteration (ADR-027): the engine schedules it and no worker holds
+	// a claim meanwhile. Absent: the next iteration is sent at once
+	// (after any loop_delay).
+	Wait *ContinueWait `json:"wait,omitempty"`
+}
+
+// ContinueWait is what a step.continue asks the engine to wait for
+// before sending the next iteration (ADR-027). DelayMs and Until are a
+// time to wake at (Until wins when both are set, as the later of the
+// two is never wanted); Input wakes the step as soon as an input is
+// queued for it. A time and Input together wake on whichever comes
+// first.
+type ContinueWait struct {
+	DelayMs int64      `json:"delay_ms,omitempty"`
+	Until   *time.Time `json:"until,omitempty"`
+	Input   bool       `json:"input,omitempty"`
+}
+
+// IsZero reports whether w asks for no wait at all.
+func (w *ContinueWait) IsZero() bool {
+	return w == nil || (w.DelayMs <= 0 && w.Until == nil && !w.Input)
+}
+
+// WakeAt resolves the wait's time to wake at relative to now; false
+// when the wait has no time component.
+func (w *ContinueWait) WakeAt(now time.Time) (time.Time, bool) {
+	if now.IsZero() {
+		panic("ContinueWait.WakeAt: now must not be zero")
+	}
+	if w == nil {
+		return time.Time{}, false
+	}
+	if w.Until != nil {
+		return *w.Until, true
+	}
+	if w.DelayMs > 0 {
+		return now.Add(time.Duration(w.DelayMs) * time.Millisecond), true
+	}
+	return time.Time{}, false
 }
 
 // TaskResolution is the wire format for HTTP bridge resolve actions.
@@ -154,6 +194,15 @@ const (
 	EventApprovalRejected         EventType = "approval.rejected"
 	EventApprovalExpired          EventType = "approval.expired"
 	EventPlannerMaterialized      EventType = "planner.materialized"
+	// EventStepInputQueued is published by the API when an input is
+	// submitted to a step (ADR-027): it wakes a step waiting for input
+	// and lets the engine settle inputs for a finished step. Its
+	// msg-id carries the request id, so each submission is one event.
+	EventStepInputQueued EventType = "step.input.queued"
+	// EventStepWaitElapsed is published by the loop_wait timer when a
+	// step's Delay or Until wait is over (ADR-027). It names the
+	// dispatch it wakes, so a late fire cannot wake a later wait.
+	EventStepWaitElapsed EventType = "step.wait.elapsed"
 )
 
 // Event is the core communication primitive published to the history stream.
@@ -182,6 +231,10 @@ type Event struct {
 	// journal step wrote before this step.continue, step.completed or
 	// step.failed (ADR-026). Zero for a step without a journal.
 	JournalSeq uint64 `json:"journal_seq,omitempty"`
+	// InputRequestID is the submission a step.input.queued event
+	// announces (ADR-027); it keys the event's msg-id so every
+	// submission is its own event.
+	InputRequestID string `json:"input_request_id,omitempty"`
 }
 
 // HasIdentity reports whether the event names the dispatch it answers
@@ -266,6 +319,9 @@ func (e Event) NATSMsgID() string {
 		return e.RunID + "." + string(e.Type)
 	}
 	base := e.RunID + "." + e.StepID + "." + string(e.Type)
+	if e.Type == EventStepInputQueued && e.InputRequestID != "" {
+		return base + "." + e.InputRequestID
+	}
 	if e.AttemptNumber > 0 {
 		base += "." + strconv.Itoa(e.AttemptNumber)
 	}
