@@ -190,6 +190,11 @@ func (c *taskContext) journalOutcome(err error) (done, ack bool) {
 	if c.msg == nil {
 		panic("journalOutcome: msg already consumed or nil")
 	}
+	// A fence the handler met on its own j.Append never went through
+	// this context; the journal remembers it.
+	if c.journalStop == journalLive && c.journal != nil && c.journal.Fenced() {
+		c.journalStop = journalFenced
+	}
 	switch c.journalStop {
 	case journalLive:
 		return false, false

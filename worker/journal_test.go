@@ -384,3 +384,34 @@ func testStalledWorkerFenced(t *testing.T, stallAt int) {
 		t.Errorf("iterations = %d, want %d", run.Steps["s"].Iterations, stallAt)
 	}
 }
+
+// A handler that returns the ErrFenced of its own j.Append, rather
+// than of a Journal or commit call, must still leave the message to
+// the successor: acknowledging or NAKing it would redeliver the task
+// the successor is running and fence the live claim.
+func TestJournal_FencedAppendErrorLeavesMessageToSuccessor(t *testing.T) {
+	nc, _ := journalServer(t)
+	payload := journalPayload("run-fenced-append", 1)
+	stalled := delivery(t, nc, payload, 1)
+	j, err := stalled.Journal()
+	if err != nil {
+		t.Fatalf("first Journal: %v", err)
+	}
+	successor := delivery(t, nc, payload, 2)
+	if _, err := successor.Journal(); err != nil {
+		t.Fatalf("successor Journal: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), journalTestTimeout)
+	defer cancel()
+	_, err = j.Append(ctx, journal.TypeEntry, []byte(`"late"`))
+	if !errors.Is(err, journal.ErrFenced) {
+		t.Fatalf("stalled append err = %v, want ErrFenced", err)
+	}
+	done, ack := stalled.journalOutcome(err)
+	if !done || ack {
+		t.Fatalf("journalOutcome = done %v ack %v, want done and no ack", done, ack)
+	}
+	if stalled.journalStop != journalFenced {
+		t.Fatalf("journalStop = %v, want fenced", stalled.journalStop)
+	}
+}
