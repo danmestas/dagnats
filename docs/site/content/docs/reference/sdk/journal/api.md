@@ -220,7 +220,7 @@ func Open(ctx context.Context, js jetstream.JetStream, pub *natsutil.TracingPubl
 Open claims task's dispatch. It returns ErrStale when the tail belongs to a later iteration \(nothing written\), ErrFenced when a rival claim for the same iteration won, and a journal whose Committed reports this attempt's own commit when the previous holder crashed between committing and publishing \(no claim is appended then\).
 
 <a name="Journal.Append"></a>
-### func \(\*Journal\) [Append](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L403-L405>)
+### func \(\*Journal\) [Append](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L406-L408>)
 
 ```go
 func (j *Journal) Append(ctx context.Context, recordType string, data []byte) (uint64, error)
@@ -229,7 +229,7 @@ func (j *Journal) Append(ctx context.Context, recordType string, data []byte) (u
 Append writes a record of recordType with data as its body.
 
 <a name="Journal.Commit"></a>
-### func \(\*Journal\) [Commit](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L439>)
+### func \(\*Journal\) [Commit](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L442>)
 
 ```go
 func (j *Journal) Commit(ctx context.Context, c Commit) (uint64, error)
@@ -238,7 +238,7 @@ func (j *Journal) Commit(ctx context.Context, c Commit) (uint64, error)
 Commit ends the iteration with one record: the action its lifecycle event will carry and the state the next iteration starts from. One message, not an atomic batch \(ADR\-026\). After it nothing more may be appended under this claim.
 
 <a name="Journal.Committed"></a>
-### func \(\*Journal\) [Committed](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L377>)
+### func \(\*Journal\) [Committed](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L380>)
 
 ```go
 func (j *Journal) Committed() (Commit, bool)
@@ -247,7 +247,7 @@ func (j *Journal) Committed() (Commit, bool)
 Committed returns this attempt's own commit: the one Open found, or the one Commit stored.
 
 <a name="Journal.CommittedSeq"></a>
-### func \(\*Journal\) [CommittedSeq](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L386>)
+### func \(\*Journal\) [CommittedSeq](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L389>)
 
 ```go
 func (j *Journal) CommittedSeq() uint64
@@ -256,7 +256,7 @@ func (j *Journal) CommittedSeq() uint64
 CommittedSeq returns the journal sequence of the commit Committed reports, 0 when there is none.
 
 <a name="Journal.Fenced"></a>
-### func \(\*Journal\) [Fenced](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L365>)
+### func \(\*Journal\) [Fenced](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L368>)
 
 ```go
 func (j *Journal) Fenced() bool
@@ -283,7 +283,7 @@ func (j *Journal) Model(ctx context.Context, fn ModelFunc) ([]byte, error)
 Model requests one model response durably: the response a previous holder of this attempt recorded for the call at this position is returned without calling fn; otherwise fn runs and its response is appended as model.response. A request that fails records nothing and leaves the position free, and a new attempt of the iteration requests afresh. Streaming tokens are not the journal's business: PutStream is a non\-durable preview, and a crash mid\-stream re\-sends the request on the next delivery. Model must be called from the goroutine that owns the handle.
 
 <a name="Journal.Pause"></a>
-### func \(\*Journal\) [Pause](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L418-L420>)
+### func \(\*Journal\) [Pause](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L421-L423>)
 
 ```go
 func (j *Journal) Pause(ctx context.Context, name string, duration time.Duration) (uint64, error)
@@ -310,7 +310,7 @@ func (j *Journal) PlacedInputs() []InputPlaced
 PlacedInputs returns every placement in journal order, with the iteration each joined.
 
 <a name="Journal.Records"></a>
-### func \(\*Journal\) [Records](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L373>)
+### func \(\*Journal\) [Records](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L376>)
 
 ```go
 func (j *Journal) Records() []Record
@@ -319,7 +319,7 @@ func (j *Journal) Records() []Record
 Records returns this iteration's records written before this claim, in journal order: what a recovering attempt may reuse.
 
 <a name="Journal.Restarts"></a>
-### func \(\*Journal\) [Restarts](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L400>)
+### func \(\*Journal\) [Restarts](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L403>)
 
 ```go
 func (j *Journal) Restarts() int
@@ -328,7 +328,7 @@ func (j *Journal) Restarts() int
 Restarts returns how many claims on this iteration sat at the tail before this claim with nothing between them: deliveries that claimed and then made no progress. A pause, an entry, a tool or model record, or a commit resets the count; a claim after a commit \(a retry\) starts from 0. Feeds the worker's restart limit \(ADR\-028\).
 
 <a name="Journal.Resume"></a>
-### func \(\*Journal\) [Resume](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L390>)
+### func \(\*Journal\) [Resume](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L393>)
 
 ```go
 func (j *Journal) Resume() (string, bool)
@@ -337,7 +337,7 @@ func (j *Journal) Resume() (string, bool)
 Resume returns the pause name when the newest record of this iteration before the claim is a pause: this delivery resumes it.
 
 <a name="Journal.Seq"></a>
-### func \(\*Journal\) [Seq](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L362>)
+### func \(\*Journal\) [Seq](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L365>)
 
 ```go
 func (j *Journal) Seq() uint64
@@ -346,7 +346,7 @@ func (j *Journal) Seq() uint64
 Seq returns the last journal sequence this writer saw.
 
 <a name="Journal.State"></a>
-### func \(\*Journal\) [State](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L369>)
+### func \(\*Journal\) [State](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L372>)
 
 ```go
 func (j *Journal) State() []byte
