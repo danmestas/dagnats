@@ -28,6 +28,8 @@ Public re\-exports of the internal envelope types. Go's internal/ rule blocks do
 
 worker/identity.go Process identity helpers used to populate WorkerRegistration's Pid / Hostname / Version fields \(\#289\). Resolved once per process and cached, since none of these can change mid\-run.
 
+worker/journal.go The agent journal on a taskContext \(ADR\-026\). A handler opts in by calling Journal\(\): that claims the dispatch, and from then on every attempt\-ending call commits one journal record before publishing its lifecycle event, Checkpoint and LoadCheckpoint read and write the journal's state, and Pause writes a pause record. A task the journal says is stale is acknowledged untouched; a fenced one is left to its successor; an attempt whose commit already exists republishes it.
+
 worker/log\_writer.go logLane buffers and publishes one task ATTEMPT/ITERATION's captured stdout/stderr to the BUILD\_LOGS hot lane \(\#624, subject logs.\{runID\}.\{stepID\}.\{attempt\}.\{iteration\}\). One lane per attempt/iteration, created lazily on first LogOut\(\)/LogErr\(\) Write so a handler that never logs never spins up a ticker goroutine.
 
 Attempt is part of the subject \(\#624 review round 2\), not just the payload: a retry re\-dispatches the same runID/stepID, and BUILD\_LOGS's dedup window \(2 min\) is comfortably longer than the gap between two attempts, so a bare logs.\{runID\}.\{stepID\} subject would let attempt 2's seq\-0 chunk collide with attempt 1's Nats\-Msg\-Id and silently vanish as a duplicate.
@@ -449,7 +451,7 @@ type HTTPEnvelope = httpenvelope.Envelope
 ```
 
 <a name="HandlerFunc"></a>
-## type [HandlerFunc](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L119>)
+## type [HandlerFunc](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L130>)
 
 HandlerFunc is the function signature for task handlers registered with a Worker.
 
@@ -467,7 +469,7 @@ func Typed[I, O any](fn TypedHandlerFunc[I, O], opts ...TypedOption) HandlerFunc
 Typed wraps a TypedHandlerFunc into a HandlerFunc by handling JSON serialization. Marshal/unmarshal failures are wrapped in NonRetryableError because bad serialization will not fix itself on retry. Optional TypedOption values tune the wrapper.
 
 <a name="HandlerOption"></a>
-## type [HandlerOption](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L385>)
+## type [HandlerOption](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L396>)
 
 HandlerOption configures per\-handler behavior at registration time. Distinct from WorkerOption \(which configures the Worker itself\): HandlerOptions bind a knob to a specific taskType. Variadic on Handle keeps existing callers source\-compatible.
 
@@ -476,7 +478,7 @@ type HandlerOption func(w *Worker, taskType string)
 ```
 
 <a name="WithAckWait"></a>
-### func [WithAckWait](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L392>)
+### func [WithAckWait](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L403>)
 
 ```go
 func WithAckWait(d time.Duration) HandlerOption
@@ -693,7 +695,7 @@ type StreamTask interface {
 ```
 
 <a name="TaskContext"></a>
-## type [TaskContext](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L53-L115>)
+## type [TaskContext](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L54-L126>)
 
 TaskContext is the interface workers use to interact with the DagNats engine. Includes step completion, checkpointing, signals, and streaming. Workers call exactly one of Complete, Fail, or Continue per execution.
 
@@ -760,6 +762,16 @@ type TaskContext interface {
     LoadCheckpoint() ([]byte, error)
     Pause(name string, duration time.Duration) error
 
+    // Journal claims this dispatch's agent journal (ADR-026) and
+    // returns the handle for appending records. Call it first: from
+    // then on Continue, Complete and Fail* commit a journal record
+    // before their event, Checkpoint and LoadCheckpoint use the
+    // journal's state, and Pause writes a pause record. Return its
+    // error unchanged: journal.ErrStale, ErrFenced and ErrCommitted
+    // mean this delivery must do nothing more, and the Worker settles
+    // the task accordingly.
+    Journal() (*journal.Journal, error)
+
     // Signals — coordinate between steps
     WaitForSignal(
         name string, timeout time.Duration,
@@ -813,7 +825,7 @@ UnwrapTrigger asks the Typed wrapper to auto\-detect trigger envelopes in the ta
 Metadata access \(trigger kind, source, timestamp\) is out of scope for v1. Workers that need those fields should drop to ctx.Input\(\) and unmarshal the full envelope manually. See issue \#229 for the path to first\-class metadata access.
 
 <a name="Worker"></a>
-## type [Worker](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L135-L221>)
+## type [Worker](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L146-L232>)
 
 Worker subscribes to task subjects and dispatches messages to registered handlers. Each task type gets its own JetStream subscription; messages are ack'd after the handler returns so failures are retried by JetStream's MaxDeliver policy.
 
@@ -824,7 +836,7 @@ type Worker struct {
 ```
 
 <a name="NewWorker"></a>
-### func [NewWorker](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L323-L325>)
+### func [NewWorker](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L334-L336>)
 
 ```go
 func NewWorker(nc *nats.Conn, opts ...WorkerOption) *Worker
@@ -833,7 +845,7 @@ func NewWorker(nc *nats.Conn, opts ...WorkerOption) *Worker
 NewWorker creates a Worker using the given connection. Panics if nc is nil or if JetStream cannot be initialised — both are programmer errors at startup. A W3C TraceContext\+Baggage propagator is installed on the global OTel registry if the global is still the no\-op default; an already\-installed propagator \(custom or otherwise\) is never overwritten. Tracing and metrics use the global OTel providers \(noop by default\).
 
 <a name="Worker.Handle"></a>
-### func \(\*Worker\) [Handle](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L429-L431>)
+### func \(\*Worker\) [Handle](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L440-L442>)
 
 ```go
 func (w *Worker) Handle(taskType string, handler HandlerFunc, opts ...HandlerOption)
@@ -842,7 +854,7 @@ func (w *Worker) Handle(taskType string, handler HandlerFunc, opts ...HandlerOpt
 Handle registers a HandlerFunc for the given task type. Optional HandlerOptions \(e.g. WithAckWait\) tune per\-task knobs. Panics on empty taskType or nil handler — both are programmer errors.
 
 <a name="Worker.HandleSingleton"></a>
-### func \(\*Worker\) [HandleSingleton](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L451-L453>)
+### func \(\*Worker\) [HandleSingleton](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L462-L464>)
 
 ```go
 func (w *Worker) HandleSingleton(taskType string, handler HandlerFunc)
@@ -884,7 +896,7 @@ Side effects:
 Idempotent at the engine side per the ack contract \(\#327\): same Name \+ same OwnerWorkerID \+ same ConfigSchema → nil. Schema drift → error. Owner drift → error.
 
 <a name="Worker.Start"></a>
-### func \(\*Worker\) [Start](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L501>)
+### func \(\*Worker\) [Start](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L512>)
 
 ```go
 func (w *Worker) Start()
@@ -893,7 +905,7 @@ func (w *Worker) Start()
 Start creates JetStream subscriptions for all registered task types. Panics if any subscription fails — stream misconfiguration is a startup error. Binds optional KV buckets for checkpoints and signals \(nil if not present\). When groups are configured, subscribes to group\-specific subjects.
 
 <a name="Worker.Stop"></a>
-### func \(\*Worker\) [Stop](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L1005>)
+### func \(\*Worker\) [Stop](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L1016>)
 
 ```go
 func (w *Worker) Stop()
@@ -915,7 +927,7 @@ Catch\-up: before returning, the worker scans the \`triggers\` KV bucket and fir
 Lifecycle: both NATS subscriptions are appended to w.triggerSubs and drained by Worker.Stop\(\). Callers do not unsubscribe directly.
 
 <a name="WorkerOption"></a>
-## type [WorkerOption](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L224>)
+## type [WorkerOption](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L235>)
 
 WorkerOption configures optional Worker behavior.
 
@@ -924,7 +936,7 @@ type WorkerOption func(*Worker)
 ```
 
 <a name="WithControlPlane"></a>
-### func [WithControlPlane](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L274>)
+### func [WithControlPlane](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L285>)
 
 ```go
 func WithControlPlane(cp ControlPlane) WorkerOption
@@ -933,7 +945,7 @@ func WithControlPlane(cp ControlPlane) WorkerOption
 WithControlPlane grants this worker the runtime control plane: gated steps \(those declaring the "control\-plane" capability\) will receive a per\-step handle via TaskContext.ControlPlane\(\). Without this option the field stays nil and every step's ControlPlane\(\) returns nil — deny\-by\-default is structural, not a runtime check. Panics if cp is nil \(a deployment that wires the grant must supply a real handle\).
 
 <a name="WithGroups"></a>
-### func [WithGroups](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L229>)
+### func [WithGroups](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L240>)
 
 ```go
 func WithGroups(groups ...string) WorkerOption
@@ -942,7 +954,7 @@ func WithGroups(groups ...string) WorkerOption
 WithGroups configures the worker to subscribe only to specific worker groups. When provided, the worker subscribes to task.\{taskType\}.\{group\}.\> instead of task.\{taskType\}.\>.
 
 <a name="WithPartitions"></a>
-### func [WithPartitions](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L243>)
+### func [WithPartitions](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L254>)
 
 ```go
 func WithPartitions(n int) WorkerOption

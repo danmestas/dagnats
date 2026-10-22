@@ -138,7 +138,7 @@ const LoopStateMaxBytesDefault = 256 << 10
 ```
 
 <a name="CancelSubject"></a>
-## func [CancelSubject](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L304>)
+## func [CancelSubject](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L308>)
 
 ```go
 func CancelSubject(runID string) string
@@ -173,7 +173,7 @@ type Annotations struct {
 ```
 
 <a name="Event"></a>
-## type [Event](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L162-L182>)
+## type [Event](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L162-L186>)
 
 Event is the core communication primitive published to the history stream. Payload carries event\-specific data as raw JSON to keep the type schema\-agnostic.
 
@@ -198,11 +198,15 @@ type Event struct {
     // accepts it only while it is configured to accept legacy events.
     Iteration     *int   `json:"iteration,omitempty"`
     DispatchNonce string `json:"dispatch_nonce,omitempty"`
+    // JournalSeq is the AGENT_JOURNAL sequence of the commit record a
+    // journal step wrote before this step.continue, step.completed or
+    // step.failed (ADR-026). Zero for a step without a journal.
+    JournalSeq uint64 `json:"journal_seq,omitempty"`
 }
 ```
 
 <a name="NewStepEvent"></a>
-### func [NewStepEvent](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L208>)
+### func [NewStepEvent](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L212>)
 
 ```go
 func NewStepEvent(eventType EventType, runID string, stepID string, payload []byte) Event
@@ -211,7 +215,7 @@ func NewStepEvent(eventType EventType, runID string, stepID string, payload []by
 NewStepEvent constructs an Event for a step lifecycle transition. Panics on empty runID or stepID — these are programmer errors, not runtime errors.
 
 <a name="NewWorkflowEvent"></a>
-### func [NewWorkflowEvent](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L226>)
+### func [NewWorkflowEvent](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L230>)
 
 ```go
 func NewWorkflowEvent(eventType EventType, runID string, payload []byte) Event
@@ -220,7 +224,7 @@ func NewWorkflowEvent(eventType EventType, runID string, payload []byte) Event
 NewWorkflowEvent constructs an Event for a workflow lifecycle transition. Panics on empty runID — programmer error.
 
 <a name="UnmarshalEvent"></a>
-### func [UnmarshalEvent](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L281>)
+### func [UnmarshalEvent](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L285>)
 
 ```go
 func UnmarshalEvent(data []byte) (Event, error)
@@ -229,7 +233,7 @@ func UnmarshalEvent(data []byte) (Event, error)
 UnmarshalEvent deserializes a NATS message body into an Event.
 
 <a name="Event.HasIdentity"></a>
-### func \(Event\) [HasIdentity](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L187>)
+### func \(Event\) [HasIdentity](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L191>)
 
 ```go
 func (e Event) HasIdentity() bool
@@ -238,7 +242,7 @@ func (e Event) HasIdentity() bool
 HasIdentity reports whether the event names the dispatch it answers \(\#801\): Iteration is present and AttemptNumber is set. An event from a worker predating the identity fields has neither.
 
 <a name="Event.Marshal"></a>
-### func \(Event\) [Marshal](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L276>)
+### func \(Event\) [Marshal](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L280>)
 
 ```go
 func (e Event) Marshal() ([]byte, error)
@@ -247,7 +251,7 @@ func (e Event) Marshal() ([]byte, error)
 Marshal serializes the event to JSON for publishing to NATS.
 
 <a name="Event.NATSMsgID"></a>
-### func \(Event\) [NATSMsgID](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L261>)
+### func \(Event\) [NATSMsgID](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L265>)
 
 ```go
 func (e Event) NATSMsgID() string
@@ -256,7 +260,7 @@ func (e Event) NATSMsgID() string
 NATSMsgID returns the deduplication ID for JetStream idempotent publishing. Composed of run, step, and event type so replays are safe. For workflow events \(empty StepID\), omits the step segment to avoid double dots. An event that carries its dispatch identity \(\#801\) gets the stable \{run\}.\{step\}.\{type\}.\{attempt\}.\{iteration\}: a redelivery inside the dedup window is dropped by JetStream, one outside it by the engine's identity check, and no two iterations or attempts share an ID.
 
 <a name="Event.NATSSubject"></a>
-### func \(Event\) [NATSSubject](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L244>)
+### func \(Event\) [NATSSubject](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L248>)
 
 ```go
 func (e Event) NATSSubject() string
@@ -265,7 +269,7 @@ func (e Event) NATSSubject() string
 NATSSubject returns the JetStream subject for publishing this event. All events for a run share one subject so consumers get ordered history. Panics on empty RunID — subjects with empty segments are invalid in NATS.
 
 <a name="Event.SetIdentity"></a>
-### func \(\*Event\) [SetIdentity](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L194>)
+### func \(\*Event\) [SetIdentity](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L198>)
 
 ```go
 func (e *Event) SetIdentity(iteration, attempt int, nonce string)
@@ -542,7 +546,7 @@ type TaskResolution struct {
 ```
 
 <a name="WorkerStatusSnapshot"></a>
-## type [WorkerStatusSnapshot](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L291-L294>)
+## type [WorkerStatusSnapshot](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L295-L298>)
 
 WorkerStatusSnapshot is the per\-worker counter snapshot stored in the worker\_status KV bucket. Workers update their entry as counters change; the CLI reads and aggregates entries to surface drain progress \(issue \#182\). Last\-write\-wins on the WorkerID key.
 
