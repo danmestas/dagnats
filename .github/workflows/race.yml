@@ -49,6 +49,7 @@ jobs:
           - ./internal/workertoken/
           - ./internal/natsutil/
           - ./journal/
+          - ./inputs/
         shard: ['']
         include:
           # internal/engine runs its tests serially; three shards keep
