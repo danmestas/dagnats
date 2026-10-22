@@ -274,7 +274,8 @@ func TestJournal_OwnAttemptCommitIsRepublishedNotRepeated(t *testing.T) {
 		}
 	}
 	if len(records) != 2 || commits != 1 {
-		t.Errorf("records = %d with %d commits, want 2 and 1: recovery appends nothing", len(records), commits)
+		t.Errorf("records = %d with %d commits, want 2 and 1: recovery appends nothing",
+			len(records), commits)
 	}
 	if done, ack := tc.journalOutcome(err); !done || !ack {
 		t.Errorf("journalOutcome = done %v ack %v, want acknowledged", done, ack)
