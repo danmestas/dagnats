@@ -18,16 +18,14 @@ import (
 
 func TestAgentLoop(t *testing.T) {
 	harness.RunE2E(t, func(t *testing.T, nc *nats.Conn) {
-		// Agent loop needs "checkpoints" KV bucket.
+		// Agent loop needs the "checkpoints" KV bucket, which the
+		// harness provisions (with its TTL); bind to it, never create.
 		js, err := nc.JetStream()
 		if err != nil {
 			t.Fatalf("JetStream: %v", err)
 		}
-		_, err = js.CreateKeyValue(
-			&nats.KeyValueConfig{Bucket: "checkpoints"},
-		)
-		if err != nil {
-			t.Fatalf("CreateKeyValue checkpoints: %v", err)
+		if _, err = js.KeyValue("checkpoints"); err != nil {
+			t.Fatalf("bind checkpoints: %v", err)
 		}
 
 		orch := engine.NewOrchestrator(nc)

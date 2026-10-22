@@ -618,7 +618,7 @@ func decodeRecord(seq uint64, hdr nats.Header, data []byte, at time.Time) Record
 		Attempt:       headerInt(hdr, HeaderAttempt),
 		DispatchNonce: hdr.Get(HeaderNonce),
 		Delivered:     headerInt(hdr, HeaderDelivered),
-		StreamSeq:     uint64(headerInt(hdr, HeaderStreamSeq)),
+		StreamSeq:     headerUint(hdr, HeaderStreamSeq),
 		Index:         headerInt(hdr, HeaderIndex),
 		Time:          at,
 		Data:          json.RawMessage(data),

@@ -197,3 +197,19 @@ func DecodeMsg(msg jetstream.Msg) (Record, error) {
 	}
 	return decodeRecord(meta.Sequence.Stream, msg.Headers(), msg.Data(), meta.Timestamp), nil
 }
+
+// headerUint parses an unsigned header; a missing or foreign value is
+// 0, the "unknown" of an identity field a writer did not stamp.
+func headerUint(hdr nats.Header, key string) uint64 {
+	if hdr == nil {
+		panic("headerUint: hdr must not be nil")
+	}
+	if key == "" {
+		panic("headerUint: key must not be empty")
+	}
+	n, err := strconv.ParseUint(hdr.Get(key), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}

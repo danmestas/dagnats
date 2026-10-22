@@ -16,9 +16,11 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/protocol"
+	"github.com/nats-io/nats.go"
 )
 
 func rec(seq uint64, typ string, iteration, attempt int, data string) Record {
@@ -239,5 +241,19 @@ func TestCheckStep_PlacedInputsUnique(t *testing.T) {
 	records[3-1] = rec(3, TypeInputPlaced, 0, 1, `{"request_id":"q2"}`)
 	if v := checkStep("s", state, records, []protocol.Event{started(0, 1)}).Violations; len(v) != 0 {
 		t.Errorf("distinct inputs flagged: %v", v)
+	}
+}
+
+// A record written before the stream-sequence header existed, or by a
+// writer that omits it, decodes as stream sequence 0, not as garbage
+// that matches no claim.
+func TestDecodeRecord_MissingStreamSeqIsZero(t *testing.T) {
+	rec := decodeRecord(1, nats.Header{HeaderType: {TypeEntry}}, nil, time.Time{})
+	if rec.StreamSeq != 0 {
+		t.Fatalf("StreamSeq = %d, want 0", rec.StreamSeq)
+	}
+	rec = decodeRecord(2, nats.Header{HeaderStreamSeq: {"42"}}, nil, time.Time{})
+	if rec.StreamSeq != 42 {
+		t.Fatalf("StreamSeq = %d, want 42", rec.StreamSeq)
 	}
 }

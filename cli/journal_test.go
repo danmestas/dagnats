@@ -127,6 +127,7 @@ func TestJournalCheck_ViolationExitsOne(t *testing.T) {
 			journal.HeaderAttempt:                 {"1"},
 			journal.HeaderIndex:                   {"1"},
 			journal.HeaderDelivered:               {"1"},
+			journal.HeaderStreamSeq:               {"0"},
 			journal.HeaderNonce:                   {"n1"},
 		},
 	}
