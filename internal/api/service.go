@@ -10,8 +10,10 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/inputs"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
@@ -62,6 +64,11 @@ type Service struct {
 	// audit warn path.
 	auditKV jetstream.KeyValue
 	logger  *slog.Logger
+
+	// inputs is the submissions bucket (ADR-027), bound on first use.
+	inputs     *inputs.Store
+	inputsErr  error
+	inputsOnce sync.Once
 }
 
 // ServiceOption configures optional Service behavior (#380). Additive: a

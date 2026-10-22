@@ -107,6 +107,7 @@ func (s *Service) routeRuns(
 //	POST /runs/{id}/cancel       → handleCancelRun
 //	POST /runs/{id}/signal/{name} → handleSendSignal
 //	GET  /runs/{id}/steps/{step}/journal → handleGetStepJournal
+//	.../steps/{step}/inputs[/{request_id}] → routeStepInputs (ADR-027)
 func (s *Service) routeRunByID(
 	w http.ResponseWriter, r *http.Request,
 ) {
@@ -114,6 +115,10 @@ func (s *Service) routeRunByID(
 		strings.TrimPrefix(r.URL.Path, "/runs/"), "/",
 	)
 	// parts[0] = runID, parts[1] = sub-action (optional)
+	if isStepInputsPath(parts) {
+		s.routeStepInputs(w, r, parts)
+		return
+	}
 	if len(parts) >= 2 && parts[1] == "cancel" {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
