@@ -292,7 +292,8 @@ func TestJournal_StalledWorkerIsFencedBySuccessor(t *testing.T) {
 	// The first worker stalls past AckWait; the redelivery is claimed.
 	waitClosed(t, claimed, "second claim")
 	run := waitStepSettled(t, jsNew, "run-takeover", journalTestTimeout)
-	if run.Steps["s"].Status != dag.StepStatusCompleted || string(run.Steps["s"].Output) != `"by-attempt-2"` {
+	step := run.Steps["s"]
+	if step.Status != dag.StepStatusCompleted || string(step.Output) != `"by-attempt-2"` {
 		t.Fatalf("step = %+v, want completed by attempt 2", run.Steps["s"])
 	}
 	close(release)

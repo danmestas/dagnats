@@ -151,7 +151,8 @@ func TestCheckStep_IterationCountMatchesContinueCommits(t *testing.T) {
 		t.Errorf("violations = %v, want an iteration count mismatch", v)
 	}
 	state.Iterations = 2
-	if v := checkStep("s", state, records, []protocol.Event{started(0, 1), started(1, 1)}).Violations; len(v) != 0 {
+	events := []protocol.Event{started(0, 1), started(1, 1)}
+	if v := checkStep("s", state, records, events).Violations; len(v) != 0 {
 		t.Errorf("matching count flagged: %v", v)
 	}
 }
