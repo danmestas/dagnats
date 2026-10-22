@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -88,8 +89,12 @@ var script = []turn{
 	{Final: "done"},
 }
 
-// unsafeIteration is the iteration whose tool call is unsafe.
-const unsafeIteration = 1
+// unsafeIteration is the iteration whose tool call is unsafe;
+// safeIteration is the safe call after it.
+const (
+	unsafeIteration = 1
+	safeIteration   = 2
+)
 
 // answer is what the agent completes with: every tool outcome in
 // order, then the final text.
@@ -581,23 +586,44 @@ func violations(report journal.Report) string {
 	return b.String()
 }
 
-// sameAnswer reports whether got matches want modulo interruption:
-// an unsafe call a successor found started but unfinished is answered
-// as interrupted (ADR-026), which is the specified outcome, not a
-// divergence. Call count, order and keys must match exactly.
+// interruptingPoints are the points where a crash leaves the running
+// tool's intent without a result: a successor answers an unsafe call
+// there as interrupted (ADR-026), and must rerun a safe one.
+var interruptingPoints = map[chaos.Point]bool{
+	chaos.WorkerAfterToolIntent: true, chaos.WorkerInsideTool: true,
+}
+
+// expectedAnswer is the baseline answer after crashes at points on
+// iterations: exact, except that the unsafe call is interrupted when a
+// crash hit an interrupting point on its iteration. A safe call is
+// never interrupted, whatever the crash.
+func expectedAnswer(baseline answer, crashed map[chaos.Point]int) answer {
+	if len(baseline.Calls) == 0 {
+		panic("expectedAnswer: baseline must have calls")
+	}
+	if crashed == nil {
+		panic("expectedAnswer: crashed must not be nil")
+	}
+	want := answer{Final: baseline.Final, Calls: append([]string(nil), baseline.Calls...)}
+	for p, iteration := range crashed {
+		if interruptingPoints[p] && iteration == unsafeIteration {
+			call := want.Calls[unsafeIteration]
+			want.Calls[unsafeIteration] = "interrupted:" + call[strings.Index(call, ":")+1:]
+		}
+	}
+	return want
+}
+
+// sameAnswer reports whether got equals want exactly.
 func sameAnswer(want, got answer) bool {
 	if len(want.Calls) == 0 {
-		panic("sameAnswer: baseline must have calls")
+		panic("sameAnswer: want must have calls")
 	}
 	if want.Final != got.Final || len(want.Calls) != len(got.Calls) {
 		return false
 	}
 	for i := range want.Calls {
-		if want.Calls[i] == got.Calls[i] {
-			continue
-		}
-		key := want.Calls[i][strings.Index(want.Calls[i], ":")+1:]
-		if got.Calls[i] != "interrupted:"+key {
+		if want.Calls[i] != got.Calls[i] {
 			return false
 		}
 	}
@@ -613,7 +639,7 @@ type crashHook struct {
 	kill      bool
 	iteration int
 	fired     sync.Once
-	count     int
+	count     atomic.Int32
 }
 
 // fire runs the hook for a site, once.
@@ -626,7 +652,7 @@ func (h *crashHook) fire(ctx context.Context, p chaos.Point, site chaos.Site) er
 	}
 	err := error(nil)
 	h.fired.Do(func() {
-		h.count++
+		h.count.Add(1)
 		if h.kill {
 			err = chaos.ErrKilled
 			return

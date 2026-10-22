@@ -50,6 +50,9 @@ func (c *taskContext) crashAt(p chaos.Point) error {
 	if c.msg == nil {
 		panic("crashAt: msg must not be nil")
 	}
+	if !chaos.Installed() {
+		return nil
+	}
 	err := chaos.At(c.ctx, p, chaos.Site{
 		RunID: c.runID, StepID: c.stepID, Iteration: c.iteration,
 		Attempt: c.effectiveAttempt(), Delivered: c.deliveredCount(),

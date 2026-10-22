@@ -178,6 +178,9 @@ func (o *Orchestrator) atCheckpoint(
 			return err
 		}
 	}
+	if !chaos.Installed() {
+		return nil
+	}
 	state := run.Steps[stepID]
 	return chaos.At(ctx, point, chaos.Site{
 		RunID: run.RunID, StepID: stepID,

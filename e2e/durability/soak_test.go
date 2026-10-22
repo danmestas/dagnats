@@ -183,9 +183,9 @@ func soakRun(
 	defer r.remove(runID)
 	got, ok := f.waitCompletedOK(runID)
 	failed := !ok
-	if ok && !sameAnswer(baseline, got) {
+	if want := expectedAnswer(baseline, schedule.crashed()); ok && !sameAnswer(want, got) {
 		t.Errorf("run %d (%s): answer %+v, want %+v; seed=%d schedule=%s",
-			index, runID, got, baseline, cfg.seed, schedule)
+			index, runID, got, want, cfg.seed, schedule)
 		failed = true
 	}
 	if !ok {
@@ -234,6 +234,21 @@ func (s soakSchedule) String() string {
 		}
 	}
 	return out + " }"
+}
+
+// crashed is the schedule as point -> iteration, for expectedAnswer.
+func (s soakSchedule) crashed() map[chaos.Point]int {
+	if len(s) > len(chaos.Points()) {
+		panic("soakSchedule.crashed: more actions than points")
+	}
+	crashed := make(map[chaos.Point]int, len(s))
+	for p, a := range s {
+		if a.iteration < 0 {
+			panic("soakSchedule.crashed: negative iteration")
+		}
+		crashed[p] = a.iteration
+	}
+	return crashed
 }
 
 // drawSchedule draws a run's schedule from rng: each point crashes

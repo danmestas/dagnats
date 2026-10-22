@@ -348,6 +348,9 @@ func (j *Journal) crashAt(ctx context.Context, p chaos.Point) error {
 	if j.task.Delivered < 1 {
 		panic("journal.crashAt: delivered must be >= 1")
 	}
+	if !chaos.Installed() {
+		return nil
+	}
 	err := chaos.At(ctx, p, chaos.Site{
 		RunID: j.task.RunID, StepID: j.task.StepID, Iteration: j.task.Iteration,
 		Attempt: j.task.Attempt, Delivered: j.task.Delivered,

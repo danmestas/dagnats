@@ -49,6 +49,7 @@ jobs:
           - ./internal/natsutil/
           - ./journal/
           - ./inputs/
+          - ./e2e/durability/
         shard: ['']
         include:
           # internal/engine runs its tests serially; three shards keep

@@ -322,16 +322,18 @@ be fenced.
 unsafe tool, a safe tool, an answer) whose tools count starts and
 effects in a KV bucket outside the journal:
 
-- `TestCrashPointMatrix`, in the normal suite: one run per crash point,
-  killed and stalled, on the unsafe iteration; the run must finish with
-  the crash-free answer (an unsafe call a successor found started is
-  answered `interrupted`, which is the specified outcome), `Check` must
+- `TestCrashPointMatrix`, in the normal suite (and the race job): one
+  run per crash point, killed and stalled, on the unsafe iteration and
+  on the safe iteration after it; the run must finish with the
+  crash-free answer, exactly, except that the unsafe call is
+  `interrupted` when the crash hit `after_tool_intent` or `inside_tool`
+  on its iteration (a safe call there must be rerun), `Check` must
   pass, and the unsafe tool must have started at most once.
   `DAGNATS_DURABILITY_ITERATION0=1` adds iteration 0 (below).
 - `TestCrashLoop_RestartLimitFailsThenRetries`: a kill after every claim
   until the restart limit fails the step, which the retry resumes.
 - `TestChaosSoak`, opt-in (`DAGNATS_CHAOS=1`, `make test-chaos`, the
-  nightly `Chaos soak` workflow and the `chaos` PR label): two
+  `Chaos soak` workflow on the `chaos` PR label, nightly once green): two
   orchestrators sharing the history durable as a cluster does, runs in
   parallel under a seeded random schedule of kills, stalls past
   AckWait, the duplicate deliveries those cause (AckWait redelivery, a
@@ -349,10 +351,13 @@ crash-loop test:
 | the engine acceptance rule | `engine.continue_saved/kill`: the redelivered continue advances the loop twice |
 | the restart limit | the crash loop never fails the step |
 | tool replay safety (unsafe intents rerun) | `after_tool_intent/stall`, `inside_tool/kill`, `inside_tool/stall`: the unsafe tool starts twice |
+| safe intents never rerun (answered interrupted) | the four `after_tool_intent`/`inside_tool` cells on the safe iteration: the answer carries `interrupted` for a safe call |
 
 What the harness found, and the fixes that follow #809 in their own
-PRs. Until all four land, `TestChaosSoak` (and so the nightly `Chaos
-soak` workflow) is expected red; the iteration-0 matrix cells
+PRs. Until all four land, `TestChaosSoak` is expected red, so the
+`Chaos soak` workflow runs only on the `chaos` label and by hand; its
+nightly schedule is commented out and is enabled when the soak is
+green. The iteration-0 matrix cells
 (`DAGNATS_DURABILITY_ITERATION0=1`) and the two-engine matrix
 (`DAGNATS_DURABILITY_ENGINES=2`) are off by default and are the red
 tests those fix PRs turn on:

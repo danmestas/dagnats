@@ -67,18 +67,20 @@ func (c matrixCase) String() string {
 }
 
 // matrixCases lists every cell: worker points killed and stalled on
-// the unsafe iteration (where the engine stamps the attempt) and, with
+// the unsafe iteration and on the safe iteration after it (both with
+// the attempt stamped by the engine), and, with
 // DAGNATS_DURABILITY_ITERATION0=1, on iteration 0 (where the attempt
 // follows the delivery count); engine points killed on their first
-// reach. Iteration 0 is opt-in because the crash-point harness found
+// reach. The safe iteration proves a safe call interrupted by a crash
+// is rerun, never answered as interrupted. Iteration 0 is opt-in because the crash-point harness found
 // that a redelivery there is a new attempt by construction, so the
 // engine's attempt fence can reject the journal winner's commit and
 // wedge the run (see "How durability is verified" in ADR-026); those
 // cells fail until that is fixed, and the soak covers them meanwhile.
 func matrixCases() []matrixCase {
-	iterations := []int{unsafeIteration}
+	iterations := []int{unsafeIteration, safeIteration}
 	if os.Getenv("DAGNATS_DURABILITY_ITERATION0") == "1" {
-		iterations = []int{0, unsafeIteration}
+		iterations = []int{0, unsafeIteration, safeIteration}
 	}
 	cases := make([]matrixCase, 0, len(chaos.Points())*2*len(iterations))
 	for _, point := range chaos.Points() {
@@ -135,11 +137,15 @@ func runCrashPoint(t *testing.T, f *fixture, r *router, baseline answer, c matri
 		f.dumpRun(t, runID)
 		t.Fatalf("run %s did not complete within %s after %s", runID, runTimeout, c)
 	}
-	if hook.count != 1 {
-		t.Errorf("hook at %s fired %d times, want exactly once", c, hook.count)
+	if n := hook.count.Load(); n != 1 {
+		t.Errorf("hook at %s fired %d times, want exactly once", c, n)
 	}
-	if !sameAnswer(baseline, got) {
-		t.Errorf("answer after %s = %+v, want %+v", c, got, baseline)
+	crashed := map[chaos.Point]int{}
+	if c.point < chaos.EngineEnqueueSaved {
+		crashed[c.point] = c.iteration
+	}
+	if want := expectedAnswer(baseline, crashed); !sameAnswer(want, got) {
+		t.Errorf("answer after %s = %+v, want %+v", c, got, want)
 	}
 	if !f.auditOK(t, runID, c.String()) {
 		f.dumpRun(t, runID)

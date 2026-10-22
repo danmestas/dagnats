@@ -122,6 +122,13 @@ func Install(h Hook) {
 	installed.Store(&h)
 }
 
+// Installed reports whether a hook is installed: callers that would
+// pay to build a Site check it first, so the production cost of a
+// boundary stays one atomic load.
+func Installed() bool {
+	return installed.Load() != nil
+}
+
 // At runs the installed hook, when there is one, at p.
 func At(ctx context.Context, p Point, site Site) error {
 	if p <= 0 || p >= pointMax {

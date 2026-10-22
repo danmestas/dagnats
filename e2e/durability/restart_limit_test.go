@@ -41,7 +41,7 @@ func TestCrashLoop_RestartLimitFailsThenRetries(t *testing.T) {
 	if killed := hook.killed(); killed != worker.RestartLimitDefault {
 		t.Errorf("killed %d deliveries, want %d", killed, worker.RestartLimitDefault)
 	}
-	if !sameAnswer(baseline, got) {
+	if !sameAnswer(expectedAnswer(baseline, map[chaos.Point]int{}), got) {
 		t.Errorf("answer after the crash loop = %+v, want %+v", got, baseline)
 	}
 	failures := stepFailures(t, f.nc, runID)
