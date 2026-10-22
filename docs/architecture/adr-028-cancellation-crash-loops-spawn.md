@@ -1,6 +1,6 @@
 # ADR-028: Cancellation, crash loops and idempotent spawn
 
-**Status:** Proposed (2026-10-21)
+**Status:** Accepted (2026-10-22), as built: see the note under "Cancellation reaches the handler"
 **Deciders:** Dan Mestas
 **Depends on:** ADR-025; ADR-026 for the crash-loop guard and the per-append cancel check
 **Issues:** #802, #803, #807
@@ -25,10 +25,17 @@ Three gaps let an agent's work escape its run:
 
 `tc.Context()` is cancelled when the run is cancelled. On cancel the engine
 publishes `dagnats.cancel.{run}` on core NATS. Because that is at-most-once,
-the worker also checks run state on each heartbeat and, for journal-enabled
-steps, on each journal append. A plain handler returns when `ctx` is
-done; a journal-enabled handler also writes an aborted commit. Events it publishes afterwards are dropped by the terminal-run guard. The
+the worker also checks run state on each heartbeat, and `Heartbeat()`
+returns `worker.ErrRunCancelled`. A handler returns when `ctx` is done.
+Events it publishes afterwards are dropped by the terminal-run guard. The
 bridge reports cancellation on the next resolve or heartbeat.
+
+As built, journal steps get no extra cancel handling: no cancel check on
+each journal append and no aborted commit. A cancelled journal step stops
+the same way as any other handler, and its journal simply ends without a
+commit for the last iteration. The journal-specific checks were proposed
+here but not implemented; they are not needed for correctness, because
+the run is terminal and later events are dropped.
 
 Abort order stays top-down: the parent run finalizes and its children are
 cancelled through the existing cascade. pi-durable waits for owned work to

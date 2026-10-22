@@ -54,5 +54,5 @@ This convention makes dependency between proposals explicit and prevents acciden
 - `adr-025-fenced-step-events.md` — lifecycle events carry iteration, attempt and dispatch nonce; the engine drops stale ones; agent state rides in `step.continue`.
 - `adr-026-agent-journal.md` — a fenced, append-only journal per agent step: leader tail reads, claims, single-message commits, recovery and the `journal check` audit.
 - `adr-027-agent-inputs-and-waits.md` — idempotent inputs with steering, placed through the journal, and durable waits (`Delay`, `Until`, `UntilInput`) that hold no worker.
-- `adr-028-cancellation-crash-loops-spawn.md` — cancel reaches running handlers, a crash-loop guard, idempotent child spawn (Proposed).
+- `adr-028-cancellation-crash-loops-spawn.md` — cancel reaches running handlers, a crash-loop guard, idempotent child spawn.
 - `adr-029-hosting-pi-durable.md` — running pi-durable agents as dagnats steps on a JetStream storage adapter (Proposed, deferred).
