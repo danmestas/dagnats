@@ -428,7 +428,7 @@ type Record struct {
 ```
 
 <a name="DecodeMsg"></a>
-### func [DecodeMsg](<https://github.com/danmestas/dagnats/blob/main/journal/read.go#L190>)
+### func [DecodeMsg](<https://github.com/danmestas/dagnats/blob/main/journal/read.go#L191>)
 
 ```go
 func DecodeMsg(msg jetstream.Msg) (Record, error)
