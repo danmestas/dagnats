@@ -40,13 +40,13 @@ const (
 // fraction keeps the sum a fixed share of the budget on ANY host — the
 // 2 GiB test cluster and a 10 GiB+ prod node alike.
 //
-// The fractions sum to 0.80, leaving ~20% headroom under the budget.
+// The fractions sum to 0.84, leaving ~16% headroom under the budget.
 // Dominant growers are weighted higher (WORKFLOW_HISTORY largest, then
 // EVENTS/TASK_QUEUES), smaller for the low-volume streams. TASK_QUEUES and
 // SLEEP_TIMERS hold live/pending work so they carry NO max_age, but a byte
 // ceiling on a work-queue is safe and gives the backstop its teeth.
 //
-//	WORKFLOW_HISTORY  0.21   run step events — the real grower
+//	WORKFLOW_HISTORY  0.25   run step events — the real grower
 //	EVENTS            0.15   workflow signal/event log
 //	TASK_QUEUES       0.12   live task backstop
 //	TELEMETRY         0.10   spans/metrics/logs (was an absolute 1 GiB)
@@ -56,10 +56,16 @@ const (
 //	TRIGGER_HISTORY   0.04   trigger fire log
 //	SLEEP_TIMERS      0.04   pending timer backstop
 //	------------------------
-//	total             0.80
+//	total             0.84
 //
-// #624 added BUILD_LOGS by trimming WORKFLOW_HISTORY from 0.30 to 0.25,
-// and ADR-026 added AGENT_JOURNAL by trimming it again to 0.21,
+// ADR-026 added AGENT_JOURNAL out of the headroom, not out of any
+// stream: every existing ceiling keeps its as-shipped size, so an
+// upgrade's shrink pass touches nothing, and the journal is small (one
+// record per claim, pause, entry and commit, aged out at 30 days like
+// history) next to history's lifecycle traffic. The sum stays under the
+// 85% guard TestMaxBytesSumUnderBudget enforces.
+//
+// #624 added BUILD_LOGS by trimming WORKFLOW_HISTORY from 0.30 to 0.25
 // rather than adding on top of 0.80: WORKFLOW_HISTORY is bounded by
 // history's own 30d MaxAge and dominated in practice by step lifecycle
 // events, not step output, so it had headroom to give up; every other
@@ -67,7 +73,7 @@ const (
 // table's total — and hence the store-budget headroom — stays exactly
 // where #441 set it.
 const (
-	fractionWorkflowHistory = 0.21
+	fractionWorkflowHistory = 0.25
 	fractionEvents          = 0.15
 	fractionTaskQueues      = 0.12
 	fractionTelemetry       = 0.10

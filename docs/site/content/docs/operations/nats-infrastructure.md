@@ -7,7 +7,7 @@ DagNats provisions all its NATS resources automatically on startup via `natsutil
 
 ## JetStream Streams
 
-Nine streams handle all durable messaging. `dagnats serve` creates these on first boot; distributed deployments must ensure they exist before components start.
+Ten streams handle all durable messaging. `dagnats serve` creates these on first boot; distributed deployments must ensure they exist before components start.
 
 | Stream | Subjects | Retention | Storage | Limits | Purpose |
 |--------|----------|-----------|---------|--------|---------|
@@ -20,8 +20,9 @@ Nine streams handle all durable messaging. `dagnats serve` creates these on firs
 | `STICKY_TASKS` | `sticky.>` | Limits | Memory | 30-minute max age | Worker-affinity task routing |
 | `TRIGGER_HISTORY` | `trigger.fire.>` | Limits | File | 30-day max age | Trigger fire records (`dagnats trigger history`) |
 | `BUILD_LOGS` | `logs.>` | Limits | File | `DAGNATS_BUILD_LOGS_TTL`, default 7 days (1h to 8760h); 2-minute dedup window | Task log lines (`logs.{run}.{step}.{attempt}.{iteration}`) |
+| `AGENT_JOURNAL` | `journal.>` | Limits | File | 30-day max age, 2-minute dedup window, direct get off | Agent journal records (`journal.{run}.{step}`), one fenced subject per step |
 
-`TASK_QUEUES` and `SLEEP_TIMERS` have no max age because their messages are live work: an age limit would silently delete pending tasks and unfired timers. Every file-backed stream also gets a byte ceiling that is a share of the JetStream store budget (`max_store_bytes`): `WORKFLOW_HISTORY` 25%, `EVENTS` 15%, `TASK_QUEUES` 12%, `TELEMETRY` 10%, `BUILD_LOGS` 5%, `DEAD_LETTERS` 5%, `TRIGGER_HISTORY` 4% and `SLEEP_TIMERS` 4%. `STICKY_TASKS` is in memory and bounded by its age.
+`TASK_QUEUES` and `SLEEP_TIMERS` have no max age because their messages are live work: an age limit would silently delete pending tasks and unfired timers. Every file-backed stream also gets a byte ceiling that is a share of the JetStream store budget (`max_store_bytes`): `WORKFLOW_HISTORY` 25%, `EVENTS` 15%, `TASK_QUEUES` 12%, `TELEMETRY` 10%, `BUILD_LOGS` 5%, `DEAD_LETTERS` 5%, `AGENT_JOURNAL` 4%, `TRIGGER_HISTORY` 4% and `SLEEP_TIMERS` 4%, 84% in all, with the rest left as headroom for the KV buckets and JetStream's own index. `AGENT_JOURNAL` is sized small on purpose: one record per claim, pause, entry and commit per step, aged out at 30 days like history. `STICKY_TASKS` is in memory and bounded by its age.
 
 ### WORKFLOW_HISTORY
 
