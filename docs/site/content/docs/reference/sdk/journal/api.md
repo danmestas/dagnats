@@ -32,6 +32,7 @@ A Journal is one claim on one dispatch of a step. Open reads the tail from the s
   - [func \(j \*Journal\) Task\(\) Task](<#Journal.Task>)
 - [type Pause](<#Pause>)
 - [type Record](<#Record>)
+  - [func DecodeMsg\(msg jetstream.Msg\) \(Record, error\)](<#DecodeMsg>)
   - [func Read\(ctx context.Context, js jetstream.JetStream, runID, stepID string\) \(\[\]Record, error\)](<#Read>)
 - [type Report](<#Report>)
   - [func Check\(ctx context.Context, nc \*nats.Conn, runID string\) \(Report, error\)](<#Check>)
@@ -295,6 +296,15 @@ type Record struct {
     Data          json.RawMessage `json:"data,omitempty"`
 }
 ```
+
+<a name="DecodeMsg"></a>
+### func [DecodeMsg](<https://github.com/danmestas/dagnats/blob/main/journal/read.go#L190>)
+
+```go
+func DecodeMsg(msg jetstream.Msg) (Record, error)
+```
+
+DecodeMsg reads one journal message, as delivered by a consumer on the journal stream, into a Record. The record's Seq is the message's stream sequence, the cursor clients resume from.
 
 <a name="Read"></a>
 ### func [Read](<https://github.com/danmestas/dagnats/blob/main/journal/read.go#L18-L20>)
