@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/inputs"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -44,9 +45,6 @@ type StepReport struct {
 const (
 	historyEventsMax = 100_000
 	historyStream    = "WORKFLOW_HISTORY"
-	// submissionsBucket holds input outcomes (ADR-027); absent until
-	// that lands, in which case invariant 5 is skipped.
-	submissionsBucket = "submissions"
 	// runsBucket and runKeyPrefix locate the run snapshot the engine
 	// writes (internal/engine/snapshot.go); read here through the
 	// leader so the audit sees the latest save.
@@ -84,8 +82,9 @@ func Check(ctx context.Context, nc *nats.Conn, runID string) (Report, error) {
 	report := Report{RunID: runID, Skipped: []string{
 		"invariant 3 (unsafe tool executed at most once) needs the test side-effect counter",
 	}}
-	if _, err := js.KeyValue(ctx, submissionsBucket); err != nil {
-		if !errors.Is(err, jetstream.ErrBucketNotFound) {
+	submissions, err := inputs.Open(ctx, js)
+	if err != nil {
+		if !errors.Is(err, inputs.ErrNotProvisioned) {
 			return Report{}, fmt.Errorf("journal: submissions bucket: %w", err)
 		}
 		report.Skipped = append(report.Skipped,
@@ -104,8 +103,16 @@ func Check(ctx context.Context, nc *nats.Conn, runID string) (Report, error) {
 		if len(records) == 0 {
 			continue
 		}
-		report.Steps = append(report.Steps,
-			checkStep(stepID, run.Steps[stepID], records, historyByStep[stepID]))
+		step := checkStep(stepID, run.Steps[stepID], records, historyByStep[stepID])
+		if submissions != nil {
+			subs, err := submissions.List(ctx, runID, stepID)
+			if err != nil {
+				return Report{}, fmt.Errorf("journal: submissions of %s: %w", stepID, err)
+			}
+			step.Violations = append(step.Violations,
+				checkInputs(run.Steps[stepID], records, subs)...)
+		}
+		report.Steps = append(report.Steps, step)
 	}
 	return report, nil
 }

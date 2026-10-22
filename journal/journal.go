@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -172,6 +173,9 @@ type Commit struct {
 	Error        string          `json:"error,omitempty"`
 	FailureType  string          `json:"failure_type,omitempty"`
 	RetryAfterMs int64           `json:"retry_after_ms,omitempty"`
+	// Wait is the durable wait a continue asked for (ADR-027), so a
+	// republished step.continue carries the same one.
+	Wait *protocol.ContinueWait `json:"wait,omitempty"`
 }
 
 // Journal is one claim on one dispatch of a step. A handle belongs to
@@ -217,6 +221,9 @@ type Journal struct {
 	// depth counts its nested calls (owner.go).
 	owner atomic.Uint64
 	depth int
+	// placed is every input.placed record so far, any iteration, plus
+	// this claim's own (ADR-027).
+	placed []InputPlaced
 }
 
 // MsgID is the stable dedup key of a record:
@@ -562,10 +569,15 @@ func (j *Journal) rebuild(records []Record) {
 	if j.task.Attempt < 1 {
 		panic("journal.rebuild: attempt must be >= 1")
 	}
-	j.state, j.records, j.committed, j.resume = nil, nil, nil, ""
+	j.state, j.records, j.committed, j.resume, j.placed = nil, nil, nil, "", nil
 	j.restarts, j.lastCommitSeq = 0, 0
 	for i := range records {
 		r := records[i]
+		if r.Type == TypeInputPlaced {
+			if p, ok := placedInput(r); ok {
+				j.placed = append(j.placed, p)
+			}
+		}
 		if r.Iteration < j.task.Iteration {
 			if r.Type == TypeCommit {
 				j.state = commitState(r)
