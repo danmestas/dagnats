@@ -37,7 +37,7 @@ permissions:
 
 jobs:
   race:
-    name: race detector (${{ matrix.pkg }}${{ matrix.shard != '' && format(' {0}/3', matrix.shard) || '' }})
+    name: race detector (${{ matrix.pkg }}${{ matrix.shard != '' && format(' {0}/{1}', matrix.shard, matrix.total || '3') || '' }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -45,7 +45,6 @@ jobs:
         pkg:
           - ./bridge/
           - ./worker/
-          - ./internal/api/
           - ./internal/workertoken/
           - ./internal/natsutil/
           - ./journal/
@@ -60,6 +59,14 @@ jobs:
             shard: '1'
           - pkg: ./internal/engine/
             shard: '2'
+          # internal/api runs its tests serially too and was nearing the
+          # 300s timeout on its own; two shards give it headroom.
+          - pkg: ./internal/api/
+            shard: '0'
+            total: '2'
+          - pkg: ./internal/api/
+            shard: '1'
+            total: '2'
     steps:
       - uses: actions/checkout@v7
 
@@ -70,7 +77,7 @@ jobs:
       - name: Race detector
         run: |
           if [ -n "${{ matrix.shard }}" ]; then
-            ./scripts/race-shard.sh ${{ matrix.pkg }} ${{ matrix.shard }} 3
+            ./scripts/race-shard.sh ${{ matrix.pkg }} ${{ matrix.shard }} ${{ matrix.total || '3' }}
           else
             go test -race -count=1 -timeout 300s ${{ matrix.pkg }}
           fi
