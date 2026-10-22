@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+
+	"github.com/danmestas/dagnats/internal/chaos"
 )
 
 // Replay is a tool's declaration of what a rerun costs: Safe when
@@ -222,6 +224,9 @@ func (j *Journal) freshTool(
 		return ToolResult{}, err
 	}
 	j.toolCalls++
+	if err := j.crashAt(ctx, chaos.WorkerAfterToolIntent); err != nil {
+		return ToolResult{}, err
+	}
 	return j.runTool(ctx, call, fn)
 }
 
@@ -288,7 +293,17 @@ func (j *Journal) runTool(ctx context.Context, call ToolCall, fn ToolFunc) (Tool
 	if err != nil {
 		result.Error = err.Error()
 	}
-	return j.appendToolResult(ctx, result)
+	if err := j.crashAt(ctx, chaos.WorkerInsideTool); err != nil {
+		return ToolResult{}, err
+	}
+	result, err = j.appendToolResult(ctx, result)
+	if err != nil {
+		return ToolResult{}, err
+	}
+	if err := j.crashAt(ctx, chaos.WorkerAfterToolResult); err != nil {
+		return ToolResult{}, err
+	}
+	return result, nil
 }
 
 // appendToolResult records result and returns it.

@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/chaos"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -197,6 +198,9 @@ type Journal struct {
 	// tail; done once this attempt's commit is stored or found.
 	fenced bool
 	done   bool
+	// killed is set by the test-only crash seam (internal/chaos): the
+	// holder died here and writes nothing more.
+	killed bool
 	// Rebuilt by Open from the records before the claim.
 	state        []byte
 	records      []Record
@@ -335,6 +339,25 @@ func (j *Journal) bind(ctx context.Context) error {
 // Task returns the dispatch this journal claims.
 func (j *Journal) Task() Task { return j.task }
 
+// crashAt runs the test-only crash seam at p for this claim; nil in
+// production. A kill marks the journal so nothing more is appended.
+func (j *Journal) crashAt(ctx context.Context, p chaos.Point) error {
+	if j.task.RunID == "" {
+		panic("journal.crashAt: task must name a run")
+	}
+	if j.task.Delivered < 1 {
+		panic("journal.crashAt: delivered must be >= 1")
+	}
+	err := chaos.At(ctx, p, chaos.Site{
+		RunID: j.task.RunID, StepID: j.task.StepID, Iteration: j.task.Iteration,
+		Attempt: j.task.Attempt, Delivered: j.task.Delivered,
+	})
+	if chaos.Killed(err) {
+		j.killed = true
+	}
+	return err
+}
+
 // Seq returns the last journal sequence this writer saw.
 func (j *Journal) Seq() uint64 { return j.seq }
 
@@ -451,6 +474,9 @@ func (j *Journal) append(
 	}
 	if j.done {
 		return 0, ErrCommitted
+	}
+	if j.killed {
+		return 0, chaos.ErrKilled
 	}
 	msgID := MsgID(j.task, j.next)
 	expected := j.seq

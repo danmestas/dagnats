@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/chaos"
 	"github.com/danmestas/dagnats/protocol"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -228,10 +229,17 @@ func (o *Orchestrator) dispatchNextIteration(
 	if err := o.saveSnapshot(ctx, run, stepDef.ID); err != nil {
 		return err
 	}
-	if err := o.atCheckpoint(checkpointSaved); err != nil {
+	if err := o.atCheckpoint(
+		ctx, checkpointSaved, chaos.EngineContinueSaved, run, stepDef.ID,
+	); err != nil {
 		return err
 	}
 	if err := o.publishContinueTask(ctx, run, stepDef, state); err != nil {
+		return err
+	}
+	if err := o.atCheckpoint(
+		ctx, checkpointSent, chaos.EngineContinueSent, run, stepDef.ID,
+	); err != nil {
 		return err
 	}
 	_, err := o.markSent(ctx, run, []string{stepDef.ID})

@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/chaos"
 	"github.com/danmestas/dagnats/journal"
 	"github.com/danmestas/dagnats/protocol"
 )
@@ -34,7 +35,30 @@ const (
 	// journalRestartLimit: the crash-loop guard failed the step and
 	// published step.failed; ack (ADR-028).
 	journalRestartLimit
+	// journalKilled: the test-only crash seam killed this holder; touch
+	// nothing, as a dead process would (internal/chaos).
+	journalKilled
 )
+
+// crashAt runs the test-only crash seam at p for this dispatch; nil in
+// production. A kill stops the task: nothing is written, published or
+// acknowledged after it.
+func (c *taskContext) crashAt(p chaos.Point) error {
+	if c.runID == "" {
+		panic("crashAt: runID must not be empty")
+	}
+	if c.msg == nil {
+		panic("crashAt: msg must not be nil")
+	}
+	err := chaos.At(c.ctx, p, chaos.Site{
+		RunID: c.runID, StepID: c.stepID, Iteration: c.iteration,
+		Attempt: c.effectiveAttempt(), Delivered: c.deliveredCount(),
+	})
+	if chaos.Killed(err) {
+		c.journalStop = journalKilled
+	}
+	return err
+}
 
 // Journal claims this dispatch's journal, once per delivery. It
 // returns journal.ErrStale for a late redelivery (nothing is written
@@ -59,6 +83,9 @@ func (c *taskContext) Journal() (*journal.Journal, error) {
 	if c.js == nil {
 		return nil, journal.ErrNotProvisioned
 	}
+	if err := c.crashAt(chaos.WorkerBeforeClaim); err != nil {
+		return nil, err
+	}
 	j, err := journal.Open(c.ctx, c.js, c.tp, journal.Task{
 		RunID: c.runID, StepID: c.stepID, Iteration: c.iteration,
 		Attempt: c.effectiveAttempt(), DispatchNonce: c.dispatchNonce,
@@ -75,6 +102,9 @@ func (c *taskContext) Journal() (*journal.Journal, error) {
 		return nil, err
 	}
 	c.journal = j
+	if err := c.crashAt(chaos.WorkerAfterClaim); err != nil {
+		return nil, err
+	}
 	if commit, ok := j.Committed(); ok {
 		return nil, c.republishCommitted(commit, j.CommittedSeq())
 	}
@@ -127,6 +157,8 @@ func (c *taskContext) stopError() error {
 		return journal.ErrCommitted
 	case journalRestartLimit:
 		return journal.ErrRestartLimit
+	case journalKilled:
+		return chaos.ErrKilled
 	}
 	panic(fmt.Sprintf("stopError: unknown journal stop %d", c.journalStop))
 }
@@ -166,7 +198,7 @@ func (c *taskContext) commitJournal(commit journal.Commit) error {
 	}
 	c.journalSeq = seq
 	c.settlePlacedInputs()
-	return nil
+	return c.crashAt(chaos.WorkerAfterCommit)
 }
 
 // republishCommitted publishes the lifecycle event of a commit a
@@ -229,9 +261,16 @@ func (c *taskContext) journalOutcome(err error) (done, ack bool) {
 	if c.journalStop == journalLive && c.journal != nil && c.journal.Fenced() {
 		c.journalStop = journalFenced
 	}
+	// A kill inside the journal (a tool boundary) surfaces as the
+	// handler's error.
+	if c.journalStop == journalLive && chaos.Killed(err) {
+		c.journalStop = journalKilled
+	}
 	switch c.journalStop {
 	case journalLive:
 		return false, false
+	case journalKilled:
+		return true, false
 	case journalStale, journalRecovered, journalRestartLimit:
 		c.drainLogs(protocol.LogMarkerCompleted)
 		return true, true

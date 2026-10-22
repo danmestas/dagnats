@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/inputs"
+	"github.com/danmestas/dagnats/internal/chaos"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/journal"
 	"github.com/danmestas/dagnats/observe"
@@ -653,8 +654,10 @@ func (c *taskContext) publishEvent(
 	}
 	// JSPublishMsgEvent injects trace context, then marshals evt
 	// internally so the persisted body carries TraceParent.
-	_, err := c.tp.JSPublishMsgEvent(c.ctx, outMsg, &evt)
-	return err
+	if _, err := c.tp.JSPublishMsgEvent(c.ctx, outMsg, &evt); err != nil {
+		return err
+	}
+	return c.crashAt(chaos.WorkerAfterEvent)
 }
 
 // Heartbeat extends the AckWait timer on the original NATS message

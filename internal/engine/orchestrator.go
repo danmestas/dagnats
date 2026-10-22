@@ -17,6 +17,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/inputs"
+	"github.com/danmestas/dagnats/internal/chaos"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
@@ -159,15 +160,29 @@ const (
 	checkpointSent
 )
 
-// atCheckpoint runs crashHook, when set, at checkpoint.
-func (o *Orchestrator) atCheckpoint(checkpoint dispatchCheckpoint) error {
+// atCheckpoint runs crashHook, when set, at checkpoint, then the
+// module-wide crash seam (internal/chaos) at point for run's dispatch
+// of stepID ("" for a multi-step enqueue). Both are nil in production.
+func (o *Orchestrator) atCheckpoint(
+	ctx context.Context, checkpoint dispatchCheckpoint, point chaos.Point,
+	run dag.WorkflowRun, stepID string,
+) error {
 	if checkpoint != checkpointSaved && checkpoint != checkpointSent {
 		panic("atCheckpoint: unknown dispatch checkpoint")
 	}
-	if o.crashHook == nil {
-		return nil
+	if run.RunID == "" {
+		panic("atCheckpoint: RunID must not be empty")
 	}
-	return o.crashHook(checkpoint)
+	if o.crashHook != nil {
+		if err := o.crashHook(checkpoint); err != nil {
+			return err
+		}
+	}
+	state := run.Steps[stepID]
+	return chaos.At(ctx, point, chaos.Site{
+		RunID: run.RunID, StepID: stepID,
+		Iteration: state.Iterations, Attempt: state.Attempts,
+	})
 }
 
 // OrchestratorOption configures optional orchestrator behavior.
@@ -2376,7 +2391,7 @@ func (o *Orchestrator) enqueueReady(
 	if err := o.saveSnapshot(ctx, run, ""); err != nil {
 		return err
 	}
-	if err := o.atCheckpoint(checkpointSaved); err != nil {
+	if err := o.atCheckpoint(ctx, checkpointSaved, chaos.EngineEnqueueSaved, run, ""); err != nil {
 		return err
 	}
 	o.publishStepQueuedEvents(ctx, run, ready)
@@ -2600,7 +2615,7 @@ func (o *Orchestrator) runDispatchPlan(
 		panic("runDispatchPlan: ctx must not be nil")
 	}
 	sent, sendErr := o.sendPlan(ctx, wfDef, run, plan)
-	if err := o.atCheckpoint(checkpointSent); err != nil {
+	if err := o.atCheckpoint(ctx, checkpointSent, chaos.EngineEnqueueSent, run, ""); err != nil {
 		return err
 	}
 	run, markErr := o.markSent(ctx, run, sent)
