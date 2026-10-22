@@ -40,9 +40,7 @@ func Read(
 	return readSubject(ctx, js, runID, stepID, raw.Sequence)
 }
 
-// readSubject reads the subject's records up to tailSeq through a
-// bounded ordered consumer. Every fetch is bounded by readWait and the
-// whole read by recordsMax; the caller's ctx bounds the total.
+// readSubject reads the subject's records up to tailSeq.
 func readSubject(
 	ctx context.Context, js jetstream.JetStream, runID, stepID string, tailSeq uint64,
 ) ([]Record, error) {
@@ -52,68 +50,69 @@ func readSubject(
 	if js == nil {
 		panic("readSubject: js must not be nil")
 	}
-	consumer, err := natsutil.OpenConsumer(ctx, js, natsutil.AgentJournalStream,
-		natsutil.OrderedConsumerSpec{
-			FilterSubjects: []string{natsutil.JournalSubject(runID, stepID)},
-			DeliverPolicy:  jetstream.DeliverAllPolicy,
+	records := make([]Record, 0, readBatch)
+	err := fetchUpTo(ctx, js, natsutil.AgentJournalStream,
+		natsutil.JournalSubject(runID, stepID), tailSeq, recordsMax,
+		func(seq uint64, msg jetstream.Msg, meta *jetstream.MsgMetadata) error {
+			records = append(records, decodeRecord(seq, msg.Headers(), msg.Data(), meta.Timestamp))
+			return nil
 		})
 	if err != nil {
-		return nil, fmt.Errorf("journal: open reader: %w", err)
+		return nil, err
 	}
-	records := make([]Record, 0, readBatch)
-	for len(records) < recordsMax {
-		batch, err := consumer.Fetch(readBatch, jetstream.FetchMaxWait(readWait))
-		if err != nil {
-			return nil, fmt.Errorf("journal: fetch: %w", err)
-		}
-		reached, err := appendBatch(&records, batch, tailSeq)
-		if err != nil {
-			return nil, err
-		}
-		if reached {
-			return records, nil
-		}
-		if err := ctx.Err(); err != nil {
-			return nil, fmt.Errorf("journal: read: %w", err)
-		}
-	}
-	return nil, fmt.Errorf("journal: more than %d records on %s", recordsMax,
-		natsutil.JournalSubject(runID, stepID))
+	return records, nil
 }
 
-// appendBatch decodes one fetch into records and reports whether the
-// tail was reached. An empty fetch before the tail is a read that
-// stalled, surfaced as an error rather than spun on.
-func appendBatch(
-	records *[]Record, batch jetstream.MessageBatch, tailSeq uint64,
-) (bool, error) {
-	if records == nil {
-		panic("appendBatch: records must not be nil")
+// fetchUpTo reads a subject from the start up to and including tailSeq
+// through a bounded ordered consumer and hands each message to visit.
+// Every fetch is bounded by readWait, the whole read by limit messages
+// and the caller's ctx. Knowing the tail is what lets the read end
+// without waiting a fetch window on an idle subject.
+func fetchUpTo(
+	ctx context.Context, js jetstream.JetStream, stream, subject string,
+	tailSeq uint64, limit int,
+	visit func(seq uint64, msg jetstream.Msg, meta *jetstream.MsgMetadata) error,
+) error {
+	if tailSeq == 0 || limit <= 0 {
+		panic("fetchUpTo: tailSeq and limit must be positive")
 	}
-	if tailSeq == 0 {
-		panic("appendBatch: tailSeq must be positive")
+	if visit == nil {
+		panic("fetchUpTo: visit must not be nil")
 	}
-	received := 0
-	for msg := range batch.Messages() {
-		received++
-		meta, err := msg.Metadata()
+	consumer, err := natsutil.OpenConsumer(ctx, js, stream, natsutil.OrderedConsumerSpec{
+		FilterSubjects: []string{subject}, DeliverPolicy: jetstream.DeliverAllPolicy,
+	})
+	if err != nil {
+		return fmt.Errorf("journal: open reader on %s: %w", subject, err)
+	}
+	for read := 0; read < limit; {
+		batch, err := consumer.Fetch(readBatch, jetstream.FetchMaxWait(readWait))
 		if err != nil {
-			return false, fmt.Errorf("journal: record metadata: %w", err)
+			return fmt.Errorf("journal: fetch %s: %w", subject, err)
 		}
-		*records = append(*records, decodeRecord(
-			meta.Sequence.Stream, msg.Headers(), msg.Data(), meta.Timestamp,
-		))
-		if meta.Sequence.Stream >= tailSeq {
-			return true, nil
+		received := 0
+		for msg := range batch.Messages() {
+			received++
+			meta, err := msg.Metadata()
+			if err != nil {
+				return fmt.Errorf("journal: message metadata: %w", err)
+			}
+			if err := visit(meta.Sequence.Stream, msg, meta); err != nil {
+				return err
+			}
+			if meta.Sequence.Stream >= tailSeq {
+				return nil
+			}
 		}
+		if err := batch.Error(); err != nil {
+			return fmt.Errorf("journal: fetch %s: %w", subject, err)
+		}
+		if received == 0 {
+			return fmt.Errorf("journal: read of %s stalled before sequence %d", subject, tailSeq)
+		}
+		read += received
 	}
-	if err := batch.Error(); err != nil {
-		return false, fmt.Errorf("journal: fetch: %w", err)
-	}
-	if received == 0 {
-		return false, fmt.Errorf("journal: read stalled before sequence %d", tailSeq)
-	}
-	return false, nil
+	return fmt.Errorf("journal: more than %d messages on %s", limit, subject)
 }
 
 // headerInt parses an integer header; -1 marks a missing or foreign

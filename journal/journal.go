@@ -168,10 +168,11 @@ type Journal struct {
 	fenced bool
 	done   bool
 	// Rebuilt by Open from the records before the claim.
-	state     []byte
-	records   []Record
-	committed *Commit
-	resume    string
+	state        []byte
+	records      []Record
+	committed    *Commit
+	committedSeq uint64
+	resume       string
 }
 
 // MsgID is the stable dedup key of a record:
@@ -297,6 +298,10 @@ func (j *Journal) Committed() (Commit, bool) {
 	}
 	return *j.committed, true
 }
+
+// CommittedSeq returns the journal sequence of the commit Committed
+// reports, 0 when there is none.
+func (j *Journal) CommittedSeq() uint64 { return j.committedSeq }
 
 // Resume returns the pause name when the newest record of this
 // iteration before the claim is a pause: this delivery resumes it.
@@ -498,6 +503,7 @@ func (j *Journal) rebuild(records []Record) {
 				var c Commit
 				if err := json.Unmarshal(r.Data, &c); err == nil {
 					j.committed = &c
+					j.committedSeq = r.Seq
 				}
 			}
 		default:

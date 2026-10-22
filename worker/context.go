@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/journal"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -108,6 +109,13 @@ type taskContext struct {
 	// worker older than #801), which Continue then deletes so it cannot
 	// shadow the committed state on the next iteration.
 	kvCheckpointSeen bool
+
+	// journal is the step's claimed journal once the handler called
+	// Journal() (ADR-026); journalStop is why it may not proceed;
+	// journalSeq is the commit this delivery's lifecycle event names.
+	journal     *journal.Journal
+	journalStop journalStop
+	journalSeq  uint64
 }
 
 // newTaskContext constructs a taskContext from a dispatched
@@ -329,6 +337,11 @@ func (c *taskContext) Complete(output []byte) error {
 	// step.completed can never see it before the log lines (and the
 	// marker) that led to it.
 	c.drainLogs(protocol.LogMarkerCompleted)
+	if err := c.commitJournal(journal.Commit{
+		Action: journal.ActionComplete, Output: output,
+	}); err != nil {
+		return err
+	}
 	return c.publishEvent(
 		protocol.EventStepCompleted, output,
 	)
@@ -449,6 +462,12 @@ func (c *taskContext) publishFailedPayload(
 	if err != nil {
 		return fmt.Errorf("marshal StepFailedPayload: %w", err)
 	}
+	if err := c.commitJournal(journal.Commit{
+		Action: journal.ActionFail, Error: payload.Error,
+		FailureType: string(payload.FailureType), RetryAfterMs: payload.RetryAfterMs,
+	}); err != nil {
+		return err
+	}
 	return c.publishEvent(protocol.EventStepFailed, data)
 }
 
@@ -480,32 +499,61 @@ func (c *taskContext) Continue(output []byte) error {
 		),
 	)
 	defer span.End()
-	state := c.loopState
-	if c.pendingStateSet {
-		state = c.pendingState
-	}
-	if len(state) > c.loopStateMax {
-		return fmt.Errorf(
-			"Continue: state is %d bytes, over the %d byte cap (loop_state_max_bytes)",
-			len(state), c.loopStateMax,
-		)
-	}
-	payload, err := json.Marshal(protocol.StepContinuePayload{
-		Output: output, State: state, StateSet: true,
-	})
+	payload, err := c.continuePayload(output)
 	if err != nil {
-		return fmt.Errorf("marshal StepContinuePayload: %w", err)
+		return err
 	}
 	// Drain-before-resolve invariant (#624): flush trailing log bytes
 	// and emit "continued" before the step.continue publish below —
 	// this attempt's subject is done; the next iteration gets a fresh
 	// attempt-scoped subject.
 	c.drainLogs(protocol.LogMarkerContinued)
+	if c.journal != nil {
+		state := c.journal.State()
+		if c.pendingStateSet {
+			state = c.pendingState
+		}
+		if err := c.commitJournal(journal.Commit{
+			Action: journal.ActionContinue, Output: output, State: state,
+		}); err != nil {
+			return err
+		}
+	}
 	if err := c.publishEvent(protocol.EventStepContinue, payload); err != nil {
 		return err
 	}
 	c.clearShadowingCheckpoint()
 	return nil
+}
+
+// continuePayload builds the step.continue payload: the checkpointed
+// (else inherited) state under the engine's cap, or, for a journal
+// step, no state at all — the commit record is the state of record,
+// the engine keeps whatever it had, and the next delivery reads the
+// journal (ADR-026).
+func (c *taskContext) continuePayload(output []byte) ([]byte, error) {
+	if c.runID == "" {
+		panic("continuePayload: runID must not be empty")
+	}
+	if c.loopStateMax <= 0 {
+		panic("continuePayload: loopStateMax must be positive")
+	}
+	if c.journal != nil || c.journalStop != journalLive {
+		return json.Marshal(protocol.StepContinuePayload{Output: output})
+	}
+	state := c.loopState
+	if c.pendingStateSet {
+		state = c.pendingState
+	}
+	if len(state) > c.loopStateMax {
+		return nil, fmt.Errorf(
+			"Continue: state is %d bytes, over the %d byte cap (loop_state_max_bytes)",
+			len(state), c.loopStateMax,
+		)
+	}
+	return json.Marshal(protocol.StepContinuePayload{
+		Output: output, State: state, StateSet: true,
+	})
 }
 
 // clearShadowingCheckpoint deletes the checkpoints-bucket entry that
@@ -571,6 +619,7 @@ func (c *taskContext) publishEvent(
 	)
 	evt.WorkerID = c.workerID
 	evt.SetIdentity(c.iteration, c.effectiveAttempt(), c.dispatchNonce)
+	evt.JournalSeq = c.journalSeq
 	outMsg := &nats.Msg{
 		Subject: evt.NATSSubject(),
 		Header: nats.Header{
@@ -617,7 +666,7 @@ func (c *taskContext) Checkpoint(state []byte) error {
 	}
 	c.pendingState = state
 	c.pendingStateSet = true
-	if c.legacyEngine {
+	if c.legacyEngine && c.journal == nil {
 		return c.writeCheckpointKV(state)
 	}
 	return nil
@@ -639,6 +688,9 @@ func (c *taskContext) LoadCheckpoint() ([]byte, error) {
 	}
 	if c.pendingStateSet {
 		return c.pendingState, nil
+	}
+	if c.journal != nil {
+		return c.journalCheckpoint()
 	}
 	if c.checkpointKV != nil {
 		key := c.runID + "." + c.stepID
@@ -724,13 +776,19 @@ func (c *taskContext) Pause(name string, duration time.Duration) error {
 	if c.msg == nil {
 		panic("Pause: msg already consumed or nil")
 	}
-	checkpoint := map[string]any{"pause_resume": name}
-	data, err := json.Marshal(checkpoint)
-	if err != nil {
-		return fmt.Errorf("marshal pause checkpoint: %w", err)
-	}
-	if err := c.writeCheckpointKV(data); err != nil {
-		return fmt.Errorf("save pause checkpoint: %w", err)
+	if c.journal != nil {
+		if err := c.journalPause(name, duration); err != nil {
+			return fmt.Errorf("journal pause: %w", err)
+		}
+	} else {
+		checkpoint := map[string]any{"pause_resume": name}
+		data, err := json.Marshal(checkpoint)
+		if err != nil {
+			return fmt.Errorf("marshal pause checkpoint: %w", err)
+		}
+		if err := c.writeCheckpointKV(data); err != nil {
+			return fmt.Errorf("save pause checkpoint: %w", err)
+		}
 	}
 	c.paused = true
 	// This taskContext (and its logLane, if the handler ever wrote to

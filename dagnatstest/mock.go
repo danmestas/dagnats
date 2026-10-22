@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/danmestas/dagnats/journal"
 	"github.com/danmestas/dagnats/worker"
 )
 
@@ -174,6 +175,12 @@ func (m *MockTaskContext) Heartbeat() error {
 
 func (m *MockTaskContext) Pause(name string, duration time.Duration) error {
 	return nil
+}
+
+// Journal reports the journal as unavailable: a mock has no stream to
+// claim on. Journal steps are tested against a real server.
+func (m *MockTaskContext) Journal() (*journal.Journal, error) {
+	return nil, journal.ErrNotProvisioned
 }
 
 func (m *MockTaskContext) WaitForSignal(name string, timeout time.Duration) ([]byte, error) {

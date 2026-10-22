@@ -27,7 +27,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/danmestas/dagnats/dagnatstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -56,7 +55,7 @@ func topologies() []topology {
 			if testing.Short() {
 				t.Skip("three-node cluster skipped in -short mode")
 			}
-			nc := dagnatstest.StartTestCluster(t, 3)
+			nc := startCluster(t)
 			if err := natsutil.SetupAll(nc); err != nil {
 				t.Fatalf("SetupAll: %v", err)
 			}

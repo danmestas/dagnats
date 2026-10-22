@@ -15,6 +15,7 @@ import (
 
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/runstate"
+	"github.com/danmestas/dagnats/journal"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -100,6 +101,16 @@ type TaskContext interface {
 	Checkpoint(state []byte) error
 	LoadCheckpoint() ([]byte, error)
 	Pause(name string, duration time.Duration) error
+
+	// Journal claims this dispatch's agent journal (ADR-026) and
+	// returns the handle for appending records. Call it first: from
+	// then on Continue, Complete and Fail* commit a journal record
+	// before their event, Checkpoint and LoadCheckpoint use the
+	// journal's state, and Pause writes a pause record. Return its
+	// error unchanged: journal.ErrStale, ErrFenced and ErrCommitted
+	// mean this delivery must do nothing more, and the Worker settles
+	// the task accordingly.
+	Journal() (*journal.Journal, error)
 
 	// Signals — coordinate between steps
 	WaitForSignal(
@@ -1289,6 +1300,14 @@ func (w *Worker) handleMessage(
 	elapsed := float64(time.Since(start).Milliseconds())
 	w.stepDuration.Record(ctx, elapsed)
 	w.tasksActive.Add(ctx, -1)
+	// A journal step the journal stopped (stale, fenced or already
+	// committed) is settled here: never a step.failed for it.
+	if done, ack := tc.journalOutcome(err); done {
+		if ack {
+			msg.Ack()
+		}
+		return
+	}
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(

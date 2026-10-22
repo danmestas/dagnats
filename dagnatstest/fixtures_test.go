@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/journal"
 	"github.com/danmestas/dagnats/worker"
 )
 
@@ -365,6 +366,10 @@ func (s *stubTaskContext) Pause(
 	name string, duration time.Duration,
 ) error {
 	return nil
+}
+
+func (s *stubTaskContext) Journal() (*journal.Journal, error) {
+	return nil, journal.ErrNotProvisioned
 }
 
 func (s *stubTaskContext) WaitForSignal(

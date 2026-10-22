@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/journal"
 )
 
 // mockTaskContext implements TaskContext for pure unit tests.
@@ -44,6 +45,10 @@ func (m *mockTaskContext) Pause(
 	_ string, _ time.Duration,
 ) error {
 	return nil
+}
+
+func (m *mockTaskContext) Journal() (*journal.Journal, error) {
+	return nil, journal.ErrNotProvisioned
 }
 
 func (m *mockTaskContext) WaitForSignal(

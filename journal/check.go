@@ -8,9 +8,9 @@ import (
 	"sort"
 
 	"github.com/danmestas/dagnats/dag"
-	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -43,9 +43,15 @@ type StepReport struct {
 // Bounds on what Check reads.
 const (
 	historyEventsMax = 100_000
+	historyStream    = "WORKFLOW_HISTORY"
 	// submissionsBucket holds input outcomes (ADR-027); absent until
 	// that lands, in which case invariant 5 is skipped.
 	submissionsBucket = "submissions"
+	// runsBucket and runKeyPrefix locate the run snapshot the engine
+	// writes (internal/engine/snapshot.go); read here through the
+	// leader so the audit sees the latest save.
+	runsBucket   = "workflow_runs"
+	runKeyPrefix = "run."
 )
 
 // Check audits a run's journals against its history and snapshot:
@@ -56,16 +62,20 @@ const (
 // continue commits (6). Invariant 3 needs a side-effect counter
 // outside the journal and is reported as skipped, as is 5 while the
 // submissions bucket does not exist.
-func Check(ctx context.Context, js jetstream.JetStream, runID string) (Report, error) {
+func Check(ctx context.Context, nc *nats.Conn, runID string) (Report, error) {
 	if ctx == nil {
 		panic("journal.Check: ctx must not be nil")
 	}
 	if runID == "" {
 		panic("journal.Check: runID must not be empty")
 	}
-	run, err := engine.NewSnapshotStore(js).Load(ctx, runID)
+	run, err := loadRun(ctx, nc, runID)
 	if err != nil {
-		return Report{}, fmt.Errorf("journal: load run %s: %w", runID, err)
+		return Report{}, err
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return Report{}, fmt.Errorf("journal: jetstream: %w", err)
 	}
 	startedByStep, err := readStarted(ctx, js, runID)
 	if err != nil {
@@ -100,6 +110,25 @@ func Check(ctx context.Context, js jetstream.JetStream, runID string) (Report, e
 	return report, nil
 }
 
+// loadRun reads the run snapshot the engine keeps in workflow_runs.
+func loadRun(ctx context.Context, nc *nats.Conn, runID string) (dag.WorkflowRun, error) {
+	if nc == nil {
+		panic("loadRun: nc must not be nil")
+	}
+	if runID == "" {
+		panic("loadRun: runID must not be empty")
+	}
+	entry, err := natsutil.KVGetLeader(ctx, nc, runsBucket, runKeyPrefix+runID)
+	if err != nil {
+		return dag.WorkflowRun{}, fmt.Errorf("journal: load run %s: %w", runID, err)
+	}
+	var run dag.WorkflowRun
+	if err := json.Unmarshal(entry.Value, &run); err != nil {
+		return dag.WorkflowRun{}, fmt.Errorf("journal: decode run %s: %w", runID, err)
+	}
+	return run, nil
+}
+
 // readStarted reads the run's step.started events, keyed by step: the
 // attempt the engine adopted for each dispatch nonce.
 func readStarted(
@@ -111,40 +140,34 @@ func readStarted(
 	if runID == "" {
 		panic("readStarted: runID must not be empty")
 	}
-	consumer, err := natsutil.OpenConsumer(ctx, js, "WORKFLOW_HISTORY",
-		natsutil.OrderedConsumerSpec{
-			FilterSubjects: []string{"history." + runID},
-			DeliverPolicy:  jetstream.DeliverAllPolicy,
-		})
+	stream, err := js.Stream(ctx, historyStream)
 	if err != nil {
-		return nil, fmt.Errorf("journal: open history: %w", err)
+		return nil, fmt.Errorf("journal: history stream: %w", err)
+	}
+	subject := "history." + runID
+	tail, err := stream.GetLastMsgForSubject(ctx, subject)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrMsgNotFound) {
+			return map[string][]protocol.Event{}, nil
+		}
+		return nil, fmt.Errorf("journal: history tail: %w", err)
 	}
 	out := map[string][]protocol.Event{}
-	for read := 0; read < historyEventsMax; {
-		batch, err := consumer.Fetch(readBatch, jetstream.FetchMaxWait(readWait))
-		if err != nil {
-			return nil, fmt.Errorf("journal: fetch history: %w", err)
-		}
-		received := 0
-		for msg := range batch.Messages() {
-			received++
+	err = fetchUpTo(ctx, js, historyStream, subject, tail.Sequence, historyEventsMax,
+		func(_ uint64, msg jetstream.Msg, _ *jetstream.MsgMetadata) error {
 			evt, err := protocol.UnmarshalEvent(msg.Data())
 			if err != nil {
-				return nil, fmt.Errorf("journal: decode history: %w", err)
+				return fmt.Errorf("journal: decode history: %w", err)
 			}
 			if evt.Type == protocol.EventStepStarted {
 				out[evt.StepID] = append(out[evt.StepID], evt)
 			}
-		}
-		if err := batch.Error(); err != nil {
-			return nil, fmt.Errorf("journal: fetch history: %w", err)
-		}
-		if received == 0 {
-			return out, nil
-		}
-		read += received
+			return nil
+		})
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("journal: more than %d history events on %s", historyEventsMax, runID)
+	return out, nil
 }
 
 // checkStep applies the invariants to one step's journal.

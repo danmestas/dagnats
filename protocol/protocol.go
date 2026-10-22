@@ -179,6 +179,10 @@ type Event struct {
 	// accepts it only while it is configured to accept legacy events.
 	Iteration     *int   `json:"iteration,omitempty"`
 	DispatchNonce string `json:"dispatch_nonce,omitempty"`
+	// JournalSeq is the AGENT_JOURNAL sequence of the commit record a
+	// journal step wrote before this step.continue, step.completed or
+	// step.failed (ADR-026). Zero for a step without a journal.
+	JournalSeq uint64 `json:"journal_seq,omitempty"`
 }
 
 // HasIdentity reports whether the event names the dispatch it answers
