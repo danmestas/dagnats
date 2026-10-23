@@ -80,7 +80,8 @@ func Check(ctx context.Context, nc *nats.Conn, runID string) (Report, error) {
 		return Report{}, err
 	}
 	report := Report{RunID: runID, Skipped: []string{
-		"invariant 3 (unsafe tool executed at most once) needs the test side-effect counter",
+		"invariant 3 (unsafe tool executed at most once): not visible in the journal; " +
+			"checked by the durability tests",
 	}}
 	submissions, err := inputs.Open(ctx, js)
 	if err != nil {

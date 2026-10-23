@@ -694,3 +694,28 @@ func TestReplay_Iteration0RetryRerunsSafeCalls(t *testing.T) {
 			res, err, unsafeRuns.Load())
 	}
 }
+
+func TestReplay_NonJSONToolOutputIsANamedError(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	c := newClient(t, nc)
+	ctx, cancel := context.WithTimeout(context.Background(), replayTimeout)
+	defer cancel()
+	j := open(t, c, task("run-not-json", 1, 1, 1))
+	text := func(context.Context, ToolCall) ([]byte, error) {
+		return []byte("total 0\n"), nil
+	}
+	_, err := j.Tool(ctx, ToolCall{Name: "bash"}, Safe, text)
+	if err == nil || !strings.Contains(err.Error(), `tool "bash" returned output that is not JSON`) {
+		t.Fatalf("Tool err = %v, want it to name the tool and say the output is not JSON", err)
+	}
+	encoded := func(context.Context, ToolCall) ([]byte, error) {
+		return json.Marshal("total 0\n")
+	}
+	res, err := j.Tool(ctx, ToolCall{Name: "bash"}, Safe, encoded)
+	if err != nil || string(res.Output) != `"total 0\n"` {
+		t.Errorf("Tool with JSON output = %+v, %v; want the encoded text", res, err)
+	}
+}

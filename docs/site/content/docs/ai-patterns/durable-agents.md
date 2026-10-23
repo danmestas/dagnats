@@ -49,6 +49,8 @@ On recovery within one attempt, the SDK walks the same calls in the same order:
 - An intent with no result is run again only if both the recorded and the current declaration say `Safe`.
 - Otherwise the SDK records an `interrupted` result, with any partial output the earlier holder wrote, and the model sees it.
 
+`fn` returns the tool's output as a JSON value, recorded as is. Encode plain text, such as a command's output, with `json.Marshal`. Output that is not JSON is an error from `Tool`.
+
 Calls are matched by position. If the handler issues a different call at a position than the one recorded, `Tool` returns `journal.ErrReplayMismatch` and writes nothing. A tool's own error is part of its result; it does not stop the step.
 
 A retry is different from a redelivery. When the engine starts a new attempt of an iteration (after a failure or a timeout), it means "do it again": safe calls and model requests run fresh. Only unsafe intents from the earlier attempt are honoured, matched by name and input, so a retry cannot repeat a charge the first attempt already started.
@@ -65,7 +67,7 @@ The SDK starts an unsafe call at most once per position. A successor never start
 
 ## A handler
 
-This handler runs one turn of a tool-using agent. `turn` is your decoded model reply (`Done`, `Tool`, `Input`), and `callModel`, `runTool`, `appendTurn` and `appendInputs` are your own code. The imports are `context`, `encoding/json`, `errors`, `time`, `worker`, `journal` and `inputs`.
+This handler runs one turn of a tool-using agent. `turn` is your decoded model reply (`Done`, `Tool`, `Input`), and `callModel`, `runTool`, `appendTurn`, `appendInputs` and `answered` are your own code. `answered` reports whether the history ends in a final answer. The imports are `context`, `encoding/json`, `errors`, `time`, `worker`, `journal` and `inputs`.
 
 ```go
 func agentTurn(tc worker.TaskContext) error {
@@ -80,11 +82,20 @@ func agentTurn(tc worker.TaskContext) error {
     if history == nil {
         history = tc.Input()
     }
-    steers, err := tc.PlaceInputs(inputs.ModeSteer)
+    placed, err := tc.PlaceInputs(inputs.ModeSteer)
     if err != nil {
         return err
     }
-    history = appendInputs(history, steers)
+    // A turn after a final answer was woken by a follow-up, and the
+    // follow-up is what this turn answers.
+    if answered(history) {
+        followUps, err := tc.PlaceInputs(inputs.ModeFollowUp)
+        if err != nil {
+            return err
+        }
+        placed = append(placed, followUps...)
+    }
+    history = appendInputs(history, placed)
 
     raw, err := j.Model(tc.Context(), func(ctx context.Context) ([]byte, error) {
         return callModel(ctx, history)
@@ -118,16 +129,9 @@ func agentTurn(tc worker.TaskContext) error {
     if err := tc.Checkpoint(appendTurn(history, raw, nil)); err != nil {
         return err
     }
-    followUps, err := tc.PlaceInputs(inputs.ModeFollowUp)
-    if err != nil {
-        return err
-    }
-    if len(followUps) > 0 {
-        return tc.Continue(nil)
-    }
     err = tc.Continue(nil, worker.UntilInput(), worker.Delay(time.Hour))
     if errors.Is(err, worker.ErrInputsQueued) {
-        return tc.Continue(nil) // an input arrived while we were deciding
+        return tc.Continue(nil) // the next turn places what was queued
     }
     return err
 }

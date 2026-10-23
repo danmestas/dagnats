@@ -274,7 +274,7 @@ func (j *Journal) InputPlaced(requestID string) bool
 InputPlaced reports whether requestID has an input.placed record in this journal, in any iteration, by any claim.
 
 <a name="Journal.Model"></a>
-### func \(\*Journal\) [Model](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L411>)
+### func \(\*Journal\) [Model](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L416>)
 
 ```go
 func (j *Journal) Model(ctx context.Context, fn ModelFunc) ([]byte, error)
@@ -364,7 +364,7 @@ func (j *Journal) Task() Task
 Task returns the dispatch this journal claims.
 
 <a name="Journal.Tool"></a>
-### func \(\*Journal\) [Tool](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L110-L112>)
+### func \(\*Journal\) [Tool](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L111-L113>)
 
 ```go
 func (j *Journal) Tool(ctx context.Context, call ToolCall, replay Replay, fn ToolFunc) (ToolResult, error)
@@ -375,7 +375,7 @@ Tool runs one tool call durably: it appends the call's intent with its replay de
 The guarantee is that the SDK starts an unsafe call at most once per position. A holder stalled between its intent and the tool's effect may still complete that effect after a successor recorded the call as interrupted; the key is what an external system deduplicates on. The returned error is the journal's \(ErrFenced, ErrCommitted, transport\), never the tool's own, which is in the result. Tool must be called from the goroutine that owns the handle; a model's parallel tool calls are issued one at a time.
 
 <a name="ModelFunc"></a>
-## type [ModelFunc](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L84>)
+## type [ModelFunc](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L85>)
 
 ModelFunc requests one model response. An error means no response: nothing is recorded and the next holder requests again.
 
@@ -384,7 +384,7 @@ type ModelFunc func(ctx context.Context) ([]byte, error)
 ```
 
 <a name="ModelResponse"></a>
-## type [ModelResponse](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L77-L80>)
+## type [ModelResponse](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L78-L81>)
 
 ModelResponse is the body of a model.response record.
 
@@ -591,16 +591,16 @@ type ToolCall struct {
 ```
 
 <a name="ToolFunc"></a>
-## type [ToolFunc](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L53>)
+## type [ToolFunc](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L54>)
 
-ToolFunc runs the tool. The error it returns is the tool's own failure, recorded in the result for the model to see; it is not a reason to stop the step.
+ToolFunc runs the tool. The output it returns must be a JSON value, because it is recorded as is: encode plain text with json.Marshal. The error it returns is the tool's own failure, recorded in the result for the model to see; it is not a reason to stop the step.
 
 ```go
 type ToolFunc func(ctx context.Context, call ToolCall) ([]byte, error)
 ```
 
 <a name="ToolIntent"></a>
-## type [ToolIntent](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L57-L60>)
+## type [ToolIntent](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L58-L61>)
 
 ToolIntent is the body of a tool.intent record: the call and its replay declaration, written before the tool runs.
 
@@ -612,7 +612,7 @@ type ToolIntent struct {
 ```
 
 <a name="ToolResult"></a>
-## type [ToolResult](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L67-L74>)
+## type [ToolResult](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L68-L75>)
 
 ToolResult is the body of a tool.result record. Key is the call's idempotency key. Interrupted marks a call a previous holder started and never finished, which was not rerun; Partial then holds, as a JSON array, the entry records that holder appended while the tool ran.
 

@@ -47,9 +47,10 @@ type ToolCall struct {
 	Key   string          `json:"key"`
 }
 
-// ToolFunc runs the tool. The error it returns is the tool's own
-// failure, recorded in the result for the model to see; it is not a
-// reason to stop the step.
+// ToolFunc runs the tool. The output it returns must be a JSON value,
+// because it is recorded as is: encode plain text with json.Marshal.
+// The error it returns is the tool's own failure, recorded in the
+// result for the model to see; it is not a reason to stop the step.
 type ToolFunc func(ctx context.Context, call ToolCall) ([]byte, error)
 
 // ToolIntent is the body of a tool.intent record: the call and its
@@ -290,6 +291,10 @@ func (j *Journal) runTool(ctx context.Context, call ToolCall, fn ToolFunc) (Tool
 		panic("runTool: call must carry its key")
 	}
 	output, err := fn(ctx, call)
+	if len(output) > 0 && !json.Valid(output) {
+		return ToolResult{}, fmt.Errorf(
+			"tool %q returned output that is not JSON; encode text with json.Marshal", call.Name)
+	}
 	result := ToolResult{Call: call.Call, Key: call.Key, Output: output}
 	if err != nil {
 		result.Error = err.Error()

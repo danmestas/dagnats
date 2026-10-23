@@ -77,6 +77,10 @@ func TestJournalCheck_CleanRunExitsZero(t *testing.T) {
 	if !strings.Contains(text, "OK") || !strings.Contains(text, "s: 2 records, 1 commits, ok") {
 		t.Errorf("output = %q, want OK and the step line", text)
 	}
+	if strings.Contains(text, "test side-effect counter") ||
+		!strings.Contains(text, "checked by the durability tests") {
+		t.Errorf("output = %q, want invariant 3's skip to say where it is checked", text)
+	}
 	if strings.Contains(text, "submissions bucket absent") {
 		t.Errorf("output = %q, want invariant 5 checked now that the bucket exists", text)
 	}
