@@ -127,6 +127,9 @@ type taskContext struct {
 	// when the iteration commits (ADR-027).
 	inputs        *inputs.Store
 	placedEntries []inputs.Entry
+	// returnedInputs are the request ids PlaceInputs has returned to
+	// this delivery, recorded by it or by an earlier one.
+	returnedInputs map[string]bool
 	// Test seams: beforeClaim runs between reading the inputs and
 	// claiming them; placeFault fails an append by request id.
 	beforeClaim func()

@@ -361,3 +361,45 @@ func TestInputs_ClaimLostToStaleHolderIsReclaimed(t *testing.T) {
 		t.Errorf("x has %d input.placed records, want 1", n)
 	}
 }
+
+// A redelivery rebuilds its conversation from the previous iteration's
+// checkpoint, so the inputs an earlier delivery of this iteration
+// placed must come back from PlaceInputs, once per delivery and only
+// for their mode, or they vanish from the conversation.
+func TestInputs_RedeliveryReturnsThisIterationsPlacements(t *testing.T) {
+	nc, js := journalServer(t)
+	store := inputsStore(t, js)
+	submit(t, store, "run-rp", "f1", inputs.ModeFollowUp)
+	first := delivery(t, nc, journalPayload("run-rp", 0), 1)
+	if _, err := first.Journal(); err != nil {
+		t.Fatalf("Journal: %v", err)
+	}
+	if placed, err := first.PlaceInputs(inputs.ModeFollowUp); err != nil || len(placed) != 1 {
+		t.Fatalf("first PlaceInputs = %+v, %v; want f1", placed, err)
+	}
+	// Delivery 1 dies here, before its commit.
+	second := delivery(t, nc, journalPayload("run-rp", 0), 2)
+	if _, err := second.Journal(); err != nil {
+		t.Fatalf("Journal (redelivery): %v", err)
+	}
+	if placed, err := second.PlaceInputs(inputs.ModeSteer); err != nil || len(placed) != 0 {
+		t.Fatalf("redelivery steer = %+v, %v; want nothing", placed, err)
+	}
+	placed, err := second.PlaceInputs(inputs.ModeFollowUp)
+	if err != nil || len(placed) != 1 || placed[0].RequestID != "f1" ||
+		string(placed[0].Content) != `"f1"` {
+		t.Fatalf("redelivery follow-up = %+v, %v; want f1 with its content", placed, err)
+	}
+	if again, err := second.PlaceInputs(inputs.ModeFollowUp); err != nil || len(again) != 0 {
+		t.Fatalf("second call in one delivery = %+v, %v; want nothing", again, err)
+	}
+	if err := second.Continue(nil); err != nil {
+		t.Fatalf("Continue: %v", err)
+	}
+	if e := status(t, store, "run-rp", "f1"); e.Status != inputs.StatusDone {
+		t.Errorf("f1 status = %s, want done once the redelivery commits", e.Status)
+	}
+	if n := countPlaced(readJournal(t, js, "run-rp"), "f1"); n != 1 {
+		t.Errorf("f1 has %d input.placed records, want exactly 1", n)
+	}
+}

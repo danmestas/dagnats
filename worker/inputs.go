@@ -122,7 +122,11 @@ func (c *taskContext) inputsStore() (*inputs.Store, error) {
 }
 
 // PlaceInputs moves every queued input of mode into the conversation
-// and returns them in submission order. Call it at a turn boundary:
+// and returns them in submission order, after any input of mode an
+// earlier delivery of this iteration already placed: a redelivery
+// rebuilds the conversation from the last checkpoint, so it gets those
+// back once, as Tool and Model give back recorded results. Call it at
+// a turn boundary:
 // ModeSteer after a tool round, ModeFollowUp after a final answer.
 // Needs a journal (ErrNoJournal). A fenced journal stops the task like
 // any other journal write.
@@ -161,7 +165,8 @@ func (c *taskContext) PlaceInputs(mode inputs.Mode) ([]journal.InputPlaced, erro
 	if c.beforeClaim != nil {
 		c.beforeClaim()
 	}
-	var placed []journal.InputPlaced
+	placed := c.recordedPlacements(store, mode)
+	recorded := len(placed)
 	for _, entry := range candidates {
 		claimed, err := c.claimInput(store, entry)
 		if errors.Is(err, inputs.ErrConflict) || errors.Is(err, inputs.ErrNotFound) {
@@ -175,13 +180,45 @@ func (c *taskContext) PlaceInputs(mode inputs.Mode) ([]journal.InputPlaced, erro
 			return placed, err
 		}
 		if record != nil {
+			c.returnedInputs[record.RequestID] = true
 			placed = append(placed, *record)
 		}
 	}
-	if len(placed) > len(candidates) {
+	if len(placed) > recorded+len(candidates) {
 		panic("PlaceInputs: placed more than were claimable")
 	}
 	return placed, nil
+}
+
+// recordedPlacements returns the placements of mode this iteration's
+// journal holds that this delivery has not returned yet, and adds them
+// to the inputs settled done when the iteration commits.
+func (c *taskContext) recordedPlacements(
+	store *inputs.Store, mode inputs.Mode,
+) []journal.InputPlaced {
+	if store == nil {
+		panic("recordedPlacements: store must not be nil")
+	}
+	if c.journal == nil {
+		panic("recordedPlacements: journal must be open")
+	}
+	if c.returnedInputs == nil {
+		c.returnedInputs = map[string]bool{}
+	}
+	var recorded []journal.InputPlaced
+	for _, p := range c.journal.PlacedInputs() {
+		if p.Iteration != c.iteration || p.Mode != string(mode) || c.returnedInputs[p.RequestID] {
+			continue
+		}
+		c.returnedInputs[p.RequestID] = true
+		recorded = append(recorded, p)
+		entry, err := store.Get(c.ctx, c.runID, c.stepID, p.RequestID)
+		if err != nil {
+			entry = inputs.Entry{RequestID: p.RequestID, Mode: mode, Status: inputs.StatusPlaced}
+		}
+		c.placedEntries = append(c.placedEntries, entry)
+	}
+	return recorded
 }
 
 // claimInput claims entry, re-reading it once when the claim is lost:

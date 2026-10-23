@@ -155,7 +155,7 @@ There are two modes:
 - `steer` joins the current run after the next tool round.
 - `follow_up` starts the next run after the agent gives a final answer.
 
-The handler decides where inputs enter the conversation by calling `PlaceInputs(mode)` at those boundaries. `PlaceInputs` needs the journal. It claims each input with a compare-and-swap, then records it as an `input.placed` record carrying the content. The record is the truth about placement. A redelivery or the next iteration reads the journal and never places the same `request_id` twice. A withdrawal that arrives first wins, so a `204` is never followed by a placement.
+The handler decides where inputs enter the conversation by calling `PlaceInputs(mode)` at those boundaries. `PlaceInputs` needs the journal. It claims each input with a compare-and-swap, then records it as an `input.placed` record carrying the content. The record is the truth about placement. A redelivery or the next iteration reads the journal and never places the same `request_id` twice. A redelivery of the same iteration starts again from the last checkpoint, so `PlaceInputs` returns the inputs an earlier delivery of the iteration placed, once, before any new ones. A withdrawal that arrives first wins, so a `204` is never followed by a placement.
 
 A submission ends as `done` (the iteration that placed it committed) or `unanswered` (the step finished before it was placed). No accepted input is left queued on a finished step.
 

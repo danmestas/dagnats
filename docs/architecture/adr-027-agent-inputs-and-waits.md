@@ -55,7 +55,10 @@ carrying the content. A withdrawal that lands in between wins the swap, so
 a `204` never precedes a placement. The journal is the source of truth
 about placement and the KV status a projection: the journal knows every
 request ID placed in any iteration, so a redelivery, or the next
-iteration, never places one twice. A claim whose writer died before
+iteration, never places one twice. A redelivery of the same iteration
+rebuilds its conversation from the previous checkpoint, so `PlaceInputs`
+returns that iteration's recorded placements of the mode first, once per
+delivery, the way `Tool` and `Model` return recorded results. A claim whose writer died before
 appending leaves placed with no record; only a claim of this step writes
 that state, so a later delivery reclaims it, and the checker allows it
 while the step is unfinished. An input whose record cannot be appended for
