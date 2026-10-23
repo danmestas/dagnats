@@ -637,11 +637,14 @@ type crashHook struct {
 	point     chaos.Point
 	kill      bool
 	iteration int
-	fired     sync.Once
+	fired     atomic.Bool
 	count     atomic.Int32
 }
 
-// fire runs the hook for a site, once.
+// fire runs the hook for a site, once. Later sites pass straight
+// through: a sync.Once would hold the successor at the point until the
+// zombie's stall ended, so both would leave it together and race for
+// the claim, and a zombie that won would be fenced mid-tool.
 func (h *crashHook) fire(ctx context.Context, p chaos.Point, site chaos.Site) error {
 	if site.RunID == "" {
 		panic("crashHook: site must name a run")
@@ -649,19 +652,20 @@ func (h *crashHook) fire(ctx context.Context, p chaos.Point, site chaos.Site) er
 	if p != h.point || !h.targets(site) {
 		return nil
 	}
-	err := error(nil)
-	h.fired.Do(func() {
-		h.count.Add(1)
-		if h.kill {
-			err = chaos.ErrKilled
-			return
-		}
-		select {
-		case <-time.After(stallFor):
-		case <-ctx.Done():
-		}
-	})
-	return err
+	if !h.fired.CompareAndSwap(false, true) {
+		return nil
+	}
+	if h.count.Add(1) != 1 {
+		panic("crashHook: fired more than once")
+	}
+	if h.kill {
+		return chaos.ErrKilled
+	}
+	select {
+	case <-time.After(stallFor):
+	case <-ctx.Done():
+	}
+	return nil
 }
 
 // targets is which site the hook aims at: its iteration for worker
