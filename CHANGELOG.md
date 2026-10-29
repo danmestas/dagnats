@@ -7,9 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.33] - 2026-10-29
+
 ### Added
 
 - `nats_host` (`DAGNATS_NATS_HOST`) sets the client listener's bind address. In leaf mode it was always `0.0.0.0`, which exposed the unauthenticated client port to the network; set `127.0.0.1` to keep it on the machine. The default is unchanged.
+
+### Changed
+
+- **A tool that returns plain text now fails with a clear error.** `Tool` names the tool and says its output is not JSON, instead of an opaque marshal error. `ToolFunc` and the docs say to encode text with `json.Marshal`.
+
+### Fixed
+
+- **A follow-up sent while the model was thinking is no longer lost on a redelivery.** When a delivery placed an input and died before committing, `PlaceInputs` on the redelivery returned nothing, so the handler never saw the input. It now returns the iteration's recorded placements first, then any new ones, the way `Tool` and `Model` return recorded results.
+- **The durable-agent handler example places follow-ups at the start of the turn after a final answer.** It used to place them after its checkpoint, so they never reached the history.
+
+### Docs
+
+- A guide to durable agents.
 
 ## [0.0.32] - 2026-10-22
 
