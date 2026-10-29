@@ -644,6 +644,22 @@ func TestValidateClusterConfig(t *testing.T) {
 			wantPanic: "",
 		},
 		{
+			name: "leaf node rejects a non-IP nats_host",
+			mut: func(c *Config) {
+				c.LeafRemotes = []string{"nats-leaf://hub:7422"}
+				c.NATSHost = "localhost"
+			},
+			wantPanic: "nats_host must be an IP address",
+		},
+		{
+			name: "leaf node accepts a loopback nats_host",
+			mut: func(c *Config) {
+				c.LeafRemotes = []string{"nats-leaf://hub:7422"}
+				c.NATSHost = "127.0.0.1"
+			},
+			wantPanic: "",
+		},
+		{
 			name:      "valid standalone config",
 			mut:       func(c *Config) {},
 			wantPanic: "",

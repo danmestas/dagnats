@@ -1278,6 +1278,11 @@ func validateClusterConfig(cfg *Config) {
 		))
 	}
 
+	// Checked before the cluster gate: a leaf node is where nats_host matters.
+	if cfg.NATSHost != "" && net.ParseIP(cfg.NATSHost) == nil {
+		panic(fmt.Sprintf("nats_host must be an IP address; got %q", cfg.NATSHost))
+	}
+
 	clustered := len(cfg.NATSClusterRoutes) > 0
 	if !clustered {
 		return
@@ -1389,9 +1394,6 @@ func validateClusterIdentity(cfg *Config) {
 		panic(fmt.Sprintf(
 			"nats_cluster_host must be an IP address; got %q",
 			cfg.NATSClusterHost))
-	}
-	if cfg.NATSHost != "" && net.ParseIP(cfg.NATSHost) == nil {
-		panic(fmt.Sprintf("nats_host must be an IP address; got %q", cfg.NATSHost))
 	}
 	name := cfg.NATSServerName
 	if len(name) > serverNameMaxLength {
