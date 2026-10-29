@@ -17,7 +17,8 @@ const defaultClusterPort = 6222
 
 // startNATS starts an embedded NATS server with JetStream enabled.
 // In standalone mode (no leaf remotes), binds to localhost only.
-// In leaf mode (len(cfg.LeafRemotes) > 0), binds to 0.0.0.0 for remote access.
+// In leaf mode (len(cfg.LeafRemotes) > 0), binds to 0.0.0.0 for remote access
+// unless cfg.NATSHost names the address.
 // Panics if cfg.DataDir is empty or cfg.MaxStoreBytes <= 0.
 func startNATS(cfg Config) (*natsserver.Server, error) {
 	if cfg.DataDir == "" {
@@ -27,11 +28,7 @@ func startNATS(cfg Config) (*natsserver.Server, error) {
 		panic(fmt.Sprintf("startNATS: cfg.MaxStoreBytes <= 0: %d", cfg.MaxStoreBytes))
 	}
 
-	// Determine bind address based on leaf mode
-	host := "127.0.0.1"
-	if len(cfg.LeafRemotes) > 0 {
-		host = "0.0.0.0"
-	}
+	host := natsBindHost(cfg)
 
 	// 0 means "unset": keep the nats-server default (1 MiB). Config load
 	// already rejects bad explicit values; this guards a Config built
@@ -358,4 +355,16 @@ func clusterServerName(cfg Config, clusterPort int) string {
 		return '-'
 	}, hostname)
 	return fmt.Sprintf("%s-%s-%d", cfg.NATSClusterName, hostname, clusterPort)
+}
+
+// natsBindHost is the client listener's address: cfg.NATSHost when set,
+// else 0.0.0.0 in leaf mode for remote access, else loopback.
+func natsBindHost(cfg Config) string {
+	if cfg.NATSHost != "" {
+		return cfg.NATSHost
+	}
+	if len(cfg.LeafRemotes) > 0 {
+		return "0.0.0.0"
+	}
+	return "127.0.0.1"
 }

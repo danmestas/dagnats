@@ -102,6 +102,10 @@ type Config struct {
 	// 0.0.0.0. Set it to a private (e.g. tailnet) IP to keep routes off
 	// public interfaces.
 	NATSClusterHost string `json:"nats_cluster_host"`
+	// NATSHost is the client listener's bind address; "" means 127.0.0.1,
+	// or 0.0.0.0 in leaf mode. Set 127.0.0.1 to keep a leaf node's clients
+	// on this machine: leaf connections are outbound and need no listener.
+	NATSHost string `json:"nats_host"`
 	// NATSServerName overrides the clustered server_name. JetStream tracks
 	// peers by this name, so it must survive restarts; "" derives
 	// <cluster>-<hostname>-<cluster port>.
@@ -555,6 +559,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if val := os.Getenv("DAGNATS_NATS_CLUSTER_HOST"); val != "" {
 		cfg.NATSClusterHost = val
+	}
+	if val := os.Getenv("DAGNATS_NATS_HOST"); val != "" {
+		cfg.NATSHost = val
 	}
 	if val := os.Getenv("DAGNATS_NATS_SERVER_NAME"); val != "" {
 		cfg.NATSServerName = val
@@ -1025,6 +1032,8 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 		cfg.NATSClusterAuthToken = val
 	case "nats_cluster_host":
 		cfg.NATSClusterHost = val
+	case "nats_host":
+		cfg.NATSHost = val
 	case "nats_server_name":
 		cfg.NATSServerName = val
 	case "nats_jetstream_replicas":
@@ -1267,6 +1276,11 @@ func validateClusterConfig(cfg *Config) {
 			"nats_cluster_port must be 0 (default) or 1-65535; got %d",
 			cfg.NATSClusterPort,
 		))
+	}
+
+	// Checked before the cluster gate: a leaf node is where nats_host matters.
+	if cfg.NATSHost != "" && net.ParseIP(cfg.NATSHost) == nil {
+		panic(fmt.Sprintf("nats_host must be an IP address; got %q", cfg.NATSHost))
 	}
 
 	clustered := len(cfg.NATSClusterRoutes) > 0
