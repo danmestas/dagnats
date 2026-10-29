@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `nats_host` (`DAGNATS_NATS_HOST`) sets the client listener's bind address. In leaf mode it was always `0.0.0.0`, which exposed the unauthenticated client port to the network; set `127.0.0.1` to keep it on the machine. The default is unchanged.
+
 ## [0.0.32] - 2026-10-22
 
 ### Upgrade notes

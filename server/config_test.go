@@ -454,6 +454,39 @@ func TestApplyEnvOverrides_NATSCluster(t *testing.T) {
 	}
 }
 
+func TestNATSBindHost(t *testing.T) {
+	leaf := []string{"nats-leaf://hub:7422"}
+	cases := []struct {
+		name    string
+		host    string
+		remotes []string
+		want    string
+	}{
+		{"standalone stays on loopback", "", nil, "127.0.0.1"},
+		{"leaf mode listens everywhere by default", "", leaf, "0.0.0.0"},
+		{"nats_host keeps a leaf on loopback", "127.0.0.1", leaf, "127.0.0.1"},
+		{"nats_host picks a private address", "100.64.0.9", nil, "100.64.0.9"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.NATSHost, cfg.LeafRemotes = c.host, c.remotes
+			if got := natsBindHost(cfg); got != c.want {
+				t.Errorf("natsBindHost = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestApplyEnvOverrides_NATSHost(t *testing.T) {
+	t.Setenv("DAGNATS_NATS_HOST", "127.0.0.1")
+	cfg := DefaultConfig()
+	applyEnvOverrides(&cfg)
+	if cfg.NATSHost != "127.0.0.1" {
+		t.Errorf("NATSHost = %q, want 127.0.0.1", cfg.NATSHost)
+	}
+}
+
 func TestApplyConfigValue_NATSCluster(t *testing.T) {
 	cfg := DefaultConfig()
 	cases := []struct {
