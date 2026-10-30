@@ -155,6 +155,23 @@ func (s *Server) HTTPAddr() string {
 	return addr
 }
 
+// NATSURL returns the client URL of the embedded NATS server, or "" if
+// Run has not finished starting yet. An embedder that set NATSPort -1
+// reads the real port here instead of probing for a free one. The same
+// ready release/acquire pair as HTTPAddr publishes s.ns.
+func (s *Server) NATSURL() string {
+	if s == nil {
+		panic("NATSURL: s is nil")
+	}
+	if !s.ready.Load() {
+		return ""
+	}
+	if s.ns == nil {
+		panic("NATSURL: ready but the NATS server is nil")
+	}
+	return s.ns.ClientURL()
+}
+
 // startComponents initializes NATS, telemetry, and all services.
 // Cleans up on failure to prevent resource leaks.
 func (s *Server) startComponents() error {

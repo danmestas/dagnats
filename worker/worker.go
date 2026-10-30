@@ -180,6 +180,9 @@ type Worker struct {
 	// supplied an override. coalesceAckWait falls back to defaultAckWait
 	// for absent keys.
 	handlerAckWait map[string]time.Duration
+	// handlerConcurrency holds per-task WithConcurrency overrides; absent
+	// means 1. Written only at registration, before Start.
+	handlerConcurrency map[string]int
 
 	// Directory registration (observability only)
 	dir           *Directory
@@ -204,6 +207,9 @@ type Worker struct {
 	drainMu      sync.RWMutex
 	draining     bool
 	drainTimeout time.Duration
+	// stopping closes once the consumers stop, so a consume callback
+	// waiting for a WithConcurrency slot gives up instead of outliving Stop.
+	stopping chan struct{}
 
 	// Pre-allocated metric instruments — created once in constructor.
 	stepDuration          metric.Float64Histogram
@@ -394,6 +400,7 @@ func NewWorker(
 		cancelledTasksSkipped: skipped,
 		logChunkFailures:      logChunkFail,
 		drainTimeout:          defaultDrainTimeout,
+		stopping:              make(chan struct{}),
 	}
 	for _, opt := range opts {
 		if opt == nil {
@@ -485,6 +492,9 @@ func (w *Worker) HandleSingleton(
 	}
 	if handler == nil {
 		panic("HandleSingleton: handler must not be nil")
+	}
+	if w.handlerConcurrency[taskType] > 1 {
+		panic(singletonConcurrencyPanic(taskType))
 	}
 	w.handlers[taskType] = handler
 	if w.singletons == nil {
@@ -761,12 +771,8 @@ func (w *Worker) subscribePullConsumer(
 			durable + ": " + err.Error())
 	}
 
-	tt := taskType
-	h := handler
 	cc, err := cons.Consume(
-		func(msg jetstream.Msg) {
-			w.handleMessage(tt, h, msg)
-		},
+		w.messageHandler(taskType, handler),
 		jetstream.ConsumeErrHandler(consumeErrHandler(durable)),
 	)
 	if err != nil {
@@ -897,12 +903,8 @@ func (w *Worker) createStickyConsumer(
 	if err != nil {
 		return nil
 	}
-	tt := taskType
-	h := handler
 	cc, err := cons.Consume(
-		func(msg jetstream.Msg) {
-			w.handleMessage(tt, h, msg)
-		},
+		w.messageHandler(taskType, handler),
 		jetstream.ConsumeErrHandler(consumeErrHandler(subject)),
 	)
 	if err != nil {
@@ -959,14 +961,10 @@ func (w *Worker) createElasticConsumer(
 			groupName + ": " + err.Error())
 	}
 
-	h := handler
-	tt := taskType
 	cc, err := pcgroups.ElasticConsume(
 		ctx, w.js, "TASK_QUEUES", groupName,
 		w.workerID,
-		func(msg jetstream.Msg) {
-			w.handleMessage(tt, h, msg)
-		},
+		w.messageHandler(taskType, handler),
 		jetstream.ConsumerConfig{
 			AckPolicy: jetstream.AckExplicitPolicy,
 		},
@@ -1011,9 +1009,6 @@ func (w *Worker) heartbeatLoop(reg WorkerRegistration) {
 	}
 }
 
-// Stop unsubscribes all active subscriptions. Safe to call after
-// Start. Idempotent — repeat calls are no-ops, which makes
-// kill-mid-test patterns + t.Cleanup safe.
 // beginHandler registers one in-flight handleMessage call with handlerWG,
 // racing safely against Stop() via drainMu. Returns false (and adds
 // nothing) once draining has started, so handleMessage knows to bail out
@@ -1031,6 +1026,9 @@ func (w *Worker) beginHandler() bool {
 	return true
 }
 
+// Stop unsubscribes all active subscriptions. Safe to call after
+// Start. Idempotent — repeat calls are no-ops, which makes
+// kill-mid-test patterns + t.Cleanup safe.
 func (w *Worker) Stop() {
 	if w.handlers == nil {
 		panic("Worker.Stop: worker not initialized")
@@ -1092,35 +1090,61 @@ func (w *Worker) Stop() {
 				)
 			}
 		}
-		for _, s := range w.stoppers {
-			s.Stop()
-		}
-
-		// Wait for in-flight handleMessage calls to finish before
-		// returning (#498) — otherwise a caller's deferred cleanup
-		// (e.g. closing a DB pool) can run out from under a handler
-		// that's still mid-execution. Bounded by drainTimeout so a
-		// wedged handler can't block shutdown forever; if it fires we
-		// log and return anyway rather than hang the process.
-		done := make(chan struct{})
-		go func() {
-			w.handlerWG.Wait()
-			close(done)
-		}()
-		timeout := w.drainTimeout
-		if timeout <= 0 {
-			timeout = defaultDrainTimeout
-		}
-		select {
-		case <-done:
-		case <-time.After(timeout):
-			slog.Warn(
-				"worker.Stop: drain timeout — in-flight handlers did not finish",
-				"worker_id", w.workerID,
-				"timeout", timeout,
-			)
-		}
+		w.stopConsumers()
+		w.awaitHandlers()
 	})
+}
+
+// stopConsumers ends every consumer, then releases consume callbacks
+// waiting for a WithConcurrency slot. Stopping first makes it less likely
+// that a waiter's NAK hands the message straight back to this stopping
+// Worker; it does not rule it out, because nats.go unsubscribes the pull
+// on its own goroutine after Stop returns. A message redelivered here is
+// NAK'd again by the next waiter or left to AckWait, so it is not lost.
+func (w *Worker) stopConsumers() {
+	if w.stopping == nil {
+		panic("stopConsumers: worker not built by NewWorker")
+	}
+	if !w.draining {
+		panic("stopConsumers: draining must be set first")
+	}
+	for _, s := range w.stoppers {
+		s.Stop()
+	}
+	close(w.stopping)
+}
+
+// awaitHandlers waits for in-flight handleMessage calls to finish before
+// Stop returns (#498) — otherwise a caller's deferred cleanup (e.g.
+// closing a DB pool) can run out from under a handler that's still
+// mid-execution. Bounded by drainTimeout so a wedged handler can't block
+// shutdown forever; if it fires we log and return anyway rather than
+// hang the process.
+func (w *Worker) awaitHandlers() {
+	if !w.draining {
+		panic("awaitHandlers: draining must be set first")
+	}
+	done := make(chan struct{})
+	go func() {
+		w.handlerWG.Wait()
+		close(done)
+	}()
+	timeout := w.drainTimeout
+	if timeout <= 0 {
+		timeout = defaultDrainTimeout
+	}
+	if timeout <= 0 {
+		panic("awaitHandlers: timeout must be positive")
+	}
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		slog.Warn(
+			"worker.Stop: drain timeout — in-flight handlers did not finish",
+			"worker_id", w.workerID,
+			"timeout", timeout,
+		)
+	}
 }
 
 // startTaskSpan begins an OTel span for the task dispatch and constructs
@@ -1270,6 +1294,20 @@ func (w *Worker) handleMessage(
 		return
 	}
 	defer w.handlerWG.Done()
+	w.runMessage(taskType, handler, msg)
+}
+
+// decodeTask unmarshals msg's payload and screens out tasks of cancelled
+// runs. On false the message is already acked and the caller stops.
+func (w *Worker) decodeTask(
+	taskType string, msg jetstream.Msg,
+) (protocol.TaskPayload, bool) {
+	if msg == nil {
+		panic("decodeTask: msg must not be nil")
+	}
+	if taskType == "" {
+		panic("decodeTask: taskType must not be empty")
+	}
 	var payload protocol.TaskPayload
 	err := json.Unmarshal(msg.Data(), &payload)
 	if err != nil {
@@ -1279,7 +1317,7 @@ func (w *Worker) handleMessage(
 			"task_type", taskType,
 		)
 		msg.Ack()
-		return
+		return payload, false
 	}
 	if w.shouldSkipForCancelledRun(payload.RunID) {
 		w.cancelledTasksSkipped.Add(context.Background(), 1)
@@ -1291,6 +1329,25 @@ func (w *Worker) handleMessage(
 			"step_id", payload.StepID,
 		)
 		msg.Ack()
+		return payload, false
+	}
+	return payload, true
+}
+
+// runMessage executes one task whose handlerWG slot the caller holds:
+// inline from handleMessage, or on its own goroutine from
+// dispatchConcurrent.
+func (w *Worker) runMessage(
+	taskType string, handler HandlerFunc, msg jetstream.Msg,
+) {
+	if msg == nil {
+		panic("runMessage: msg must not be nil")
+	}
+	if handler == nil {
+		panic("runMessage: handler must not be nil")
+	}
+	payload, ok := w.decodeTask(taskType, msg)
+	if !ok {
 		return
 	}
 	ctx, span, tc := w.startTaskSpan(payload, taskType, msg)
@@ -1315,7 +1372,7 @@ func (w *Worker) handleMessage(
 		return
 	}
 
-	err = handler(tc)
+	err := handler(tc)
 	elapsed := float64(time.Since(start).Milliseconds())
 	w.stepDuration.Record(ctx, elapsed)
 	w.tasksActive.Add(ctx, -1)
@@ -1329,12 +1386,8 @@ func (w *Worker) handleMessage(
 	}
 	if err != nil {
 		span.RecordError(err)
-		span.SetStatus(
-			codes.Error, err.Error(),
-		)
-		w.handleTaskError(
-			err, tc, msg, taskType, payload.RunID,
-		)
+		span.SetStatus(codes.Error, err.Error())
+		w.handleTaskError(err, tc, msg, taskType, payload.RunID)
 		return
 	}
 	// #624 review round 2: a handler that returns nil WITHOUT ever
