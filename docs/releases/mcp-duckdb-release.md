@@ -1,7 +1,7 @@
 # Releasing `dagnats-mcp-duckdb`
 
 `dagnats-mcp-duckdb` is a sidecar MCP server backed by DuckDB. It is the only
-dagnats binary that uses CGO (via `marcboeker/go-duckdb`); the main `dagnats`
+dagnats binary that uses CGO (via `github.com/duckdb/duckdb-go/v2`); the main `dagnats`
 binary stays pure-Go (CI-asserted). To keep both worlds happy, the MCP DuckDB
 binary ships as its own per-platform release tarball alongside the main
 `dagnats_<version>_<os>_<arch>.tar.gz` artifacts.
@@ -13,8 +13,9 @@ binary ships as its own per-platform release tarball alongside the main
 - `dagnats-mcp-duckdb-darwin-amd64.tar.gz` — macOS Intel dev hosts.
 - `dagnats-mcp-duckdb-darwin-arm64.tar.gz` — macOS Apple silicon dev hosts.
 
-All four are statically linked against `libduckdb.a` shipped inside
-`marcboeker/go-duckdb` v1.8.x's `deps/` tree. No bundled shared library,
+All four are statically linked against the prebuilt `libduckdb` that
+`duckdb-go/v2` pulls in per platform (`go.duckdb.org/libduckdb/<os>-<arch>`).
+No bundled shared library,
 no rpath/`@loader_path` gymnastics — the binary only links against
 platform-standard runtime libs.
 
@@ -24,8 +25,8 @@ platform-standard runtime libs.
 
 `make build-mcp-duckdb-linux-{amd64,arm64}` runs `go build` inside a
 `golang:1.26-bookworm` container under `--platform linux/<arch>`. CGO is
-enabled and `go-duckdb` resolves to its default static-link build tag, so
-`libduckdb.a` is folded into the binary. The resulting binary needs only
+enabled and the driver's per-platform static library is folded into the
+binary. The resulting binary needs only
 standard glibc, libstdc++, libm, libdl, and libgcc_s — present on every
 Ubuntu/Debian/RHEL release.
 
@@ -36,7 +37,8 @@ when the host is amd64-only; Docker Desktop bundles it).
 
 `make build-mcp-duckdb-darwin-{amd64,arm64}` runs natively on a macOS host
 with `CGO_ENABLED=1`, `CC="clang -arch <arch>"`, and
-`MACOSX_DEPLOYMENT_TARGET=11.0`. The CI release pipeline builds both
+`MACOSX_DEPLOYMENT_TARGET=13.0`, the minimum the prebuilt DuckDB library
+is built for. The CI release pipeline builds both
 slices on a single `macos-latest` runner (arm64 native, amd64
 cross-compile) to keep macOS minutes low.
 
@@ -45,15 +47,15 @@ SDK). No DuckDB toolchain, no Homebrew install.
 
 The resulting binaries link against `/usr/lib/libc++`,
 `/usr/lib/libSystem`, `CoreFoundation.framework`, and `Security.framework`
-— all present on every macOS 11.0+ install.
+— all present on every macOS 13.0+ install.
 
 ## When to bump the bundled DuckDB version
 
 The DuckDB version is pinned via `cmd/dagnats-mcp-duckdb/go.mod`'s
-`marcboeker/go-duckdb` dependency. To bump:
+`github.com/duckdb/duckdb-go/v2` dependency. To bump:
 
 1. `cd cmd/dagnats-mcp-duckdb`
-2. `go get github.com/marcboeker/go-duckdb@<new-version>`
+2. `go get github.com/duckdb/duckdb-go/v2@<new-version>`
 3. `go mod tidy`
 4. Build all four artifacts:
    ```sh

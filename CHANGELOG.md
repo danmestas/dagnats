@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`dagnats-mcp-duckdb` reads an S3 data dir.** `--data-dir s3://bucket/prefix` uses the AWS credential chain. `--s3-endpoint` points it at an S3-compatible store (R2, Garage, Tigris), with credentials from `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION`. The first S3 use downloads DuckDB's signed `httpfs` extension.
+
+### Changed
+
+- **`dagnats-mcp-duckdb` moves to the official DuckDB driver,** `github.com/duckdb/duckdb-go/v2`. The release tarballs for macOS now need **macOS 13 or later** (was 11), the minimum the driver's prebuilt DuckDB library is built for. Linux tarballs are unchanged.
+- **Its queries can read only the data dir.** Once the views exist, file access is locked to that path or prefix: reading other files, writing, attaching another database or lifting the lock is refused.
+
 ### Fixed
 
 - **`dagnats-mcp-duckdb` enforces its row cap whatever the query says.** It used to skip the cap whenever the query text contained `LIMIT` anywhere: in a comment, a column alias, or a larger `LIMIT`. Queries are now wrapped in a capped subquery, and a second stacked statement is refused. CI now runs this module's tests.

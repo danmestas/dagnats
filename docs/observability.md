@@ -105,6 +105,18 @@ go install github.com/danmestas/dagnats/cmd/dagnats-mcp-duckdb@latest
 claude mcp add dagnats-telemetry -- dagnats-mcp-duckdb --data-dir ./telemetry-data
 ```
 
+`--data-dir` also takes an S3 prefix, `s3://bucket/prefix`. Credentials
+come from the standard AWS credential chain. For an S3-compatible store
+(R2, Garage, Tigris), add `--s3-endpoint` (`http://` turns TLS off) and
+set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION`. The
+first S3 use downloads DuckDB's signed `httpfs` extension into the
+user's DuckDB extension cache.
+
+Queries can read only the data dir. Once the views exist, the server
+locks file access to that path or prefix: reading other files, writing,
+attaching another database or changing the lock is refused. Every query
+returns at most its row cap, whatever its text says.
+
 **Generic MCP client** (Cursor, Continue, anything that reads an
 `mcp.json`-style config):
 
