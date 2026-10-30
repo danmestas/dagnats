@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `api_token_file` (`DAGNATS_API_TOKEN_FILE`) requires `Authorization: Bearer <token>` on every HTTP request except `/health`, `/health/cluster` and `/ready`. That includes the console, the HTTP bridge and trigger routes, so a browser or bridge worker needs a proxy that adds the header.
   - Both read their secret from a file, trimmed. A file readable by other users logs a warning.
   - With neither set, nothing changes.
+  - **Not covered:**
+    - The NATS monitoring port (`monitor_port`), which shows connection names, subjects and streams to anyone who can reach it. Leave it unset, or keep it on a port only you can reach. dagnats warns when it's set alongside `nats_user`.
+    - Cluster routes, which need `nats_cluster_auth_token`. dagnats warns when routes are set without it.
+    - The separate `dagnats-api` binary.
+    - Logins passed in `DAGNATS_NATS_URL`: visible in the process environment.
 
 ## [0.0.33] - 2026-10-29
 

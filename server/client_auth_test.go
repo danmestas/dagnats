@@ -5,12 +5,14 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go"
 )
@@ -162,6 +164,7 @@ func TestAPITokenGate(t *testing.T) {
 		{"/runs", "Bearer wrong", http.StatusUnauthorized},
 		{"/runs", "tok-123", http.StatusUnauthorized},
 		{"/runs", "Bearer tok-123", http.StatusTeapot},
+		{"/runs", "bearer tok-123", http.StatusTeapot},
 		{"/v1/tasks/poll", "", http.StatusUnauthorized},
 		{"/console/", "", http.StatusUnauthorized},
 		{"/health", "", http.StatusTeapot},
@@ -187,5 +190,87 @@ func TestAPITokenGate(t *testing.T) {
 	apiTokenGate("", ok).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/runs", nil))
 	if rec.Code != http.StatusTeapot {
 		t.Fatalf("with no token configured the gate blocked: %d", rec.Code)
+	}
+}
+
+// The whole server, not the pieces: with both logins set, the HTTP API,
+// the client port and the WebSocket listener all refuse an anonymous
+// caller, and the health probes still answer. Removing the wiring in
+// startComponents or startHTTP fails this test.
+func TestServer_EnforcesBothLogins(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.NATSUser = "dagnats"
+	cfg.NATSPasswordFile = writeSecret(t, "server-pw")
+	cfg.APITokenFile = writeSecret(t, "server-token")
+	cfg.NATSWebsocketPort = freeTCPPort(t)
+	cfg.NATSWebsocketNoTLS = true
+	srv := New(cfg)
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Run() }()
+	defer func() {
+		srv.Stop()
+		select {
+		case <-errCh:
+		case <-time.After(20 * time.Second):
+			t.Fatal("Run() did not return within 20s")
+		}
+	}()
+	httpAddr := waitHTTPAddr(t, srv)
+
+	status := func(path, auth string) int {
+		req, err := http.NewRequest(http.MethodGet, "http://"+httpAddr+path, nil)
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if got := status("/workflows", ""); got != http.StatusUnauthorized {
+		t.Errorf("/workflows without a token: %d, want 401", got)
+	}
+	if got := status("/workflows", "Bearer server-token"); got != http.StatusOK {
+		t.Errorf("/workflows with the token: %d, want 200", got)
+	}
+	if got := status("/ready", ""); got != http.StatusOK {
+		t.Errorf("/ready without a token: %d, want 200", got)
+	}
+
+	clientURL := srv.ns.ClientURL()
+	if nc, err := nats.Connect(clientURL); err == nil {
+		nc.Close()
+		t.Error("an anonymous client connected to the client port")
+	}
+	wsURL := fmt.Sprintf("ws://127.0.0.1:%d", cfg.NATSWebsocketPort)
+	if nc, err := nats.Connect(wsURL); err == nil {
+		nc.Close()
+		t.Error("an anonymous client connected over WebSocket")
+	}
+	nc, err := nats.Connect(wsURL, nats.UserInfo("dagnats", "server-pw"))
+	if err != nil {
+		t.Fatalf("the login was refused over WebSocket: %v", err)
+	}
+	nc.Close()
+}
+
+func TestReadSecretFile_DoesNotReadPastTheLimit(t *testing.T) {
+	if _, err := os.Stat("/dev/zero"); err != nil {
+		t.Skip("no /dev/zero")
+	}
+	done := make(chan error, 1)
+	go func() { _, err := readSecretFile("/dev/zero"); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("/dev/zero was accepted as a secret")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("readSecretFile kept reading an endless file")
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -27,21 +28,24 @@ func readSecretFile(path string) (string, error) {
 	if path == "" {
 		panic("readSecretFile: path must not be empty")
 	}
-	info, err := os.Stat(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
-	if info.Size() > secretFileBytesMax {
-		return "", fmt.Errorf("%s: %d bytes, over the %d-byte limit for a secret",
-			path, info.Size(), secretFileBytesMax)
-	}
-	if info.Mode().Perm()&0o077 != 0 {
+	defer f.Close()
+	if info, err := f.Stat(); err == nil && info.Mode().Perm()&0o077 != 0 {
 		slog.Warn("secret file is readable by other users; chmod 600 it",
 			"path", path, "mode", info.Mode().Perm().String())
 	}
-	raw, err := os.ReadFile(path)
+	// Read one byte past the limit through a bounded reader, so a device
+	// or FIFO given by mistake cannot stall startup.
+	raw, err := io.ReadAll(io.LimitReader(f, secretFileBytesMax+1))
 	if err != nil {
 		return "", err
+	}
+	if len(raw) > secretFileBytesMax {
+		return "", fmt.Errorf("%s: over the %d-byte limit for a secret",
+			path, secretFileBytesMax)
 	}
 	secret := strings.TrimSpace(string(raw))
 	if secret == "" {
@@ -73,7 +77,26 @@ func resolveClientAuth(cfg *Config) error {
 		}
 		cfg.apiToken = token
 	}
+	warnUncoveredListeners(*cfg)
 	return nil
+}
+
+// warnUncoveredListeners names the listeners the client login does not
+// reach, so an operator who set one does not assume they are closed too.
+func warnUncoveredListeners(cfg Config) {
+	if cfg.NATSUser == "" {
+		return
+	}
+	if cfg.MonitorPort > 0 {
+		slog.Warn("nats_user does not cover the NATS monitoring port: "+
+			"anyone who can reach it sees connection names, subjects and streams",
+			"monitor_port", cfg.MonitorPort)
+	}
+	if len(cfg.NATSClusterRoutes) > 0 && cfg.NATSClusterAuthToken == "" {
+		slog.Warn("nats_user does not cover cluster routes: set " +
+			"nats_cluster_auth_token, or a process that speaks the route " +
+			"protocol reads every message")
+	}
 }
 
 // apiTokenGate requires "Authorization: Bearer <token>" on every request
@@ -94,7 +117,7 @@ func apiTokenGate(token string, next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		presented, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		presented, ok := bearerToken(r.Header.Get("Authorization"))
 		got := sha256.Sum256([]byte(presented))
 		if !ok || subtle.ConstantTimeCompare(got[:], want[:]) != 1 {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="dagnats"`)
@@ -103,6 +126,16 @@ func apiTokenGate(token string, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// bearerToken returns the credentials of a Bearer authorization header.
+// The scheme name is case-insensitive (RFC 7235).
+func bearerToken(header string) (string, bool) {
+	scheme, token, found := strings.Cut(header, " ")
+	if !found || !strings.EqualFold(scheme, "Bearer") {
+		return "", false
+	}
+	return token, true
 }
 
 func isProbePath(path string) bool {
