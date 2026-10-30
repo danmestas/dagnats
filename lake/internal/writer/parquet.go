@@ -66,7 +66,7 @@ func (e *encoder) encode(rows []Row, schemaVersion int) ([]byte, error) {
 	if len(rows) == 0 {
 		return nil, fmt.Errorf("lake: encode: no rows")
 	}
-	if len(rows) > BufferedRowsMaxDefault*4 {
+	if len(rows) > PartRowsMax {
 		return nil, fmt.Errorf("lake: encode: %d rows exceeds one part", len(rows))
 	}
 	var buffer bytes.Buffer
@@ -103,42 +103,50 @@ func (e *encoder) encodeRow(row Row, schemaVersion int) parquet.Row {
 	set("payload", parquet.ByteArrayValue([]byte(row.Payload)))
 	for _, column := range e.columns {
 		position := e.index[column.Name]
-		out[position] = projectValue(column.Type, row.Values[column.Name]).Level(0, 0, position)
-		if !out[position].IsNull() {
-			out[position] = out[position].Level(0, 1, position)
+		value, ok := projectValue(column.Type, row.Values[column.Name])
+		if !ok {
+			panic("lake: encodeRow got a value Append should have refused: " + column.Name)
+		}
+		if value.IsNull() {
+			out[position] = value.Level(0, 0, position)
+		} else {
+			out[position] = value.Level(0, 1, position)
 		}
 	}
 	return out
 }
 
-// projectValue converts a Go value to a Parquet value, or NULL when it is absent or of the wrong
-// type: a malformed event must not cost the row, because payload still holds it whole.
-func projectValue(columnType lake.ColumnType, value any) parquet.Value {
+// projectValue converts a Go value to a Parquet value. nil is NULL; a value of the wrong type
+// reports false, so Append can refuse it with the column's name. The archive turns a mistyped or
+// missing JSON value into nil before appending, because payload still holds the event whole.
+func projectValue(columnType lake.ColumnType, value any) (parquet.Value, bool) {
 	switch typed := value.(type) {
+	case nil:
+		return parquet.Value{}, true
 	case string:
 		if columnType == lake.TypeString {
-			return parquet.ByteArrayValue([]byte(typed))
+			return parquet.ByteArrayValue([]byte(typed)), true
 		}
 	case int:
 		if columnType == lake.TypeInt64 {
-			return parquet.Int64Value(int64(typed))
+			return parquet.Int64Value(int64(typed)), true
 		}
 	case int64:
 		if columnType == lake.TypeInt64 {
-			return parquet.Int64Value(typed)
+			return parquet.Int64Value(typed), true
 		}
 	case float64:
 		if columnType == lake.TypeFloat64 {
-			return parquet.DoubleValue(typed)
+			return parquet.DoubleValue(typed), true
 		}
 	case bool:
 		if columnType == lake.TypeBool {
-			return parquet.BooleanValue(typed)
+			return parquet.BooleanValue(typed), true
 		}
 	case time.Time:
 		if columnType == lake.TypeTimestamp {
-			return parquet.Int64Value(typed.UnixMicro())
+			return parquet.Int64Value(typed.UnixMicro()), true
 		}
 	}
-	return parquet.Value{}
+	return parquet.Value{}, false
 }

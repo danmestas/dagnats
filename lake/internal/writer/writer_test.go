@@ -36,6 +36,11 @@ func testRow(seq int64, day int) Row {
 	}
 }
 
+func listCommits(root string) ([]lake.Commit, error) {
+	listing, err := lake.ListCommitted(root, "notify", "deliveries")
+	return listing.Commits, err
+}
+
 func newTestWriter(t *testing.T, root string) *Writer {
 	t.Helper()
 	writer, err := NewWriter(testConfig(root))
@@ -57,7 +62,7 @@ func TestFlush_CommitsOnePartPerEventDate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
-	listed, err := lake.ListCommitted(root, "notify", "deliveries")
+	listed, err := listCommits(root)
 	if err != nil {
 		t.Fatalf("ListCommitted: %v", err)
 	}
@@ -95,7 +100,7 @@ func TestFlush_CrashBetweenPartAndCommitLeavesUncommittedPart(t *testing.T) {
 	if err != nil || len(parts) != 1 {
 		t.Fatalf("parts on disk = %v, %v; want the orphan", parts, err)
 	}
-	listed, err := lake.ListCommitted(root, "notify", "deliveries")
+	listed, err := listCommits(root)
 	if err != nil || len(listed) != 0 {
 		t.Fatalf("ListCommitted = %v, %v; want no committed parts", listed, err)
 	}
@@ -104,7 +109,7 @@ func TestFlush_CrashBetweenPartAndCommitLeavesUncommittedPart(t *testing.T) {
 	if _, err := writer.Flush(); err != nil {
 		t.Fatalf("retry Flush: %v", err)
 	}
-	listed, err = lake.ListCommitted(root, "notify", "deliveries")
+	listed, err = listCommits(root)
 	if err != nil || len(listed) != 1 {
 		t.Fatalf("after retry: %v, %v", listed, err)
 	}
@@ -188,18 +193,18 @@ func TestAppend_BufferIsBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := int64(0); i < 2; i++ {
+	for i := int64(1); i <= 2; i++ {
 		if err := writer.Append(testRow(i, 1)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := writer.Append(testRow(2, 1)); !errors.Is(err, ErrBufferFull) {
+	if err := writer.Append(testRow(3, 1)); !errors.Is(err, ErrBufferFull) {
 		t.Fatalf("third Append err = %v, want ErrBufferFull", err)
 	}
 	if _, err := writer.Flush(); err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.Append(testRow(2, 1)); err != nil {
+	if err := writer.Append(testRow(3, 1)); err != nil {
 		t.Fatalf("Append after Flush: %v", err)
 	}
 }
@@ -210,6 +215,9 @@ func TestNewWriter_RefusesBadConfig(t *testing.T) {
 		func(c *Config) { c.Program = "../x" },
 		func(c *Config) { c.Table = "A" },
 		func(c *Config) { c.Schema.Version = 0 },
+		func(c *Config) { c.Stream = "" },
+		func(c *Config) { c.BufferedRowsMax = PartRowsMax + 1 },
+		func(c *Config) { c.BufferedRowsMax = -1 },
 		func(c *Config) { c.Schema.Columns = []lake.Column{{Name: "payload", Type: lake.TypeString}} },
 	}
 	for i, mutate := range bad {
@@ -221,7 +229,7 @@ func TestNewWriter_RefusesBadConfig(t *testing.T) {
 	}
 }
 
-func TestListCommitted_FailsOnCommitWithoutPart(t *testing.T) {
+func TestListCommitted_RejectsCommitWithoutPart(t *testing.T) {
 	root := t.TempDir()
 	writer := newTestWriter(t, root)
 	if err := writer.Append(testRow(1, 1)); err != nil {
@@ -234,10 +242,15 @@ func TestListCommitted_FailsOnCommitWithoutPart(t *testing.T) {
 	if err := os.Remove(commits[0].Path); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := lake.ListCommitted(root, "notify", "deliveries"); err == nil {
-		t.Fatal("commit with a missing part was listed")
+	listing, err := lake.ListCommitted(root, "notify", "deliveries")
+	if err != nil || len(listing.Commits) != 0 || len(listing.Rejected) != 1 {
+		t.Fatalf("listing = %+v, %v; want the commit rejected", listing, err)
 	}
-	if got, err := lake.ListCommitted(root, "notify", "absent"); err != nil || got != nil {
-		t.Fatalf("absent table = %v, %v; want nil, nil", got, err)
+	if !strings.Contains(listing.Rejected[0].Reason, "missing part") {
+		t.Fatalf("reason = %q", listing.Rejected[0].Reason)
+	}
+	absent, err := lake.ListCommitted(root, "notify", "absent")
+	if err != nil || len(absent.Commits) != 0 {
+		t.Fatalf("absent table = %+v, %v; want empty", absent, err)
 	}
 }

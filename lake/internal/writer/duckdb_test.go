@@ -18,7 +18,7 @@ func TestRoundTrip_DuckDBReadsCommittedParts(t *testing.T) {
 	root := t.TempDir()
 	writer := newTestWriter(t, root)
 	missing := testRow(2, 1)
-	missing.Values = map[string]any{"org_id": "o2", "attempts": "not a number"}
+	missing.Values = map[string]any{"org_id": "o2", "attempts": nil}
 	for _, row := range []Row{testRow(1, 1), missing, testRow(3, 2)} {
 		if err := writer.Append(row); err != nil {
 			t.Fatal(err)
@@ -27,7 +27,8 @@ func TestRoundTrip_DuckDBReadsCommittedParts(t *testing.T) {
 	if _, err := writer.Flush(); err != nil {
 		t.Fatal(err)
 	}
-	commits, err := lake.ListCommitted(root, "notify", "deliveries")
+	listing, err := lake.ListCommitted(root, "notify", "deliveries")
+	commits := listing.Commits
 	if err != nil {
 		t.Fatal(err)
 	}
