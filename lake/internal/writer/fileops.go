@@ -33,7 +33,9 @@ type osOps struct{}
 
 func (osOps) MkdirAll(path string) error { return os.MkdirAll(path, 0o755) }
 
-func (osOps) CreateTemp(dir, pattern string) (tempFile, error) { return os.CreateTemp(dir, pattern) }
+func (osOps) CreateTemp(dir, pattern string) (tempFile, error) {
+	return os.CreateTemp(dir, pattern)
+}
 
 func (osOps) Rename(from, to string) error { return os.Rename(from, to) }
 

@@ -28,7 +28,8 @@ func plant(t *testing.T, root, dt, stem, record string, withPart bool) {
 
 func record(stem string, min, max int) string {
 	return `{"part":"` + stem + `.parquet","rows":2,"bytes":1,"stream":"S","seq_min":` +
-		strconv.Itoa(min) + `,"seq_max":` + strconv.Itoa(max) + `,"schema_version":1,"written_at":"2026-10-01T00:00:00Z"}`
+		strconv.Itoa(min) + `,"seq_max":` + strconv.Itoa(max) +
+		`,"schema_version":1,"written_at":"2026-10-01T00:00:00Z"}`
 }
 
 func TestListCommitted_OneBadRecordDoesNotHideTheRest(t *testing.T) {
