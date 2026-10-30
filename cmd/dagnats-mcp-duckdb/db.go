@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	_ "github.com/marcboeker/go-duckdb"
+	_ "github.com/duckdb/duckdb-go/v2"
 )
 
 const (
@@ -22,102 +22,170 @@ type DB struct {
 	dataDir string
 }
 
-// OpenDB opens an in-memory DuckDB database and creates read-only views
-// over Parquet files in dataDir. Views are created for traces, logs,
-// metrics_gauge, metrics_sum, and metrics_histogram.
-func OpenDB(dataDir string) (*DB, error) {
+// Option adjusts OpenDB.
+type Option func(*options)
+
+type options struct {
+	s3Endpoint string
+}
+
+// WithS3Endpoint points an s3:// data dir at an S3-compatible endpoint
+// (R2, Garage, Tigris, MinIO) instead of AWS. "http://" turns TLS off;
+// a bare host or "https://" keeps it on. Credentials then come from
+// AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_REGION.
+func WithS3Endpoint(endpoint string) Option {
+	return func(o *options) { o.s3Endpoint = endpoint }
+}
+
+// signals are the views OpenDB creates, one per telemetry signal.
+var signals = []string{
+	"traces", "logs",
+	"metrics_gauge", "metrics_sum", "metrics_histogram",
+}
+
+// OpenDB opens an in-memory DuckDB database with a read-only view over
+// the Parquet files of each telemetry signal in dataDir, a local path or
+// an s3:// prefix. Once the views exist, file access is locked to
+// dataDir for the life of the connection: queries cannot read, write or
+// attach anything else, and cannot undo the lock.
+func OpenDB(dataDir string, opts ...Option) (*DB, error) {
 	if dataDir == "" {
 		return nil, fmt.Errorf("dataDir must not be empty")
 	}
-
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	root, err := dataRoot(dataDir)
+	if err != nil {
+		return nil, err
+	}
 	conn, err := sql.Open("duckdb", "")
 	if err != nil {
 		return nil, fmt.Errorf("open duckdb: %w", err)
 	}
-
-	db := &DB{conn: conn, dataDir: dataDir}
-	if err := db.createViews(); err != nil {
+	db := &DB{conn: conn, dataDir: root}
+	if err := db.setup(o); err != nil {
 		conn.Close()
-		return nil, fmt.Errorf("create views: %w", err)
+		return nil, err
 	}
-
 	return db, nil
 }
 
-// createViews sets up Parquet-backed views for each telemetry signal.
-// Views that have no Parquet files yet are created as empty tables.
-func (db *DB) createViews() error {
-	views := []string{
-		"traces", "logs",
-		"metrics_gauge", "metrics_sum", "metrics_histogram",
+func (db *DB) setup(o options) error {
+	if isS3(db.dataDir) {
+		if err := db.configureS3(o.s3Endpoint); err != nil {
+			return fmt.Errorf("configure s3: %w", err)
+		}
 	}
-	for _, name := range views {
+	for _, name := range signals {
 		if err := db.createView(name); err != nil {
 			return fmt.Errorf("create view %s: %w", name, err)
+		}
+	}
+	if err := db.lockToDataDir(); err != nil {
+		return fmt.Errorf("lock file access: %w", err)
+	}
+	return nil
+}
+
+// dataRoot is dataDir in the form the lock compares against: an
+// absolute local path, or the s3:// prefix, without a trailing slash.
+func dataRoot(dataDir string) (string, error) {
+	if isS3(dataDir) {
+		root := strings.TrimRight(dataDir, "/")
+		if strings.Count(root, "/") < 2 || root == "s3:/" {
+			return "", fmt.Errorf("s3 data dir %q needs a bucket", dataDir)
+		}
+		return root, nil
+	}
+	abs, err := filepath.Abs(dataDir)
+	if err != nil {
+		return "", fmt.Errorf("data dir %q: %w", dataDir, err)
+	}
+	return abs, nil
+}
+
+func isS3(dataDir string) bool { return strings.HasPrefix(dataDir, "s3://") }
+
+// configureS3 loads httpfs and creates the S3 secret. httpfs is not
+// bundled with the driver, so the first use downloads DuckDB's signed
+// extension into the user's DuckDB extension cache.
+func (db *DB) configureS3(endpoint string) error {
+	for _, stmt := range []string{"INSTALL httpfs", "LOAD httpfs"} {
+		if _, err := db.conn.Exec(stmt); err != nil {
+			return fmt.Errorf("%s: %w", stmt, err)
+		}
+	}
+	secret := "CREATE SECRET dagnats_s3 (TYPE s3, PROVIDER credential_chain)"
+	if endpoint != "" {
+		host, useSSL := parseS3Endpoint(endpoint)
+		region := os.Getenv("AWS_REGION")
+		if region == "" {
+			region = "auto"
+		}
+		secret = fmt.Sprintf("CREATE SECRET dagnats_s3 (TYPE s3, KEY_ID %s, "+
+			"SECRET %s, REGION %s, ENDPOINT %s, URL_STYLE 'path', USE_SSL %t)",
+			sqlString(os.Getenv("AWS_ACCESS_KEY_ID")),
+			sqlString(os.Getenv("AWS_SECRET_ACCESS_KEY")),
+			sqlString(region), sqlString(host), useSSL)
+	}
+	if _, err := db.conn.Exec(secret); err != nil {
+		return fmt.Errorf("create s3 secret: %w", err)
+	}
+	return nil
+}
+
+// parseS3Endpoint splits an endpoint flag into the host DuckDB wants and
+// whether to use TLS.
+func parseS3Endpoint(endpoint string) (host string, useSSL bool) {
+	host, useSSL = endpoint, true
+	if rest, ok := strings.CutPrefix(endpoint, "http://"); ok {
+		host, useSSL = rest, false
+	} else if rest, ok := strings.CutPrefix(endpoint, "https://"); ok {
+		host = rest
+	}
+	return strings.TrimRight(host, "/"), useSSL
+}
+
+// createView creates a Parquet-backed view for one signal, or an empty
+// placeholder table when the signal has no Parquet files yet.
+func (db *DB) createView(name string) error {
+	glob := sqlString(db.dataDir + "/" + name + "/**/*.parquet")
+	var count int
+	err := db.conn.QueryRow("SELECT count(*) FROM glob(" + glob + ")").Scan(&count)
+	if err != nil {
+		return fmt.Errorf("list %s: %w", name, err)
+	}
+	query := fmt.Sprintf(`CREATE OR REPLACE TABLE %s AS SELECT 1 WHERE false`, name)
+	if count > 0 {
+		query = fmt.Sprintf(`CREATE OR REPLACE VIEW %s AS SELECT * FROM `+
+			`read_parquet(%s, union_by_name=true, hive_partitioning=true)`,
+			name, glob)
+	}
+	_, err = db.conn.Exec(query)
+	return err
+}
+
+// lockToDataDir allows file access under the data dir only, turns all
+// other access off, and locks the configuration so no query can change
+// it back.
+func (db *DB) lockToDataDir() error {
+	for _, stmt := range []string{
+		"SET allowed_directories = [" + sqlString(db.dataDir+"/") + "]",
+		"SET enable_external_access = false",
+		"SET lock_configuration = true",
+	} {
+		if _, err := db.conn.Exec(stmt); err != nil {
+			return fmt.Errorf("%s: %w", stmt, err)
 		}
 	}
 	return nil
 }
 
-// createView creates a single Parquet-backed view, or an empty
-// placeholder table when no Parquet files exist yet.
-func (db *DB) createView(name string) error {
-	if !hasParquetFiles(db.dataDir, name) {
-		query := fmt.Sprintf(
-			`CREATE OR REPLACE TABLE %s `+
-				`AS SELECT 1 WHERE false`,
-			name,
-		)
-		_, err := db.conn.Exec(query)
-		return err
-	}
-	glob := fmt.Sprintf(
-		"%s/%s/**/*.parquet", db.dataDir, name,
-	)
-	query := fmt.Sprintf(
-		`CREATE OR REPLACE VIEW %s AS SELECT * FROM `+
-			`read_parquet('%s', `+
-			`union_by_name=true, hive_partitioning=true)`,
-		name, glob,
-	)
-	_, err := db.conn.Exec(query)
-	return err
-}
-
-// hasParquetFiles checks whether any .parquet files exist under
-// dataDir/name.
-func hasParquetFiles(dataDir string, name string) bool {
-	pattern := filepath.Join(dataDir, name, "**", "*.parquet")
-	matches, err := filepath.Glob(pattern)
-	if err != nil || len(matches) > 0 {
-		return len(matches) > 0
-	}
-	// filepath.Glob doesn't recurse with **, try one level.
-	pattern = filepath.Join(dataDir, name, "*.parquet")
-	matches, _ = filepath.Glob(pattern)
-	if len(matches) > 0 {
-		return true
-	}
-	// Walk to find any parquet file.
-	dir := filepath.Join(dataDir, name)
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		return false
-	}
-	found := false
-	filepath.Walk(dir, func(
-		path string, info os.FileInfo, err error,
-	) error {
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() &&
-			strings.HasSuffix(path, ".parquet") {
-			found = true
-			return filepath.SkipAll
-		}
-		return nil
-	})
-	return found
+// sqlString quotes s as a SQL string literal.
+func sqlString(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
 // Close closes the underlying DuckDB connection.

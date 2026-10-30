@@ -151,9 +151,9 @@ build-release: clean ## Build cross-platform release binaries + tarballs into ./
 	done > SHA256SUMS
 	@echo "" && echo "Built artifacts:" && ls -lh $(DIST)/
 
-# Build dagnats-mcp-duckdb for linux/amd64 with CGO + the bundled
-# libduckdb.a from marcboeker/go-duckdb. The static link tag is
-# the default in go-duckdb v1.8.x, so the resulting binary needs
+# Build dagnats-mcp-duckdb for linux/amd64 with CGO + the prebuilt
+# static libduckdb that github.com/duckdb/duckdb-go/v2 pulls in per
+# platform (go.duckdb.org/libduckdb/<os>-<arch>), so the binary needs
 # only glibc + libstdc++ + libm + libdl on the target host — all
 # standard on every Ubuntu/Debian/RHEL release.
 #
@@ -216,14 +216,16 @@ build-mcp-duckdb-linux-arm64: ## Build dagnats-mcp-duckdb linux/arm64 tarball
 	  ls -lh $(DIST)/$(MCPDUCKDB_LINUX_ARM64_PKGNAME).tar.gz
 
 # darwin builds run natively on a macOS host (typically the GHA
-# macos-latest runner, which is arm64). go-duckdb v1.8.x ships a
-# static libduckdb.a for darwin/amd64 + darwin/arm64 under its
-# deps/ tree, so the host needs only Xcode CommandLineTools (clang
+# macos-latest runner, which is arm64). duckdb-go/v2 pulls in a
+# prebuilt static libduckdb for darwin/amd64 + darwin/arm64, so the
+# host needs only Xcode CommandLineTools (clang
 # + the macOS SDK) — no DuckDB toolchain, no Homebrew install.
 # CGO_ENABLED=1 plus -arch via CC selects the right slice. We pin
-# MACOSX_DEPLOYMENT_TARGET=11.0 to match the dagnats main binary's
-# minimum supported macOS. See #188.
-MCPDUCKDB_DARWIN_DEPLOYMENT_TARGET := 11.0
+# MACOSX_DEPLOYMENT_TARGET=13.0: the prebuilt libduckdb is built for
+# macOS 13, so a lower target only produces linker warnings for a
+# binary that needs 13 anyway. The main dagnats binary is unaffected.
+# See #188.
+MCPDUCKDB_DARWIN_DEPLOYMENT_TARGET := 13.0
 MCPDUCKDB_DARWIN_AMD64_PKGNAME := dagnats-mcp-duckdb-darwin-amd64
 build-mcp-duckdb-darwin-amd64: ## Build dagnats-mcp-duckdb darwin/amd64 tarball
 	@if [ "$$(uname -s)" != "Darwin" ]; then \
