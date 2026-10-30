@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Optional logins for a dagnats other local users can reach.** By default dagnats' NATS client port and HTTP API accept any local process, under any user account.
+  - `nats_user` with `nats_password_file` (`DAGNATS_NATS_USER`, `DAGNATS_NATS_PASSWORD_FILE`) requires that login on the client port and the WebSocket listener. dagnats' own engine and embedded workers log in with it automatically. CLI commands and outside workers put it in their URL: `nats://user:password@host:4222`.
+  - `api_token_file` (`DAGNATS_API_TOKEN_FILE`) requires `Authorization: Bearer <token>` on every HTTP request except `/health`, `/health/cluster` and `/ready`. That includes the console, the HTTP bridge and trigger routes, so a browser or bridge worker needs a proxy that adds the header.
+  - Both read their secret from a file, trimmed. A file readable by other users logs a warning.
+  - With neither set, nothing changes.
+  - **Not covered:**
+    - The NATS monitoring port (`monitor_port`), which shows connection names, subjects and streams to anyone who can reach it. Leave it unset, or keep it on a port only you can reach. dagnats warns when it's set alongside `nats_user`.
+    - Cluster routes, which need `nats_cluster_auth_token`. dagnats warns when routes are set without it.
+    - The separate `dagnats-api` binary.
+    - Logins passed in `DAGNATS_NATS_URL`: visible in the process environment.
+
 ## [0.0.33] - 2026-10-29
 
 ### Added
