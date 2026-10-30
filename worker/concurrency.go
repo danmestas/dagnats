@@ -10,11 +10,13 @@ import (
 // without per-consumer tuning.
 const ConcurrencyMax = 256
 
-// WithConcurrency lets up to n tasks of the handler's type run at once in
-// this Worker (#842). The default is 1: one task of a type at a time.
-// With n > 1 tasks of that type no longer finish in delivery order,
-// including within a partition under WithPartitions. Panics unless
-// 1 <= n <= ConcurrencyMax.
+// WithConcurrency lets each consumer lane of the handler's type run up to
+// n tasks at once (#842). A lane is one consumer: the pull consumer, the
+// sticky consumer, each WithGroups group, each WithPartitions member. The
+// default is 1 per lane, which is how every lane has always run. With
+// n > 1 a lane's tasks no longer finish in delivery order, including
+// within a partition. Panics unless 1 <= n <= ConcurrencyMax, and on a
+// HandleSingleton type when n > 1.
 func WithConcurrency(n int) HandlerOption {
 	if n < 1 {
 		panic("WithConcurrency: n must be >= 1")
@@ -29,6 +31,9 @@ func WithConcurrency(n int) HandlerOption {
 		if taskType == "" {
 			panic("WithConcurrency: taskType must not be empty")
 		}
+		if w.singletons[taskType] && n > 1 {
+			panic(singletonConcurrencyPanic(taskType))
+		}
 		if w.handlerConcurrency == nil {
 			w.handlerConcurrency = make(map[string]int)
 		}
@@ -36,11 +41,19 @@ func WithConcurrency(n int) HandlerOption {
 	}
 }
 
-// messageHandler returns the consume callback for taskType. At the
-// default of 1 the callback runs the task inline, exactly as before #842.
-// Above 1 every consumer of the type (pull, sticky, per-group, elastic)
-// shares one semaphore, so n bounds the type across the whole Worker.
-// Called only from Start, which runs single-threaded.
+// singletonConcurrencyPanic is the one message for a singleton given
+// WithConcurrency above 1, whichever of the two registrations came last.
+func singletonConcurrencyPanic(taskType string) string {
+	if taskType == "" {
+		panic("singletonConcurrencyPanic: taskType must not be empty")
+	}
+	return "singleton " + taskType + " cannot take WithConcurrency above 1"
+}
+
+// messageHandler returns the consume callback for one consumer lane of
+// taskType. At the default of 1 the callback runs the task inline,
+// exactly as before #842. Above 1 the lane gets its own n-slot semaphore:
+// each call makes a fresh one, and each consumer calls this once.
 func (w *Worker) messageHandler(
 	taskType string, handler HandlerFunc,
 ) func(jetstream.Msg) {
@@ -51,23 +64,12 @@ func (w *Worker) messageHandler(
 		panic("messageHandler: handler must not be nil")
 	}
 	n := w.handlerConcurrency[taskType]
-	if w.singletons[taskType] && n > 1 {
-		panic("messageHandler: singleton " + taskType +
-			" cannot take WithConcurrency above 1")
-	}
 	if n <= 1 {
 		return func(msg jetstream.Msg) {
 			w.handleMessage(taskType, handler, msg)
 		}
 	}
-	if w.handlerSlots == nil {
-		w.handlerSlots = make(map[string]chan struct{})
-	}
-	slots, ok := w.handlerSlots[taskType]
-	if !ok {
-		slots = make(chan struct{}, n)
-		w.handlerSlots[taskType] = slots
-	}
+	slots := make(chan struct{}, n)
 	return func(msg jetstream.Msg) {
 		w.dispatchConcurrent(taskType, handler, msg, slots)
 	}

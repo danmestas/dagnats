@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/danmestas/dagnats/internal/consumername"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 )
@@ -91,6 +93,13 @@ func publishConcurrencyTask(
 	t *testing.T, js jetstream.JetStream, taskType, runID string,
 ) {
 	t.Helper()
+	publishConcurrencySubject(t, js, "task."+taskType+"."+runID, runID)
+}
+
+func publishConcurrencySubject(
+	t *testing.T, js jetstream.JetStream, subject, runID string,
+) {
+	t.Helper()
 	payload := protocol.TaskPayload{
 		TaskID: runID + ".s", RunID: runID, StepID: "s",
 		Input: json.RawMessage(`"go"`),
@@ -99,7 +108,6 @@ func publishConcurrencyTask(
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	subject := "task." + taskType + "." + runID
 	if _, err := js.Publish(context.Background(), subject, data); err != nil {
 		t.Fatalf("publish %s: %v", subject, err)
 	}
@@ -363,16 +371,145 @@ func TestWithConcurrency_Bounds(t *testing.T) {
 	}
 }
 
-func TestWithConcurrency_RejectsSingleton(t *testing.T) {
-	nc, _ := startConcurrencyServer(t)
-	w := NewWorker(nc)
-	noop := func(tc TaskContext) error { return tc.Complete(nil) }
-	w.Handle("probe.one", noop, WithConcurrency(2))
-	w.HandleSingleton("probe.one", noop)
+// expectPanic runs fn and fails unless it panics with a message holding want.
+func expectPanic(t *testing.T, want string, fn func()) {
+	t.Helper()
 	defer func() {
-		if recover() == nil {
-			t.Fatal("Start with a concurrent singleton did not panic")
+		got := fmt.Sprint(recover())
+		if !strings.Contains(got, want) {
+			t.Fatalf("panic = %q, want one containing %q", got, want)
 		}
 	}()
+	fn()
+}
+
+func TestWithConcurrency_RejectsSingletonAtRegistration(t *testing.T) {
+	nc, _ := startConcurrencyServer(t)
+	noop := func(tc TaskContext) error { return tc.Complete(nil) }
+	const want = "singleton probe.one cannot take WithConcurrency above 1"
+
+	first := NewWorker(nc)
+	first.Handle("probe.one", noop, WithConcurrency(2))
+	expectPanic(t, want, func() { first.HandleSingleton("probe.one", noop) })
+
+	second := NewWorker(nc)
+	second.HandleSingleton("probe.one", noop)
+	expectPanic(t, want, func() {
+		second.Handle("probe.one", noop, WithConcurrency(2))
+	})
+
+	// Negative space: n = 1 is the default lane and stays allowed.
+	third := NewWorker(nc)
+	third.HandleSingleton("probe.one", noop)
+	third.Handle("probe.one", noop, WithConcurrency(1))
+}
+
+// TestWithConcurrency_PerLane pins n as a per-consumer limit: three group
+// lanes at n = 2 run six tasks at once, and no lane passes two.
+func TestWithConcurrency_PerLane(t *testing.T) {
+	nc, js := startConcurrencyServer(t)
+	groups := []string{"ga", "gb", "gc"}
+	lanes := map[string]*inflightGauge{}
+	for _, group := range groups {
+		lanes[group] = &inflightGauge{}
+	}
+	var total inflightGauge
+	started := make(chan string, 9)
+	release := make(chan struct{})
+
+	w := NewWorker(nc, WithGroups(groups...))
+	w.Handle("probe.lane", func(tc TaskContext) error {
+		lane := lanes[strings.Split(tc.RunID(), "-")[1]]
+		lane.enter()
+		total.enter()
+		defer lane.exit()
+		defer total.exit()
+		started <- tc.RunID()
+		<-release
+		return tc.Complete([]byte(`"ok"`))
+	}, WithConcurrency(2))
 	w.Start()
+	defer w.Stop()
+	defer close(release)
+
+	for _, group := range groups {
+		for i := range 3 {
+			run := fmt.Sprintf("run-%s-%d", group, i)
+			subject := "task.probe.lane." + consumername.GroupSentinel +
+				group + "." + run
+			publishConcurrencySubject(t, js, subject, run)
+		}
+	}
+	awaitStarts(t, started, 6)
+	select {
+	case run := <-started:
+		t.Fatalf("seventh handler (%s) started; want at most 2 per lane", run)
+	case <-time.After(500 * time.Millisecond):
+	}
+	if peak := total.peak.Load(); peak != 6 {
+		t.Fatalf("peak in flight across lanes = %d, want 6", peak)
+	}
+	for group, lane := range lanes {
+		if peak := lane.peak.Load(); peak != 2 {
+			t.Fatalf("lane %s peaked at %d, want 2", group, peak)
+		}
+	}
+}
+
+// TestWithConcurrency_StopReleasesSlotWaiter: with both slots held, the
+// third delivery waits in the consume callback. Stop must make that
+// waiter NAK at once, while the two handlers are still running, so a
+// live worker picks the task up instead of it sitting parked until a
+// slot frees or AckWait expires.
+func TestWithConcurrency_StopReleasesSlotWaiter(t *testing.T) {
+	nc, js := startConcurrencyServer(t)
+	var gauge inflightGauge
+	var mixed atomic.Int64
+	started := make(chan string, 3)
+	release := make(chan struct{})
+
+	stopping := NewWorker(nc)
+	stopping.Handle("probe.wait",
+		blockingHandler(&gauge, started, release, &mixed),
+		WithConcurrency(2))
+	stopping.Start()
+	for _, run := range []string{"run-w1", "run-w2", "run-w3"} {
+		publishConcurrencyTask(t, js, "probe.wait", run)
+	}
+	held := awaitStarts(t, started, 2)
+
+	stopped := make(chan struct{})
+	go func() {
+		stopping.Stop()
+		close(stopped)
+	}()
+	took := make(chan string, 3)
+	live := NewWorker(nc)
+	live.Handle("probe.wait", func(tc TaskContext) error {
+		took <- tc.RunID()
+		return tc.Complete([]byte(`"ok"`))
+	})
+	live.Start()
+	defer live.Stop()
+
+	select {
+	case run := <-took:
+		close(release)
+		for _, h := range held {
+			if h == run {
+				t.Fatalf("live worker took %s, which was still running", run)
+			}
+		}
+	case <-time.After(3 * time.Second):
+		close(release)
+		t.Fatal("slot waiter did not NAK while Stop drained the running handlers")
+	}
+	select {
+	case <-stopped:
+	case <-time.After(concurrencyWaitBound):
+		t.Fatal("Stop did not return after handlers were released")
+	}
+	if peak := gauge.peak.Load(); peak != 2 {
+		t.Fatalf("peak in-flight handlers = %d, want 2", peak)
+	}
 }

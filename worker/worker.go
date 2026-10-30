@@ -181,11 +181,8 @@ type Worker struct {
 	// for absent keys.
 	handlerAckWait map[string]time.Duration
 	// handlerConcurrency holds per-task WithConcurrency overrides; absent
-	// means 1. handlerSlots holds the semaphore shared by every consumer
-	// of a type whose override is above 1. Both are written only before
-	// and during Start, never while messages flow.
+	// means 1. Written only at registration, before Start.
 	handlerConcurrency map[string]int
-	handlerSlots       map[string]chan struct{}
 
 	// Directory registration (observability only)
 	dir           *Directory
@@ -210,8 +207,8 @@ type Worker struct {
 	drainMu      sync.RWMutex
 	draining     bool
 	drainTimeout time.Duration
-	// stopping closes with draining so a consume callback waiting for a
-	// WithConcurrency slot gives up instead of outliving Stop.
+	// stopping closes once the consumers stop, so a consume callback
+	// waiting for a WithConcurrency slot gives up instead of outliving Stop.
 	stopping chan struct{}
 
 	// Pre-allocated metric instruments — created once in constructor.
@@ -495,6 +492,9 @@ func (w *Worker) HandleSingleton(
 	}
 	if handler == nil {
 		panic("HandleSingleton: handler must not be nil")
+	}
+	if w.handlerConcurrency[taskType] > 1 {
+		panic(singletonConcurrencyPanic(taskType))
 	}
 	w.handlers[taskType] = handler
 	if w.singletons == nil {
@@ -1009,9 +1009,6 @@ func (w *Worker) heartbeatLoop(reg WorkerRegistration) {
 	}
 }
 
-// Stop unsubscribes all active subscriptions. Safe to call after
-// Start. Idempotent — repeat calls are no-ops, which makes
-// kill-mid-test patterns + t.Cleanup safe.
 // beginHandler registers one in-flight handleMessage call with handlerWG,
 // racing safely against Stop() via drainMu. Returns false (and adds
 // nothing) once draining has started, so handleMessage knows to bail out
@@ -1029,6 +1026,9 @@ func (w *Worker) beginHandler() bool {
 	return true
 }
 
+// Stop unsubscribes all active subscriptions. Safe to call after
+// Start. Idempotent — repeat calls are no-ops, which makes
+// kill-mid-test patterns + t.Cleanup safe.
 func (w *Worker) Stop() {
 	if w.handlers == nil {
 		panic("Worker.Stop: worker not initialized")
@@ -1050,7 +1050,6 @@ func (w *Worker) Stop() {
 		w.drainMu.Lock()
 		w.draining = true
 		w.drainMu.Unlock()
-		close(w.stopping)
 
 		if w.cancelSub != nil {
 			if err := w.cancelSub.Unsubscribe(); err != nil {
@@ -1091,35 +1090,59 @@ func (w *Worker) Stop() {
 				)
 			}
 		}
-		for _, s := range w.stoppers {
-			s.Stop()
-		}
-
-		// Wait for in-flight handleMessage calls to finish before
-		// returning (#498) — otherwise a caller's deferred cleanup
-		// (e.g. closing a DB pool) can run out from under a handler
-		// that's still mid-execution. Bounded by drainTimeout so a
-		// wedged handler can't block shutdown forever; if it fires we
-		// log and return anyway rather than hang the process.
-		done := make(chan struct{})
-		go func() {
-			w.handlerWG.Wait()
-			close(done)
-		}()
-		timeout := w.drainTimeout
-		if timeout <= 0 {
-			timeout = defaultDrainTimeout
-		}
-		select {
-		case <-done:
-		case <-time.After(timeout):
-			slog.Warn(
-				"worker.Stop: drain timeout — in-flight handlers did not finish",
-				"worker_id", w.workerID,
-				"timeout", timeout,
-			)
-		}
+		w.stopConsumers()
+		w.awaitHandlers()
 	})
+}
+
+// stopConsumers ends every consumer, then releases consume callbacks
+// waiting for a WithConcurrency slot. That order matters: a waiter's NAK
+// must reach the server after the pull is gone, or the server hands the
+// message straight back to this stopping Worker.
+func (w *Worker) stopConsumers() {
+	if w.stopping == nil {
+		panic("stopConsumers: worker not built by NewWorker")
+	}
+	if !w.draining {
+		panic("stopConsumers: draining must be set first")
+	}
+	for _, s := range w.stoppers {
+		s.Stop()
+	}
+	close(w.stopping)
+}
+
+// awaitHandlers waits for in-flight handleMessage calls to finish before
+// Stop returns (#498) — otherwise a caller's deferred cleanup (e.g.
+// closing a DB pool) can run out from under a handler that's still
+// mid-execution. Bounded by drainTimeout so a wedged handler can't block
+// shutdown forever; if it fires we log and return anyway rather than
+// hang the process.
+func (w *Worker) awaitHandlers() {
+	if !w.draining {
+		panic("awaitHandlers: draining must be set first")
+	}
+	done := make(chan struct{})
+	go func() {
+		w.handlerWG.Wait()
+		close(done)
+	}()
+	timeout := w.drainTimeout
+	if timeout <= 0 {
+		timeout = defaultDrainTimeout
+	}
+	if timeout <= 0 {
+		panic("awaitHandlers: timeout must be positive")
+	}
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		slog.Warn(
+			"worker.Stop: drain timeout — in-flight handlers did not finish",
+			"worker_id", w.workerID,
+			"timeout", timeout,
+		)
+	}
 }
 
 // startTaskSpan begins an OTel span for the task dispatch and constructs
