@@ -606,3 +606,43 @@ func TestBridgePollAutoUpgradesLegacyDurable(t *testing.T) {
 			info.Config.FilterSubject)
 	}
 }
+
+// TestPollReturnsWhenTheRequestEnds pins that a long poll gives up soon
+// after its request ends (client gone, server stopping) instead of
+// holding the fetch for the whole timeout: nats.go's Fetch takes no
+// context, so the bridge must check it between bounded waits.
+func TestPollReturnsWhenTheRequestEnds(t *testing.T) {
+	_, b, _ := newPollConsumerBridge(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(200*time.Millisecond, cancel)
+
+	start := time.Now()
+	tasks, _ := b.fetchForType(ctx, "idle-type", "", 1, 30*time.Second)
+	elapsed := time.Since(start)
+	if len(tasks) != 0 {
+		t.Fatalf("got %d tasks from an empty queue", len(tasks))
+	}
+	if elapsed > fetchSliceMax+time.Second {
+		t.Fatalf("poll held for %v after its request ended, want under %v",
+			elapsed, fetchSliceMax+time.Second)
+	}
+}
+
+// TestPollStillDeliversALateTask pins that bounded waits do not end a
+// live poll early: a task published partway through the timeout is
+// still returned by the same poll.
+func TestPollStillDeliversALateTask(t *testing.T) {
+	js, b, _ := newPollConsumerBridge(t)
+	time.AfterFunc(fetchSliceMax+500*time.Millisecond, func() {
+		publishTaskFixture(t, js, "late", "late-1")
+	})
+	tasks, err := b.fetchForType(
+		context.Background(), "late", "", 1, 3*fetchSliceMax+2*time.Second,
+	)
+	if err != nil {
+		t.Fatalf("fetchForType: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("late task: got %d tasks, want 1", len(tasks))
+	}
+}

@@ -86,7 +86,7 @@ Response:
 
 `iteration` and `attempt` appear only when they are non-zero. `input`, `metadata`, `traceparent` and `tracestate` are omitted when empty.
 
-The `timeout_ms` field controls how long the bridge waits for a task before returning empty. Maximum is 60 seconds.
+The `timeout_ms` field controls how long the bridge waits for a task before returning empty. Maximum is 60 seconds. The poll returns as soon as any task is available, with up to `max_tasks` of them, rather than waiting to fill the batch. A poll whose client disconnects, or whose server is stopping, ends within about a second.
 
 `metadata` is the step's own static config (`StepDef.Metadata`), the same
 map a NATS worker reads through `TaskContext.Metadata()`. It is omitted
