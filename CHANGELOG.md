@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`dagnats-mcp-duckdb` enforces its row cap whatever the query says.** It used to skip the cap whenever the query text contained `LIMIT` anywhere: in a comment, a column alias, or a larger `LIMIT`. Queries are now wrapped in a capped subquery, and a second stacked statement is refused. CI now runs this module's tests.
+
 ## [0.0.34] - 2026-10-30
 
 ### Added
