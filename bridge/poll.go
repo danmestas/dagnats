@@ -61,6 +61,11 @@ type pollResponse struct {
 // pollTimeoutMaxMs caps the maximum long-poll timeout at 60 seconds.
 const pollTimeoutMaxMs = 60_000
 
+// fetchSliceMax bounds each wait inside a long poll. nats.go's Fetch takes
+// no context, so the poll checks its request between slices; this is how
+// long a poll can outlive its client or a server stop.
+const fetchSliceMax = time.Second
+
 // handlePoll long-polls for tasks from the TASK_QUEUES stream.
 // Returns a JSON array of task payloads, or an empty array on
 // timeout.
@@ -258,8 +263,42 @@ func (b *Bridge) fetchForType(
 	if err != nil {
 		return nil, err
 	}
+	// Wait in bounded slices, checking the request between them: Fetch
+	// takes no context, so one Fetch for the whole timeout would outlive
+	// a client that left or a server that is stopping. The first slice
+	// that yields any task ends the poll.
+	deadline := time.Now().Add(timeout)
+	for slice := 0; slice < fetchSlicesMax; slice++ {
+		wait := min(time.Until(deadline), fetchSliceMax)
+		if wait <= 0 || ctx.Err() != nil {
+			return nil, nil
+		}
+		tasks, err := b.fetchSlice(ctx, cons, taskType, count, wait)
+		if err != nil || len(tasks) > 0 {
+			return tasks, err
+		}
+	}
+	return nil, nil
+}
+
+// fetchSlicesMax bounds the slice loop: the longest poll timeout divided
+// by the slice length, plus one for rounding.
+const fetchSlicesMax = int(pollTimeoutMaxMs*time.Millisecond/fetchSliceMax) + 1
+
+// fetchSlice runs one Fetch of at most wait and stores each message it
+// returns in the ackMap.
+func (b *Bridge) fetchSlice(
+	ctx context.Context, cons jetstream.Consumer,
+	taskType string, count int, wait time.Duration,
+) ([]pollResponse, error) {
+	if cons == nil {
+		panic("fetchSlice: cons must not be nil")
+	}
+	if wait <= 0 {
+		panic("fetchSlice: wait must be positive")
+	}
 	fetchResult, err := cons.Fetch(
-		count, jetstream.FetchMaxWait(timeout),
+		count, jetstream.FetchMaxWait(wait),
 	)
 	if err != nil {
 		slog.WarnContext(ctx, "fetch tasks failed",
