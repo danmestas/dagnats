@@ -112,6 +112,40 @@ func TestQuery_ExistingLimit(t *testing.T) {
 	}
 }
 
+// The row cap holds whatever the query text says: a larger LIMIT, the word
+// "limit" in a comment or a column alias, or a trailing line comment
+// cannot lift it. Stacked statements are refused.
+func TestQuery_RowCapCannotBeLifted(t *testing.T) {
+	dir := t.TempDir()
+	createTestTracesMultiple(t, dir, 50)
+	db, err := OpenDB(dir)
+	if err != nil {
+		t.Fatalf("OpenDB failed: %v", err)
+	}
+	defer db.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	for _, query := range []string{
+		"SELECT * FROM traces LIMIT 40",
+		"SELECT * FROM traces /* no LIMIT here */",
+		"SELECT 1 AS limit_seen FROM traces",
+		"SELECT * FROM traces -- LIMIT 1000",
+		"SELECT * FROM traces;",
+	} {
+		results, err := db.Query(ctx, query, 10)
+		if err != nil {
+			t.Fatalf("%q: %v", query, err)
+		}
+		if len(results) != 10 {
+			t.Errorf("%q: %d rows, want the cap of 10", query, len(results))
+		}
+	}
+	if _, err := db.Query(ctx, "SELECT 1; SELECT * FROM traces", 10); err == nil {
+		t.Error("stacked statements were accepted")
+	}
+}
+
 // createTestTraces writes a single-row Parquet file for traces.
 func createTestTraces(t *testing.T, dir string) {
 	t.Helper()

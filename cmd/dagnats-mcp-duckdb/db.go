@@ -126,7 +126,7 @@ func (db *DB) Close() error {
 }
 
 // Query executes a SQL query and returns results as a slice of maps.
-// A LIMIT clause is enforced if not already present. Use $1, $2, etc.
+// At most limit rows come back, whatever the query says. Use $1, $2, etc.
 // placeholders in the query and pass corresponding values as args.
 func (db *DB) Query(
 	ctx context.Context, query string, limit int,
@@ -146,13 +146,17 @@ func (db *DB) Query(
 	return scanRows(rows)
 }
 
-// enforceLimit appends a LIMIT clause if one is not already present.
+// enforceLimit wraps query in a subquery capped at limit rows. Wrapping,
+// rather than looking for a LIMIT in the text, means a larger LIMIT, the
+// word in a comment or an alias cannot lift the cap, and a second
+// statement becomes a syntax error. The newline before the closing
+// parenthesis keeps a trailing line comment from swallowing it.
 func enforceLimit(query string, limit int) string {
-	upper := strings.ToUpper(query)
-	if strings.Contains(upper, "LIMIT") {
-		return query
+	if limit <= 0 {
+		panic("enforceLimit: limit must be positive")
 	}
-	return fmt.Sprintf("%s LIMIT %d", strings.TrimRight(query, " ;"), limit)
+	inner := strings.TrimRight(strings.TrimSpace(query), "; \t\r\n")
+	return fmt.Sprintf("SELECT * FROM (\n%s\n) AS capped LIMIT %d", inner, limit)
 }
 
 // scanRows converts sql.Rows into a slice of column-name-keyed maps.
