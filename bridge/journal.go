@@ -105,23 +105,35 @@ func journalTask(taskID string, msg jetstream.Msg) (journal.Task, error) {
 	if err != nil {
 		return journal.Task{}, err
 	}
-	delivered := dispatch.attempt
-	var streamSeq uint64
-	if meta, merr := msg.Metadata(); merr == nil && meta != nil {
-		streamSeq = meta.Sequence.Stream
-		if meta.NumDelivered >= 1 {
-			delivered = int(meta.NumDelivered)
-		}
-	}
-	if delivered < 1 {
-		panic("journalTask: delivery count must be >= 1")
-	}
+	delivered, streamSeq := deliveryIdentity(msg, dispatch.attempt)
 	runID, stepID := splitTaskID(taskID)
 	return journal.Task{
 		RunID: runID, StepID: stepID, Iteration: dispatch.iteration,
 		Attempt: dispatch.attempt, DispatchNonce: dispatch.nonce, Delivered: delivered,
 		StreamSeq: streamSeq,
 	}, nil
+}
+
+// deliveryIdentity is the delivery count and task-stream sequence of
+// msg, the identity a claim carries. The poll item reports the same
+// pair, so both come from here. A message without metadata falls back
+// to the attempt for the count and 0 (unknown) for the sequence.
+func deliveryIdentity(msg jetstream.Msg, attempt int) (int, uint64) {
+	if msg == nil {
+		panic("deliveryIdentity: msg must not be nil")
+	}
+	delivered := attempt
+	var streamSeq uint64
+	if meta, err := msg.Metadata(); err == nil && meta != nil {
+		streamSeq = meta.Sequence.Stream
+		if meta.NumDelivered >= 1 {
+			delivered = int(meta.NumDelivered)
+		}
+	}
+	if delivered < 1 {
+		panic("deliveryIdentity: delivery count must be >= 1")
+	}
+	return delivered, streamSeq
 }
 
 // openJournal returns the task's journal claim, claiming on first use.
@@ -360,6 +372,45 @@ func (b *Bridge) resolveJournalRead(
 				return nil, err
 			}
 			return map[string]any{"records": records}, nil
+		})
+}
+
+// journalViewResponse is the body of a journal.view reply: the claim
+// this task holds and the records of its iteration written before it,
+// in journal order. It is the Go SDK's replay input (Journal.Records),
+// so a client applying the replay rules starts from what the SDK does.
+type journalViewResponse struct {
+	Claim   journal.Claim    `json:"claim"`
+	Records []journal.Record `json:"records"`
+}
+
+// resolveJournalView claims the journal if needed and returns the
+// view the claim was opened with. It does not change as the task
+// appends: replay matches against what was recorded before the claim.
+func (b *Bridge) resolveJournalView(
+	ctx context.Context, taskID, tokenID string, msg jetstream.Msg, w http.ResponseWriter,
+) error {
+	if taskID == "" {
+		panic("resolveJournalView: taskID must not be empty")
+	}
+	if msg == nil {
+		panic("resolveJournalView: msg must not be nil")
+	}
+	return b.withJournal(ctx, taskID, tokenID, msg, w,
+		func(j *journal.Journal) (any, error) {
+			task := j.Task()
+			records := j.Records()
+			if records == nil {
+				records = []journal.Record{}
+			}
+			return journalViewResponse{
+				Claim: journal.Claim{
+					Iteration: task.Iteration, Attempt: task.Attempt,
+					DispatchNonce: task.DispatchNonce, Delivered: task.Delivered,
+					StreamSeq: task.StreamSeq,
+				},
+				Records: records,
+			}, nil
 		})
 }
 

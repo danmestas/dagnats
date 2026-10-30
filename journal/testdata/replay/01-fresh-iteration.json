@@ -1,0 +1,145 @@
+{
+  "description": "A first delivery with nothing recorded: every call runs and is recorded. A model call appends model.response; a tool call appends tool.intent before it runs and tool.result after, the tool's own error included. Keys are {run}.{step}.{iteration}.{call}.",
+  "task": {
+    "run_id": "run",
+    "step_id": "agent",
+    "iteration": 0,
+    "attempt": 1,
+    "dispatch_nonce": "n1",
+    "delivered": 1,
+    "stream_seq": 7
+  },
+  "records": [],
+  "calls": [
+    {
+      "kind": "model",
+      "output": {
+        "text": "plan"
+      }
+    },
+    {
+      "kind": "tool",
+      "name": "read",
+      "input": {
+        "path": "a.txt"
+      },
+      "replay": "safe",
+      "output": "contents"
+    },
+    {
+      "kind": "tool",
+      "name": "send",
+      "input": {
+        "to": "ops"
+      },
+      "replay": "unsafe",
+      "output": "sent"
+    },
+    {
+      "kind": "tool",
+      "name": "lint",
+      "replay": "safe",
+      "error": "exit status 1"
+    }
+  ],
+  "expect": [
+    {
+      "outcome": "requested",
+      "output": {
+        "text": "plan"
+      }
+    },
+    {
+      "outcome": "ran",
+      "result": {
+        "call": 0,
+        "key": "run.agent.0.0",
+        "output": "contents"
+      }
+    },
+    {
+      "outcome": "ran",
+      "result": {
+        "call": 1,
+        "key": "run.agent.0.1",
+        "output": "sent"
+      }
+    },
+    {
+      "outcome": "ran",
+      "result": {
+        "call": 2,
+        "key": "run.agent.0.2",
+        "error": "exit status 1"
+      }
+    }
+  ],
+  "appended": [
+    {
+      "type": "model.response",
+      "data": {
+        "call": 0,
+        "output": {
+          "text": "plan"
+        }
+      }
+    },
+    {
+      "type": "tool.intent",
+      "data": {
+        "name": "read",
+        "input": {
+          "path": "a.txt"
+        },
+        "call": 0,
+        "key": "run.agent.0.0",
+        "replay": "safe"
+      }
+    },
+    {
+      "type": "tool.result",
+      "data": {
+        "call": 0,
+        "key": "run.agent.0.0",
+        "output": "contents"
+      }
+    },
+    {
+      "type": "tool.intent",
+      "data": {
+        "name": "send",
+        "input": {
+          "to": "ops"
+        },
+        "call": 1,
+        "key": "run.agent.0.1",
+        "replay": "unsafe"
+      }
+    },
+    {
+      "type": "tool.result",
+      "data": {
+        "call": 1,
+        "key": "run.agent.0.1",
+        "output": "sent"
+      }
+    },
+    {
+      "type": "tool.intent",
+      "data": {
+        "name": "lint",
+        "call": 2,
+        "key": "run.agent.0.2",
+        "replay": "safe"
+      }
+    },
+    {
+      "type": "tool.result",
+      "data": {
+        "call": 2,
+        "key": "run.agent.0.2",
+        "error": "exit status 1"
+      }
+    }
+  ]
+}

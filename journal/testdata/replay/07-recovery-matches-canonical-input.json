@@ -1,0 +1,113 @@
+{
+  "description": "Inputs are compared as canonical JSON (keys sorted, no whitespace), so a recorded input and the current one with keys in another order are the same call: the recorded result is reused.",
+  "task": {
+    "run_id": "run",
+    "step_id": "agent",
+    "iteration": 0,
+    "attempt": 1,
+    "dispatch_nonce": "n1",
+    "delivered": 2,
+    "stream_seq": 7
+  },
+  "records": [
+    {
+      "seq": 1,
+      "type": "claim",
+      "iteration": 0,
+      "attempt": 1,
+      "dispatch_nonce": "n1",
+      "delivered": 1,
+      "stream_seq": 7,
+      "index": 0,
+      "data": {
+        "iteration": 0,
+        "attempt": 1,
+        "dispatch_nonce": "n1",
+        "delivered": 1,
+        "stream_seq": 7
+      }
+    },
+    {
+      "seq": 2,
+      "type": "tool.intent",
+      "iteration": 0,
+      "attempt": 1,
+      "dispatch_nonce": "n1",
+      "delivered": 1,
+      "stream_seq": 7,
+      "index": 1,
+      "data": {
+        "name": "query",
+        "call": 0,
+        "key": "run.agent.0.0",
+        "replay": "safe",
+        "input": {
+          "where": {
+            "b": 1,
+            "a": [
+              1,
+              2
+            ]
+          },
+          "limit": 5
+        }
+      }
+    },
+    {
+      "seq": 3,
+      "type": "tool.result",
+      "iteration": 0,
+      "attempt": 1,
+      "dispatch_nonce": "n1",
+      "delivered": 1,
+      "stream_seq": 7,
+      "index": 2,
+      "data": {
+        "call": 0,
+        "key": "run.agent.0.0",
+        "output": [
+          {
+            "id": 1
+          }
+        ]
+      }
+    }
+  ],
+  "calls": [
+    {
+      "kind": "tool",
+      "name": "query",
+      "input": {
+        "limit": 5,
+        "where": {
+          "a": [
+            1,
+            2
+          ],
+          "b": 1
+        }
+      },
+      "replay": "safe",
+      "output": [
+        {
+          "id": 2
+        }
+      ]
+    }
+  ],
+  "expect": [
+    {
+      "outcome": "reused",
+      "result": {
+        "call": 0,
+        "key": "run.agent.0.0",
+        "output": [
+          {
+            "id": 1
+          }
+        ]
+      }
+    }
+  ],
+  "appended": []
+}

@@ -193,6 +193,7 @@ func parseResolveRequest(
 		// Agent journal (ADR-026), see journal.go.
 		"journal.append":  true,
 		"journal.read":    true,
+		"journal.view":    true,
 		"load_checkpoint": true,
 	}
 	if !validActions[req.Action] {
@@ -243,6 +244,8 @@ func (b *Bridge) dispatchAction(
 		return b.resolveJournalAppend(ctx, taskID, claimingTokenID, msg, req, w)
 	case "journal.read":
 		return b.resolveJournalRead(ctx, taskID, claimingTokenID, msg, w)
+	case "journal.view":
+		return b.resolveJournalView(ctx, taskID, claimingTokenID, msg, w)
 	case "load_checkpoint":
 		return b.resolveLoadCheckpoint(ctx, taskID, msg, w)
 	default:

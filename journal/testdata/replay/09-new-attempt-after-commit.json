@@ -1,0 +1,210 @@
+{
+  "description": "Iteration 2, attempt 1 committed a failure and the engine retried: this is attempt 2. Records at or before the iteration's last commit belong to a prior attempt. The model is requested afresh and the safe call runs afresh at position 0. The prior unsafe intent is honoured by content: the send call is answered with its recorded result under its own call and key, and takes no position in this attempt.",
+  "task": {
+    "run_id": "run",
+    "step_id": "agent",
+    "iteration": 2,
+    "attempt": 2,
+    "dispatch_nonce": "n2",
+    "delivered": 1,
+    "stream_seq": 8
+  },
+  "records": [
+    {
+      "seq": 1,
+      "type": "claim",
+      "iteration": 2,
+      "attempt": 1,
+      "dispatch_nonce": "n1",
+      "delivered": 1,
+      "stream_seq": 7,
+      "index": 0,
+      "data": {
+        "iteration": 2,
+        "attempt": 1,
+        "dispatch_nonce": "n1",
+        "delivered": 1,
+        "stream_seq": 7
+      }
+    },
+    {
+      "seq": 2,
+      "type": "model.response",
+      "iteration": 2,
+      "attempt": 1,
+      "dispatch_nonce": "n1",
+      "delivered": 1,
+      "stream_seq": 7,
+      "index": 1,
+      "data": {
+        "call": 0,
+        "output": {
+          "text": "plan"
+        }
+      }
+    },
+    {
+      "seq": 3,
+      "type": "tool.intent",
+      "iteration": 2,
+      "attempt": 1,
+      "dispatch_nonce": "n1",
+      "delivered": 1,
+      "stream_seq": 7,
+      "index": 2,
+      "data": {
+        "name": "read",
+        "call": 0,
+        "key": "run.agent.2.0",
+        "replay": "safe",
+        "input": {
+          "path": "a.txt"
+        }
+      }
+    },
+    {
+      "seq": 4,
+      "type": "tool.result",
+      "iteration": 2,
+      "attempt": 1,
+      "dispatch_nonce": "n1",
+      "delivered": 1,
+      "stream_seq": 7,
+      "index": 3,
+      "data": {
+        "call": 0,
+        "key": "run.agent.2.0",
+        "output": "old contents"
+      }
+    },
+    {
+      "seq": 5,
+      "type": "tool.intent",
+      "iteration": 2,
+      "attempt": 1,
+      "dispatch_nonce": "n1",
+      "delivered": 1,
+      "stream_seq": 7,
+      "index": 4,
+      "data": {
+        "name": "send",
+        "call": 1,
+        "key": "run.agent.2.1",
+        "replay": "unsafe",
+        "input": {
+          "to": "ops"
+        }
+      }
+    },
+    {
+      "seq": 6,
+      "type": "tool.result",
+      "iteration": 2,
+      "attempt": 1,
+      "dispatch_nonce": "n1",
+      "delivered": 1,
+      "stream_seq": 7,
+      "index": 5,
+      "data": {
+        "call": 1,
+        "key": "run.agent.2.1",
+        "output": "sent"
+      }
+    },
+    {
+      "seq": 7,
+      "type": "commit",
+      "iteration": 2,
+      "attempt": 1,
+      "dispatch_nonce": "n1",
+      "delivered": 1,
+      "stream_seq": 7,
+      "index": 6,
+      "data": {
+        "action": "fail",
+        "error": "boom"
+      }
+    }
+  ],
+  "calls": [
+    {
+      "kind": "model",
+      "output": {
+        "text": "new plan"
+      }
+    },
+    {
+      "kind": "tool",
+      "name": "read",
+      "input": {
+        "path": "a.txt"
+      },
+      "replay": "safe",
+      "output": "new contents"
+    },
+    {
+      "kind": "tool",
+      "name": "send",
+      "input": {
+        "to": "ops"
+      },
+      "replay": "unsafe",
+      "output": "sent again"
+    }
+  ],
+  "expect": [
+    {
+      "outcome": "requested",
+      "output": {
+        "text": "new plan"
+      }
+    },
+    {
+      "outcome": "ran",
+      "result": {
+        "call": 0,
+        "key": "run.agent.2.0",
+        "output": "new contents"
+      }
+    },
+    {
+      "outcome": "reused",
+      "result": {
+        "call": 1,
+        "key": "run.agent.2.1",
+        "output": "sent"
+      }
+    }
+  ],
+  "appended": [
+    {
+      "type": "model.response",
+      "data": {
+        "call": 0,
+        "output": {
+          "text": "new plan"
+        }
+      }
+    },
+    {
+      "type": "tool.intent",
+      "data": {
+        "name": "read",
+        "input": {
+          "path": "a.txt"
+        },
+        "call": 0,
+        "key": "run.agent.2.0",
+        "replay": "safe"
+      }
+    },
+    {
+      "type": "tool.result",
+      "data": {
+        "call": 0,
+        "key": "run.agent.2.0",
+        "output": "new contents"
+      }
+    }
+  ]
+}
