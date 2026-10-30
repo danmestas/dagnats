@@ -1,10 +1,12 @@
-// Package lake is the layout and file format of dagnats' shared analytics store: Hive-partitioned
-// Parquet parts under one root, each trusted only once its commit record exists.
+// Package lake is the read side of dagnats' shared analytics store: its layout, schema rules and
+// commit records. Data is Hive-partitioned Parquet under one root, each part trusted only once its
+// commit record exists.
 //
 //	<root>/<program>/<table>/dt=YYYY-MM-DD/part-<sha256-16>.parquet
 //	<root>/<program>/<table>/dt=YYYY-MM-DD/part-<sha256-16>.json   (commit record)
 //
-// The package is pure Go. DuckDB reads the result; it is imported only by tests.
+// There is no public writer: the archive program, in this module, is the only writer (see
+// lake/internal/writer). The package is pure Go; DuckDB is imported only by tests.
 package lake
 
 import (
@@ -84,7 +86,7 @@ func isReserved(name string) bool {
 	return false
 }
 
-// validName reports whether a program or table name is a legal path segment.
-func validName(name string) bool {
+// ValidName reports whether a program or table name is a legal path segment.
+func ValidName(name string) bool {
 	return nameRE.MatchString(name)
 }

@@ -1,10 +1,11 @@
-package lake
+package writer
 
 import (
 	"bytes"
 	"fmt"
 	"time"
 
+	"github.com/danmestas/dagnats/lake"
 	"github.com/parquet-go/parquet-go"
 	"github.com/parquet-go/parquet-go/compress/zstd"
 )
@@ -16,12 +17,12 @@ const RowGroupRowsMax = 64 << 10
 // ZSTD, the rest take the library default.
 type encoder struct {
 	schema  *parquet.Schema
-	columns []Column
+	columns []lake.Column
 	// index maps a column name to its leaf position, because parquet.Group orders fields by name.
 	index map[string]int
 }
 
-func newEncoder(declared []Column) *encoder {
+func newEncoder(declared []lake.Column) *encoder {
 	group := parquet.Group{
 		"event_id":       parquet.Optional(parquet.String()),
 		"event_time":     parquet.Optional(parquet.Timestamp(parquet.Microsecond)),
@@ -44,17 +45,17 @@ func newEncoder(declared []Column) *encoder {
 	return &encoder{schema: schema, columns: declared, index: index}
 }
 
-func columnNode(columnType ColumnType) parquet.Node {
+func columnNode(columnType lake.ColumnType) parquet.Node {
 	switch columnType {
-	case TypeString:
+	case lake.TypeString:
 		return parquet.String()
-	case TypeInt64:
+	case lake.TypeInt64:
 		return parquet.Int(64)
-	case TypeFloat64:
+	case lake.TypeFloat64:
 		return parquet.Leaf(parquet.DoubleType)
-	case TypeBool:
+	case lake.TypeBool:
 		return parquet.Leaf(parquet.BooleanType)
-	case TypeTimestamp:
+	case lake.TypeTimestamp:
 		return parquet.Timestamp(parquet.Microsecond)
 	}
 	panic("lake: unvalidated column type " + string(columnType))
@@ -112,30 +113,30 @@ func (e *encoder) encodeRow(row Row, schemaVersion int) parquet.Row {
 
 // projectValue converts a Go value to a Parquet value, or NULL when it is absent or of the wrong
 // type: a malformed event must not cost the row, because payload still holds it whole.
-func projectValue(columnType ColumnType, value any) parquet.Value {
+func projectValue(columnType lake.ColumnType, value any) parquet.Value {
 	switch typed := value.(type) {
 	case string:
-		if columnType == TypeString {
+		if columnType == lake.TypeString {
 			return parquet.ByteArrayValue([]byte(typed))
 		}
 	case int:
-		if columnType == TypeInt64 {
+		if columnType == lake.TypeInt64 {
 			return parquet.Int64Value(int64(typed))
 		}
 	case int64:
-		if columnType == TypeInt64 {
+		if columnType == lake.TypeInt64 {
 			return parquet.Int64Value(typed)
 		}
 	case float64:
-		if columnType == TypeFloat64 {
+		if columnType == lake.TypeFloat64 {
 			return parquet.DoubleValue(typed)
 		}
 	case bool:
-		if columnType == TypeBool {
+		if columnType == lake.TypeBool {
 			return parquet.BooleanValue(typed)
 		}
 	case time.Time:
-		if columnType == TypeTimestamp {
+		if columnType == lake.TypeTimestamp {
 			return parquet.Int64Value(typed.UnixMicro())
 		}
 	}

@@ -35,7 +35,8 @@ func tableDir(root, program, table string) string {
 	return filepath.Join(root, program, table)
 }
 
-func partitionDir(root, program, table, dt string) string {
+// PartitionDir is the directory of one event date of a table.
+func PartitionDir(root, program, table, dt string) string {
 	return filepath.Join(tableDir(root, program, table), "dt="+dt)
 }
 
@@ -44,7 +45,7 @@ func partitionDir(root, program, table, dt string) string {
 // whose part is missing is corruption and an error, since commit records are removed before the
 // parts they cover.
 func ListCommitted(root, program, table string) ([]Commit, error) {
-	if root == "" || !validName(program) || !validName(table) {
+	if root == "" || !ValidName(program) || !ValidName(table) {
 		return nil, fmt.Errorf("lake: list %q/%q under %q: bad name", program, table, root)
 	}
 	dir := tableDir(root, program, table)
@@ -77,7 +78,7 @@ func ListCommitted(root, program, table string) ([]Commit, error) {
 }
 
 func readPartition(root, program, table, dt string, listed int) ([]Commit, error) {
-	dir := partitionDir(root, program, table, dt)
+	dir := PartitionDir(root, program, table, dt)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("lake: list %s: %w", dir, err)

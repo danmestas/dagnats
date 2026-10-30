@@ -1,7 +1,7 @@
 // Methodology: the reader contract, proven with the real reader. Rows go through Writer, and
 // DuckDB reads the committed files back with hive partitioning. DuckDB is a test-only dependency
 // (it needs CGO); the package itself is pure Go.
-package lake
+package writer
 
 import (
 	"database/sql"
@@ -10,6 +10,8 @@ import (
 	"time"
 
 	_ "github.com/duckdb/duckdb-go/v2"
+
+	"github.com/danmestas/dagnats/lake"
 )
 
 func TestRoundTrip_DuckDBReadsCommittedParts(t *testing.T) {
@@ -25,7 +27,7 @@ func TestRoundTrip_DuckDBReadsCommittedParts(t *testing.T) {
 	if _, err := writer.Flush(); err != nil {
 		t.Fatal(err)
 	}
-	commits, err := ListCommitted(root, "notify", "deliveries")
+	commits, err := lake.ListCommitted(root, "notify", "deliveries")
 	if err != nil {
 		t.Fatal(err)
 	}

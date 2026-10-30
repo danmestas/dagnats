@@ -1,4 +1,8 @@
-package lake
+// Package writer is the only way to put data into the lake. It is internal to the lake module on
+// purpose: exporting a writer is how a second sync grows back, so the archive program, which lives
+// in this module as cmd/dagnats-archive, is the one writer, with one credential, watermark,
+// compactor and sweep. Readers use the public lake package.
+package writer
 
 import (
 	"crypto/sha256"
@@ -10,6 +14,8 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/danmestas/dagnats/lake"
 )
 
 // BufferedRowsMaxDefault is the Append ceiling when Config.BufferedRowsMax is zero.
@@ -24,7 +30,7 @@ type Config struct {
 	Program string
 	Table   string
 	Stream  string // recorded in each commit record
-	Schema  Schema
+	Schema  lake.Schema
 
 	BufferedRowsMax int
 }
@@ -56,7 +62,7 @@ type Writer struct {
 
 // NewWriter validates the config. It touches no files.
 func NewWriter(cfg Config) (*Writer, error) {
-	if cfg.Root == "" || !validName(cfg.Program) || !validName(cfg.Table) {
+	if cfg.Root == "" || !lake.ValidName(cfg.Program) || !lake.ValidName(cfg.Table) {
 		return nil, fmt.Errorf("lake: bad root/program/table %q/%q/%q", cfg.Root, cfg.Program, cfg.Table)
 	}
 	if err := cfg.Schema.Validate(); err != nil {
@@ -100,13 +106,13 @@ func (w *Writer) Append(row Row) error {
 // Flush writes every buffered date as a part, then its commit record. A date whose write fails
 // stays buffered, as do later ones, so a retry produces the same parts; the commits made before
 // the failure are returned with the error.
-func (w *Writer) Flush() ([]Commit, error) {
+func (w *Writer) Flush() ([]lake.Commit, error) {
 	dts := make([]string, 0, len(w.buffers))
 	for dt := range w.buffers {
 		dts = append(dts, dt)
 	}
 	sort.Strings(dts)
-	var commits []Commit
+	var commits []lake.Commit
 	for _, dt := range dts {
 		commit, err := w.flushPartition(dt, w.buffers[dt])
 		if err != nil {
@@ -119,29 +125,29 @@ func (w *Writer) Flush() ([]Commit, error) {
 	return commits, nil
 }
 
-func (w *Writer) flushPartition(dt string, rows []Row) (Commit, error) {
+func (w *Writer) flushPartition(dt string, rows []Row) (lake.Commit, error) {
 	if len(rows) == 0 || dt == "" {
 		panic("lake: flushPartition needs a date and rows")
 	}
 	data, err := w.enc.encode(rows, w.cfg.Schema.Version)
 	if err != nil {
-		return Commit{}, err
+		return lake.Commit{}, err
 	}
 	sum := sha256.Sum256(data)
 	stem := "part-" + hex.EncodeToString(sum[:8])
-	dir := partitionDir(w.cfg.Root, w.cfg.Program, w.cfg.Table, dt)
+	dir := lake.PartitionDir(w.cfg.Root, w.cfg.Program, w.cfg.Table, dt)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return Commit{}, fmt.Errorf("lake: mkdir %s: %w", dir, err)
+		return lake.Commit{}, fmt.Errorf("lake: mkdir %s: %w", dir, err)
 	}
 	if err := writeFileAtomic(dir, stem+".parquet", data); err != nil {
-		return Commit{}, err
+		return lake.Commit{}, err
 	}
 	if w.beforeCommit != nil {
 		if err := w.beforeCommit(); err != nil {
-			return Commit{}, err
+			return lake.Commit{}, err
 		}
 	}
-	commit := Commit{
+	commit := lake.Commit{
 		Part: stem + ".parquet", Rows: len(rows), Bytes: len(data), Stream: w.cfg.Stream,
 		SeqMin: rows[0].StreamSeq, SeqMax: rows[0].StreamSeq,
 		SchemaVersion: w.cfg.Schema.Version, WrittenAt: w.now().UTC(),
@@ -153,10 +159,10 @@ func (w *Writer) flushPartition(dt string, rows []Row) (Commit, error) {
 	}
 	record, err := json.Marshal(commit)
 	if err != nil {
-		return Commit{}, fmt.Errorf("lake: encode commit: %w", err)
+		return lake.Commit{}, fmt.Errorf("lake: encode commit: %w", err)
 	}
 	if err := writeFileAtomic(dir, stem+".json", record); err != nil {
-		return Commit{}, err
+		return lake.Commit{}, err
 	}
 	return commit, nil
 }

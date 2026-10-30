@@ -1,7 +1,7 @@
 // Methodology: integration tests over a real temp directory. Ordering is proven by crashing the
 // writer between part and commit through the unexported beforeCommit hook and listing what a
 // reader would see. Name stability is proven by writing the same rows into two separate roots.
-package lake
+package writer
 
 import (
 	"errors"
@@ -10,14 +10,17 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/danmestas/dagnats/lake"
 )
 
 func testConfig(root string) Config {
 	return Config{
 		Root: root, Program: "notify", Table: "deliveries", Stream: "NOTIFY_DELIVERY",
-		Schema: Schema{Version: 1, Columns: []Column{
-			{"org_id", TypeString}, {"attempts", TypeInt64}, {"score", TypeFloat64},
-			{"ok", TypeBool}, {"sent_at", TypeTimestamp},
+		Schema: lake.Schema{Version: 1, Columns: []lake.Column{
+			{Name: "org_id", Type: lake.TypeString}, {Name: "attempts", Type: lake.TypeInt64},
+			{Name: "score", Type: lake.TypeFloat64},
+			{Name: "ok", Type: lake.TypeBool}, {Name: "sent_at", Type: lake.TypeTimestamp},
 		}},
 	}
 }
@@ -54,7 +57,7 @@ func TestFlush_CommitsOnePartPerEventDate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
-	listed, err := ListCommitted(root, "notify", "deliveries")
+	listed, err := lake.ListCommitted(root, "notify", "deliveries")
 	if err != nil {
 		t.Fatalf("ListCommitted: %v", err)
 	}
@@ -92,7 +95,7 @@ func TestFlush_CrashBetweenPartAndCommitLeavesUncommittedPart(t *testing.T) {
 	if err != nil || len(parts) != 1 {
 		t.Fatalf("parts on disk = %v, %v; want the orphan", parts, err)
 	}
-	listed, err := ListCommitted(root, "notify", "deliveries")
+	listed, err := lake.ListCommitted(root, "notify", "deliveries")
 	if err != nil || len(listed) != 0 {
 		t.Fatalf("ListCommitted = %v, %v; want no committed parts", listed, err)
 	}
@@ -101,7 +104,7 @@ func TestFlush_CrashBetweenPartAndCommitLeavesUncommittedPart(t *testing.T) {
 	if _, err := writer.Flush(); err != nil {
 		t.Fatalf("retry Flush: %v", err)
 	}
-	listed, err = ListCommitted(root, "notify", "deliveries")
+	listed, err = lake.ListCommitted(root, "notify", "deliveries")
 	if err != nil || len(listed) != 1 {
 		t.Fatalf("after retry: %v, %v", listed, err)
 	}
@@ -207,7 +210,7 @@ func TestNewWriter_RefusesBadConfig(t *testing.T) {
 		func(c *Config) { c.Program = "../x" },
 		func(c *Config) { c.Table = "A" },
 		func(c *Config) { c.Schema.Version = 0 },
-		func(c *Config) { c.Schema.Columns = []Column{{"payload", TypeString}} },
+		func(c *Config) { c.Schema.Columns = []lake.Column{{Name: "payload", Type: lake.TypeString}} },
 	}
 	for i, mutate := range bad {
 		cfg := testConfig(t.TempDir())
@@ -231,10 +234,10 @@ func TestListCommitted_FailsOnCommitWithoutPart(t *testing.T) {
 	if err := os.Remove(commits[0].Path); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ListCommitted(root, "notify", "deliveries"); err == nil {
+	if _, err := lake.ListCommitted(root, "notify", "deliveries"); err == nil {
 		t.Fatal("commit with a missing part was listed")
 	}
-	if got, err := ListCommitted(root, "notify", "absent"); err != nil || got != nil {
+	if got, err := lake.ListCommitted(root, "notify", "absent"); err != nil || got != nil {
 		t.Fatalf("absent table = %v, %v; want nil, nil", got, err)
 	}
 }

@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`lake` module: the file layout and Parquet writer of the shared analytics store.** `github.com/danmestas/dagnats/lake` is its own module (pure Go). `lake.Writer` buffers events and writes them as `<root>/<program>/<table>/dt=<event date>/part-<sha>.parquet`, then a `part-<sha>.json` commit record after the part, so `lake.ListCommitted` trusts only whole parts; a crash between the two leaves an ignored orphan. Part names are the hash of their bytes. `event_id`, `event_time`, `stream_seq`, `schema_version` and `payload` are reserved columns on every row, and a declared column that is missing or mistyped in an event is NULL. Local roots only; the archive program that uses it comes later.
+- **`lake` module: the file layout and Parquet writer of the shared analytics store.** `github.com/danmestas/dagnats/lake` is its own module (pure Go). The writer (internal to the module) buffers events and writes them as `<root>/<program>/<table>/dt=<event date>/part-<sha>.parquet`, then a `part-<sha>.json` commit record after the part, so `lake.ListCommitted` trusts only whole parts; a crash between the two leaves an ignored orphan. Part names are the hash of their bytes. `event_id`, `event_time`, `stream_seq`, `schema_version` and `payload` are reserved columns on every row, and a declared column that is missing or mistyped in an event is NULL. The writer is not exported: only the archive program writes, so it will live in this module. Local roots only.
 
 ## [0.0.35] - 2026-10-30
 
