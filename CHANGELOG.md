@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.34] - 2026-10-30
+
 ### Added
 
 - **Optional logins for a dagnats other local users can reach.** By default dagnats' NATS client port and HTTP API accept any local process, under any user account.
