@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.35] - 2026-10-30
+
+### Upgrade notes
+
+- **`dagnats-mcp-duckdb` release tarballs for macOS now need macOS 13 or later** (was 11). Linux tarballs and the main `dagnats` binaries are unchanged.
+
 ### Added
 
 - **`dagnats-mcp-duckdb` reads an S3 data dir.** `--data-dir s3://bucket/prefix` uses the AWS credential chain. `--s3-endpoint` points it at an S3-compatible store (R2, Garage, Tigris), with credentials from `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION`. The first S3 use downloads DuckDB's signed `httpfs` extension.
