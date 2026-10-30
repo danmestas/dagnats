@@ -59,6 +59,15 @@ func startNATS(cfg Config) (*natsserver.Server, error) {
 		NoSigs:             true,
 	}
 
+	// One user for every client; the WebSocket listener inherits it.
+	if cfg.NATSUser != "" {
+		if cfg.natsPassword == "" {
+			panic("startNATS: nats_user set but its password was not resolved")
+		}
+		opts.Username = cfg.NATSUser
+		opts.Password = cfg.natsPassword
+	}
+
 	// Configure leaf node if remotes specified
 	if len(cfg.LeafRemotes) > 0 {
 		err := configureLeafNode(opts, cfg)

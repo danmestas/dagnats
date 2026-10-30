@@ -167,6 +167,10 @@ func (s *Server) startComponents() error {
 
 	var err error
 
+	if err := resolveClientAuth(&s.cfg); err != nil {
+		return err
+	}
+
 	// Resolve inline credentials to temp file if needed
 	if s.cfg.LeafCredentials != "" {
 		resolved, resolveErr := resolveCredentials(
@@ -620,7 +624,7 @@ func (s *Server) startHTTP() (<-chan error, error) {
 	mountConsole(mux, s.cfg.HTTPAddr, s.svc, s.nc,
 		s.metricsAgg, s.metricsErrorReason, s.ns, s.cfg.Build)
 
-	s.httpSrv = &http.Server{Handler: mux}
+	s.httpSrv = &http.Server{Handler: apiTokenGate(s.cfg.apiToken, mux)}
 
 	errCh := make(chan error, 1)
 	go func() {

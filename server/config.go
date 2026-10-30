@@ -106,6 +106,17 @@ type Config struct {
 	// or 0.0.0.0 in leaf mode. Set 127.0.0.1 to keep a leaf node's clients
 	// on this machine: leaf connections are outbound and need no listener.
 	NATSHost string `json:"nats_host"`
+	// NATSUser and NATSPasswordFile, set together, require a login on the
+	// client port and the WebSocket listener; dagnats' own connection logs
+	// in with it. Unset, the client port stays open.
+	NATSUser         string `json:"nats_user"`
+	NATSPasswordFile string `json:"nats_password_file"`
+	// APITokenFile holds a bearer token every HTTP request must carry,
+	// except /health, /health/cluster and /ready. Unset, HTTP stays open.
+	APITokenFile string `json:"api_token_file"`
+	// natsPassword and apiToken are the files' contents, read at start.
+	natsPassword string
+	apiToken     string
 	// NATSServerName overrides the clustered server_name. JetStream tracks
 	// peers by this name, so it must survive restarts; "" derives
 	// <cluster>-<hostname>-<cluster port>.
@@ -562,6 +573,15 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if val := os.Getenv("DAGNATS_NATS_HOST"); val != "" {
 		cfg.NATSHost = val
+	}
+	if val := os.Getenv("DAGNATS_NATS_USER"); val != "" {
+		cfg.NATSUser = val
+	}
+	if val := os.Getenv("DAGNATS_NATS_PASSWORD_FILE"); val != "" {
+		cfg.NATSPasswordFile = val
+	}
+	if val := os.Getenv("DAGNATS_API_TOKEN_FILE"); val != "" {
+		cfg.APITokenFile = val
 	}
 	if val := os.Getenv("DAGNATS_NATS_SERVER_NAME"); val != "" {
 		cfg.NATSServerName = val
@@ -1034,6 +1054,12 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 		cfg.NATSClusterHost = val
 	case "nats_host":
 		cfg.NATSHost = val
+	case "nats_user":
+		cfg.NATSUser = val
+	case "nats_password_file":
+		cfg.NATSPasswordFile = val
+	case "api_token_file":
+		cfg.APITokenFile = val
 	case "nats_server_name":
 		cfg.NATSServerName = val
 	case "nats_jetstream_replicas":

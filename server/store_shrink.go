@@ -100,7 +100,11 @@ func startNATSAndConnect(
 	if onReady != nil {
 		onReady(ns)
 	}
-	nc, err := nats.Connect(ns.ClientURL())
+	var connectOpts []nats.Option
+	if cfg.NATSUser != "" {
+		connectOpts = append(connectOpts, nats.UserInfo(cfg.NATSUser, cfg.natsPassword))
+	}
+	nc, err := nats.Connect(ns.ClientURL(), connectOpts...)
 	if err != nil {
 		ns.Shutdown()
 		return nil, nil, fmt.Errorf("connect to NATS: %w", err)
