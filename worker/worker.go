@@ -1096,9 +1096,11 @@ func (w *Worker) Stop() {
 }
 
 // stopConsumers ends every consumer, then releases consume callbacks
-// waiting for a WithConcurrency slot. That order matters: a waiter's NAK
-// must reach the server after the pull is gone, or the server hands the
-// message straight back to this stopping Worker.
+// waiting for a WithConcurrency slot. Stopping first makes it less likely
+// that a waiter's NAK hands the message straight back to this stopping
+// Worker; it does not rule it out, because nats.go unsubscribes the pull
+// on its own goroutine after Stop returns. A message redelivered here is
+// NAK'd again by the next waiter or left to AckWait, so it is not lost.
 func (w *Worker) stopConsumers() {
 	if w.stopping == nil {
 		panic("stopConsumers: worker not built by NewWorker")
