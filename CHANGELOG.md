@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`dagnats-mcp-duckdb` takes `klauspost/compress` v1.20.1** (was v1.18.3), past the fix for GHSA high-severity integer overflow and out-of-bounds write in its s2 decoder (fixed in v1.18.7).
+
 ## [0.0.35] - 2026-10-30
 
 ### Upgrade notes

@@ -56,7 +56,9 @@ jobs:
             --paginate --jq '.[].filename')
           echo "Changed files:"
           echo "$files" | sed 's/^/  /'
-          if echo "$files" | grep -qE '\.go$|^go\.(mod|sum)$|^\.github/workflows/|^Makefile$'; then
+          # (^|/)go.mod also matches nested modules (cmd/dagnats-mcp-duckdb,
+          # lake, dagnats-ci): a dependency bump there is a code change.
+          if echo "$files" | grep -qE '\.go$|(^|/)go\.(mod|sum)$|^\.github/workflows/|^Makefile$'; then
             echo "code=true" >> "$GITHUB_OUTPUT"
             echo "→ code paths touched, running full Go pipeline"
           else
