@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`dagnats-mcp-duckdb` reads an S3 data dir.** `--data-dir s3://bucket/prefix` uses the AWS credential chain. `--s3-endpoint` points it at an S3-compatible store (R2, Garage, Tigris), with credentials from `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION`. The first S3 use downloads DuckDB's signed `httpfs` extension.
+- **`worker.WithConcurrency(n)` runs up to n tasks of one type at once on each of its consumers (#842).** A Worker used to run one task of a given type at a time, so one long `digest.wait` window or slow agent turn held up every other task of that type. Pass it to `Handle`: `w.Handle("digest.wait", h, worker.WithConcurrency(16))`. The default stays 1, one at a time. n applies per consumer lane: the pull consumer, the sticky consumer, each `WithGroups` group and each `WithPartitions` member each run up to n, just as each runs one today. n is capped at `worker.ConcurrencyMax` (256), and `Stop` waits for all running tasks as before. With n above 1, tasks of that type no longer finish in delivery order. `HandleSingleton` types refuse it.
+- **`server.Server.NATSURL()` reports the embedded NATS client URL** once the server is ready, so an embedder using a random port (`NATSPort = -1`) no longer has to probe for a free one.
 
 ### Changed
 

@@ -180,6 +180,12 @@ type Worker struct {
 	// supplied an override. coalesceAckWait falls back to defaultAckWait
 	// for absent keys.
 	handlerAckWait map[string]time.Duration
+	// handlerConcurrency holds per-task WithConcurrency overrides; absent
+	// means 1. handlerSlots holds the semaphore shared by every consumer
+	// of a type whose override is above 1. Both are written only before
+	// and during Start, never while messages flow.
+	handlerConcurrency map[string]int
+	handlerSlots       map[string]chan struct{}
 
 	// Directory registration (observability only)
 	dir           *Directory
@@ -204,6 +210,9 @@ type Worker struct {
 	drainMu      sync.RWMutex
 	draining     bool
 	drainTimeout time.Duration
+	// stopping closes with draining so a consume callback waiting for a
+	// WithConcurrency slot gives up instead of outliving Stop.
+	stopping chan struct{}
 
 	// Pre-allocated metric instruments — created once in constructor.
 	stepDuration          metric.Float64Histogram
@@ -394,6 +403,7 @@ func NewWorker(
 		cancelledTasksSkipped: skipped,
 		logChunkFailures:      logChunkFail,
 		drainTimeout:          defaultDrainTimeout,
+		stopping:              make(chan struct{}),
 	}
 	for _, opt := range opts {
 		if opt == nil {
@@ -761,12 +771,8 @@ func (w *Worker) subscribePullConsumer(
 			durable + ": " + err.Error())
 	}
 
-	tt := taskType
-	h := handler
 	cc, err := cons.Consume(
-		func(msg jetstream.Msg) {
-			w.handleMessage(tt, h, msg)
-		},
+		w.messageHandler(taskType, handler),
 		jetstream.ConsumeErrHandler(consumeErrHandler(durable)),
 	)
 	if err != nil {
@@ -897,12 +903,8 @@ func (w *Worker) createStickyConsumer(
 	if err != nil {
 		return nil
 	}
-	tt := taskType
-	h := handler
 	cc, err := cons.Consume(
-		func(msg jetstream.Msg) {
-			w.handleMessage(tt, h, msg)
-		},
+		w.messageHandler(taskType, handler),
 		jetstream.ConsumeErrHandler(consumeErrHandler(subject)),
 	)
 	if err != nil {
@@ -959,14 +961,10 @@ func (w *Worker) createElasticConsumer(
 			groupName + ": " + err.Error())
 	}
 
-	h := handler
-	tt := taskType
 	cc, err := pcgroups.ElasticConsume(
 		ctx, w.js, "TASK_QUEUES", groupName,
 		w.workerID,
-		func(msg jetstream.Msg) {
-			w.handleMessage(tt, h, msg)
-		},
+		w.messageHandler(taskType, handler),
 		jetstream.ConsumerConfig{
 			AckPolicy: jetstream.AckExplicitPolicy,
 		},
@@ -1052,6 +1050,7 @@ func (w *Worker) Stop() {
 		w.drainMu.Lock()
 		w.draining = true
 		w.drainMu.Unlock()
+		close(w.stopping)
 
 		if w.cancelSub != nil {
 			if err := w.cancelSub.Unsubscribe(); err != nil {
@@ -1270,6 +1269,20 @@ func (w *Worker) handleMessage(
 		return
 	}
 	defer w.handlerWG.Done()
+	w.runMessage(taskType, handler, msg)
+}
+
+// decodeTask unmarshals msg's payload and screens out tasks of cancelled
+// runs. On false the message is already acked and the caller stops.
+func (w *Worker) decodeTask(
+	taskType string, msg jetstream.Msg,
+) (protocol.TaskPayload, bool) {
+	if msg == nil {
+		panic("decodeTask: msg must not be nil")
+	}
+	if taskType == "" {
+		panic("decodeTask: taskType must not be empty")
+	}
 	var payload protocol.TaskPayload
 	err := json.Unmarshal(msg.Data(), &payload)
 	if err != nil {
@@ -1279,7 +1292,7 @@ func (w *Worker) handleMessage(
 			"task_type", taskType,
 		)
 		msg.Ack()
-		return
+		return payload, false
 	}
 	if w.shouldSkipForCancelledRun(payload.RunID) {
 		w.cancelledTasksSkipped.Add(context.Background(), 1)
@@ -1291,6 +1304,25 @@ func (w *Worker) handleMessage(
 			"step_id", payload.StepID,
 		)
 		msg.Ack()
+		return payload, false
+	}
+	return payload, true
+}
+
+// runMessage executes one task whose handlerWG slot the caller holds:
+// inline from handleMessage, or on its own goroutine from
+// dispatchConcurrent.
+func (w *Worker) runMessage(
+	taskType string, handler HandlerFunc, msg jetstream.Msg,
+) {
+	if msg == nil {
+		panic("runMessage: msg must not be nil")
+	}
+	if handler == nil {
+		panic("runMessage: handler must not be nil")
+	}
+	payload, ok := w.decodeTask(taskType, msg)
+	if !ok {
 		return
 	}
 	ctx, span, tc := w.startTaskSpan(payload, taskType, msg)
@@ -1315,7 +1347,7 @@ func (w *Worker) handleMessage(
 		return
 	}
 
-	err = handler(tc)
+	err := handler(tc)
 	elapsed := float64(time.Since(start).Milliseconds())
 	w.stepDuration.Record(ctx, elapsed)
 	w.tasksActive.Add(ctx, -1)
@@ -1329,12 +1361,8 @@ func (w *Worker) handleMessage(
 	}
 	if err != nil {
 		span.RecordError(err)
-		span.SetStatus(
-			codes.Error, err.Error(),
-		)
-		w.handleTaskError(
-			err, tc, msg, taskType, payload.RunID,
-		)
+		span.SetStatus(codes.Error, err.Error())
+		w.handleTaskError(err, tc, msg, taskType, payload.RunID)
 		return
 	}
 	// #624 review round 2: a handler that returns nil WITHOUT ever

@@ -101,6 +101,41 @@ func TestServer_HTTPAddr(t *testing.T) {
 	conn.Close()
 }
 
+// TestServer_NATSURL pins the NATSURL() accessor (#842): with NATSPort -1
+// an embedder cannot know the client port, so before ready it must report
+// "" and once ready a URL a client can connect to and use.
+func TestServer_NATSURL(t *testing.T) {
+	srv := New(testConfig(t))
+	if url := srv.NATSURL(); url != "" {
+		t.Fatalf("NATSURL() before Run = %q, want \"\"", url)
+	}
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Run() }()
+	defer func() {
+		srv.Stop()
+		select {
+		case <-errCh:
+		case <-time.After(20 * time.Second):
+			t.Fatal("Run() did not return within 20s")
+		}
+	}()
+
+	waitHTTPAddr(t, srv)
+	url := srv.NATSURL()
+	if !strings.HasPrefix(url, "nats://") {
+		t.Fatalf("NATSURL() after ready = %q, want a nats:// URL", url)
+	}
+	nc, err := nats.Connect(url, nats.Timeout(2*time.Second))
+	if err != nil {
+		t.Fatalf("connect to NATSURL() %q: %v", url, err)
+	}
+	defer nc.Close()
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("flush over NATSURL() connection: %v", err)
+	}
+}
+
 // TestServer_StartsAndStops verifies the server starts, becomes ready,
 // serves health checks, and shuts down cleanly.
 func TestServer_StartsAndStops(t *testing.T) {

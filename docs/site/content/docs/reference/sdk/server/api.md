@@ -39,6 +39,7 @@ The gate wraps prom.Handler; the rendered output is unchanged.
 - [type Server](<#Server>)
   - [func New\(cfg Config\) \*Server](<#New>)
   - [func \(s \*Server\) HTTPAddr\(\) string](<#Server.HTTPAddr>)
+  - [func \(s \*Server\) NATSURL\(\) string](<#Server.NATSURL>)
   - [func \(s \*Server\) Run\(\) error](<#Server.Run>)
   - [func \(s \*Server\) Stop\(\)](<#Server.Stop>)
 - [type ValidationResult](<#ValidationResult>)
@@ -386,6 +387,15 @@ func (s *Server) HTTPAddr() string
 
 HTTPAddr returns the actual bound "host:port" the server is serving HTTP on, or "" if Run has not finished starting yet. Safe to call concurrently with Run: startHTTP writes the resolved s.cfg.HTTPAddr before Run stores s.ready, and sync/atomic gives that store/load pair release/acquire ordering, so a caller observing ready==true is guaranteed to see the final address. Callers that need to wait for the address \(e.g. tests\) should poll this instead of pre\-reserving a port.
 
+<a name="Server.NATSURL"></a>
+### func \(\*Server\) [NATSURL](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L162>)
+
+```go
+func (s *Server) NATSURL() string
+```
+
+NATSURL returns the client URL of the embedded NATS server, or "" if Run has not finished starting yet. An embedder that set NATSPort \-1 reads the real port here instead of probing for a free one. The same ready release/acquire pair as HTTPAddr publishes s.ns.
+
 <a name="Server.Run"></a>
 ### func \(\*Server\) [Run](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L98>)
 
@@ -396,7 +406,7 @@ func (s *Server) Run() error
 Run starts all server components, serves HTTP, and blocks until shutdown. Returns nil on clean shutdown, error otherwise.
 
 <a name="Server.Stop"></a>
-### func \(\*Server\) [Stop](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L673>)
+### func \(\*Server\) [Stop](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L690>)
 
 ```go
 func (s *Server) Stop()
