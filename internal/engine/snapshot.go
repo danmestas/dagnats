@@ -140,9 +140,7 @@ func NewSnapshotStore(js jetstream.JetStream) *SnapshotStore {
 	if js == nil {
 		panic("NewSnapshotStore: JetStream must not be nil")
 	}
-	kv, err := js.KeyValue(
-		context.Background(), runsBucket,
-	)
+	kv, err := natsutil.BindKeyValue(context.Background(), js, runsBucket)
 	if err != nil {
 		panic("NewSnapshotStore: workflow_runs bucket not found: " +
 			err.Error())

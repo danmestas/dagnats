@@ -116,6 +116,46 @@ func createKeyValueWithRetry(
 	})
 }
 
+// BindKeyValue opens an existing bucket, re-sending the lookup when it
+// goes unanswered. A clustered STREAM.INFO is answered only by the
+// stream's leader, so a lookup sent while that group elects one gets no
+// reply at all; a single such drop used to panic a node at startup. A
+// missing bucket, or any other real answer, returns at once.
+func BindKeyValue(
+	ctx context.Context, js jetstream.JetStream, bucket string,
+) (jetstream.KeyValue, error) {
+	if js == nil {
+		panic("BindKeyValue: js must not be nil")
+	}
+	if bucket == "" {
+		panic("BindKeyValue: bucket must not be empty")
+	}
+	var kv jetstream.KeyValue
+	err := provisionWithRetry(ctx, func(attemptCtx context.Context) error {
+		var bindErr error
+		kv, bindErr = js.KeyValue(attemptCtx, bucket)
+		return bindErr
+	})
+	return kv, err
+}
+
+// BindOptionalKeyValue binds a bucket a component can run without. A
+// bucket that does not exist is nil without a word, since it is optional;
+// any other failure is nil with a warning naming the bucket, so a node
+// running without it leaves a trace instead of failing silently.
+func BindOptionalKeyValue(
+	ctx context.Context, js jetstream.JetStream, bucket string,
+) jetstream.KeyValue {
+	kv, err := BindKeyValue(ctx, js, bucket)
+	if err == nil {
+		return kv
+	}
+	if !errors.Is(err, jetstream.ErrBucketNotFound) {
+		slog.Warn("optional KV bucket unbound", "bucket", bucket, "err", err)
+	}
+	return nil
+}
+
 // EnsureKeyValue creates cfg, or upgrades an existing bucket to it in
 // place, with the create-first order and retry budget SetupAll uses. It is
 // for buckets owned outside SetupAll (the console's audit bucket), so they

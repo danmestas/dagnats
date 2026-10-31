@@ -318,8 +318,8 @@ func NewOrchestrator(
 	if err != nil {
 		panic("NewOrchestrator: jetstream.New: " + err.Error())
 	}
-	defKV, err := js.KeyValue(
-		context.Background(), "workflow_defs",
+	defKV, err := natsutil.BindKeyValue(
+		context.Background(), js, "workflow_defs",
 	)
 	if err != nil {
 		panic(
@@ -330,8 +330,8 @@ func NewOrchestrator(
 	tp := natsutil.NewTracingPublisher(nc, js)
 	cm, _ := NewConcurrencyManagerSafe(js)
 	store := NewSnapshotStore(js)
-	singletonKV, _ := js.KeyValue(
-		context.Background(), "singleton_locks",
+	singletonKV := natsutil.BindOptionalKeyValue(
+		context.Background(), js, "singleton_locks",
 	)
 	ac := NewAdmissionController(
 		nc, js, tp, store, cm, singletonKV,
@@ -342,8 +342,8 @@ func NewOrchestrator(
 	pm := newPubMetrics(m)
 	tracer := otel.Tracer("dagnats/engine")
 	sleepTimer := NewSleepTimer(nc, js, tp)
-	stickyKV, _ := js.KeyValue(
-		context.Background(), "sticky_bindings",
+	stickyKV := natsutil.BindOptionalKeyValue(
+		context.Background(), js, "sticky_bindings",
 	)
 	sticky := NewStickyRouter(
 		stickyKV, js, tp, sleepTimer, tracer,
