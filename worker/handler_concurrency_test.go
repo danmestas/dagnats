@@ -729,6 +729,25 @@ func runDrainingNak(t *testing.T, n int) {
 	assertDeliveredOnce(t, js, name, 1, 1)
 }
 
+// TestStop_LaneReleaseSharesDrainBound: an unset drainTimeout falls
+// back to defaultDrainTimeout for the handler drain, and the lane
+// releases must wait on that same bound, not on zero plus the grace.
+func TestStop_LaneReleaseSharesDrainBound(t *testing.T) {
+	nc, _ := startConcurrencyServer(t)
+	w := NewWorker(nc)
+	w.drainTimeout = 0
+	if got := w.effectiveDrainTimeout(); got != defaultDrainTimeout {
+		t.Fatalf("drain bound = %v, want %v", got, defaultDrainTimeout)
+	}
+	if got, want := w.laneReleaseWait(), defaultDrainTimeout+laneCloseGrace; got != want {
+		t.Fatalf("lane release wait = %v, want %v", got, want)
+	}
+	w.drainTimeout = 3 * time.Second
+	if got, want := w.laneReleaseWait(), 3*time.Second+laneCloseGrace; got != want {
+		t.Fatalf("lane release wait = %v, want %v", got, want)
+	}
+}
+
 // taskConsumerInfo reads a TASK_QUEUES consumer's state.
 func taskConsumerInfo(
 	t *testing.T, js jetstream.JetStream, name string,

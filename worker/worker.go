@@ -1229,6 +1229,20 @@ func (w *Worker) stopConsumers() {
 	w.releaseLanes()
 }
 
+// effectiveDrainTimeout is the handler drain bound Stop uses: the
+// configured drainTimeout, or defaultDrainTimeout when unset. The lane
+// releases derive their bound from it too, so the two cannot drift.
+func (w *Worker) effectiveDrainTimeout() time.Duration {
+	timeout := w.drainTimeout
+	if timeout <= 0 {
+		timeout = defaultDrainTimeout
+	}
+	if timeout <= 0 {
+		panic("effectiveDrainTimeout: timeout must be positive")
+	}
+	return timeout
+}
+
 // awaitHandlers waits for in-flight handleMessage calls to finish before
 // Stop returns (#498) — otherwise a caller's deferred cleanup (e.g.
 // closing a DB pool) can run out from under a handler that's still
@@ -1244,13 +1258,7 @@ func (w *Worker) awaitHandlers() {
 		w.handlerWG.Wait()
 		close(done)
 	}()
-	timeout := w.drainTimeout
-	if timeout <= 0 {
-		timeout = defaultDrainTimeout
-	}
-	if timeout <= 0 {
-		panic("awaitHandlers: timeout must be positive")
-	}
+	timeout := w.effectiveDrainTimeout()
 	select {
 	case <-done:
 	case <-time.After(timeout):

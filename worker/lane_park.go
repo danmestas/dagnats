@@ -101,7 +101,7 @@ func (w *Worker) releaseLanes() {
 	if w.abandoned == nil {
 		panic("releaseLanes: worker not built by NewWorker")
 	}
-	wait := w.drainTimeout + laneCloseGrace
+	wait := w.laneReleaseWait()
 	for _, l := range w.lanes {
 		w.laneReleases.Add(1)
 		go func() {
@@ -119,4 +119,14 @@ func (w *Worker) releaseLanes() {
 			l.park.release()
 		}()
 	}
+}
+
+// laneReleaseWait bounds each lane release: the handler drain bound plus
+// laneCloseGrace, since an inline handler can delay its lane's drain.
+func (w *Worker) laneReleaseWait() time.Duration {
+	wait := w.effectiveDrainTimeout() + laneCloseGrace
+	if wait <= laneCloseGrace {
+		panic("laneReleaseWait: drain bound must be positive")
+	}
+	return wait
 }
