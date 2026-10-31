@@ -105,6 +105,24 @@ func (b *Bridge) handleResolve(
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if endsClaim(req.Action) {
+		unlock, ok := b.lockClaimEnd(taskID)
+		if !ok {
+			http.Error(w, "task not found", http.StatusNotFound)
+			return
+		}
+		defer unlock()
+		// The claim may have been released between the first Load and the
+		// lock; what is left is the one this resolve holds the lock for.
+		if msg, claimingTokenID, ok = b.ackMap.LoadWithTokenID(taskID); !ok {
+			http.Error(w, "task not found", http.StatusNotFound)
+			return
+		}
+		if !b.authorizeTaskOwner(claims, claimingTokenID) {
+			http.Error(w, "task not claimed by this token", http.StatusForbidden)
+			return
+		}
+	}
 	if b.withdrawIfRunCancelled(ctx, taskID, claimingTokenID, msg) {
 		http.Error(w, "run cancelled", http.StatusConflict)
 		return
@@ -154,6 +172,29 @@ func (b *Bridge) handleResolve(
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// endsClaim reports whether action ends the task's claim with an ack or
+// a Nak. Those hold the claim's resolveMu from Load through Ack, so a
+// release on disconnect cannot interleave; the other actions do not end
+// the claim, and a wait_signal may block far too long to hold it.
+func endsClaim(action string) bool {
+	switch action {
+	case "complete", "fail", "continue", "pause":
+		return true
+	}
+	return false
+}
+
+// lockClaimEnd takes the claim's resolveMu; false when the task is no
+// longer in flight.
+func (b *Bridge) lockClaimEnd(taskID string) (unlock func(), ok bool) {
+	mu := b.ackMap.ResolveLock(taskID)
+	if mu == nil {
+		return nil, false
+	}
+	mu.Lock()
+	return mu.Unlock, true
 }
 
 // withdrawIfRunCancelled withdraws a claimed task whose run has been

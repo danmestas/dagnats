@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -172,10 +173,6 @@ func TestReleaseOnDisconnect_NonOwnerCannotPollOrRelease(t *testing.T) {
 	if status != http.StatusConflict || !strings.Contains(body, `"worker_id_owned"`) {
 		t.Fatalf("non-owner poll = %d %s, want 409 worker_id_owned", status, body)
 	}
-	status, body, _ = pollAs(t, ts, bearerB, "nobody", 500)
-	if status != http.StatusConflict || !strings.Contains(body, `"worker_not_connected"`) {
-		t.Fatalf("poll for an unconnected id = %d %s, want 409 worker_not_connected", status, body)
-	}
 	respB, cancelB := connectWorker(t, ts.URL, bearerB, "w1")
 	respB.Body.Close()
 	cancelB()
@@ -220,5 +217,125 @@ func TestReleaseOnDisconnect_ReconnectRaceKeepsNewConnectionClaims(t *testing.T)
 	_, _, last := pollAs(t, ts, "", "", 8000)
 	if len(last) != 1 || last[0].RunID != second[0].RunID {
 		t.Fatalf("after the new close got %+v, want %s", last, second[0].RunID)
+	}
+}
+
+// An id with no open connection on this bridge is accepted unbound: the
+// SSE stream and the poll may reach different bridges.
+func TestReleaseOnDisconnect_NotConnectedPollIsAcceptedUnbound(t *testing.T) {
+	rig := newJournalRig(t)
+	_, ts := rig.front(t)
+	publishEcho(t, rig, "run-ghost")
+	status, body, tasks := pollAs(t, ts, "", "ghost", 3000)
+	if status != 200 || len(tasks) != 1 {
+		t.Fatalf("poll with an unconnected worker_id = %d %s, want 200 with the task", status, body)
+	}
+}
+
+// A long poll that outlives its connection stores its claim after the
+// close: the claim is Nak'd, not returned, and another worker gets it.
+func TestReleaseOnDisconnect_LateClaimOfClosedConnectionIsNotReturned(t *testing.T) {
+	rig := newJournalRig(t)
+	b, ts := rig.front(t)
+	drop := openConn(t, ts, b, "", "w1")
+	type result struct {
+		tasks []pollResponse
+	}
+	done := make(chan result, 1)
+	go func() {
+		_, _, tasks := pollAs(t, ts, "", "w1", 4000)
+		done <- result{tasks}
+	}()
+	time.Sleep(300 * time.Millisecond) // the poll is waiting on an empty queue
+	drop()
+	publishEcho(t, rig, "run-late")
+	select {
+	case got := <-done:
+		if len(got.tasks) != 0 {
+			t.Fatalf("the closed connection's poll returned %+v, want nothing", got.tasks)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("poll did not end")
+	}
+	_, _, again := pollAs(t, ts, "", "", 8000)
+	if len(again) != 1 || again[0].RunID != "run-late" {
+		t.Fatalf("second worker got %+v, want the released late task", again)
+	}
+}
+
+// A release waits for an in-flight resolve of the same claim: while the
+// claim's resolve lock is held nothing is Nak'd, and once it is let go
+// the release proceeds.
+func TestReleaseOnDisconnect_WaitsForInFlightResolve(t *testing.T) {
+	rig := newJournalRig(t)
+	b, ts := rig.front(t)
+	publishEcho(t, rig, "run-lock")
+	drop := openConn(t, ts, b, "", "w1")
+	_, _, tasks := pollAs(t, ts, "", "w1", 3000)
+	if len(tasks) != 1 {
+		t.Fatal("no task")
+	}
+	mu := b.ackMap.ResolveLock(tasks[0].TaskID)
+	mu.Lock()
+	dropped := make(chan struct{})
+	go func() { drop(); close(dropped) }()
+	if _, _, again := pollAs(t, ts, "", "", 1200); len(again) != 0 {
+		t.Fatalf("the claim was released while its resolve lock was held: %+v", again)
+	}
+	mu.Unlock()
+	<-dropped
+	if _, _, again := pollAs(t, ts, "", "", 8000); len(again) != 1 {
+		t.Fatalf("the claim was not released after the lock was let go: %+v", again)
+	}
+}
+
+// Resolve (complete) racing the drop: whatever the interleaving, the
+// task is completed exactly once or redelivered exactly once, never both.
+func TestReleaseOnDisconnect_CompleteRacingDropNeverBoth(t *testing.T) {
+	for _, journaled := range []bool{false, true} {
+		name := "plain"
+		if journaled {
+			name = "journal"
+		}
+		t.Run(name, func(t *testing.T) {
+			rig := newJournalRig(t)
+			b, ts := rig.front(t)
+			const rounds = 15
+			for i := 0; i < rounds; i++ {
+				runID := fmt.Sprintf("run-race-%d", i)
+				publishEcho(t, rig, runID)
+				drop := openConn(t, ts, b, "", fmt.Sprintf("w%d", i))
+				_, _, tasks := pollAs(t, ts, "", fmt.Sprintf("w%d", i), 3000)
+				if len(tasks) != 1 {
+					t.Fatalf("round %d: no task", i)
+				}
+				if journaled {
+					if status, body := resolveBody(t, ts, tasks[0].TaskID,
+						`{"action":"journal.append","type":"entry","data":{}}`); status != 200 {
+						t.Fatalf("round %d append: %d %s", i, status, body)
+					}
+				}
+				var wg sync.WaitGroup
+				var status int
+				wg.Add(2)
+				go func() {
+					defer wg.Done()
+					status, _ = resolveBody(t, ts, tasks[0].TaskID, `{"action":"complete","output":{}}`)
+				}()
+				go func() { defer wg.Done(); drop() }()
+				wg.Wait()
+
+				_, _, again := pollAs(t, ts, "", "", 600)
+				completed := countHistory(t, rig.nc, runID, protocol.EventStepCompleted)
+				switch {
+				case status == 200 && completed == 1 && len(again) == 0:
+				case status != 200 && completed == 0 && len(again) == 1:
+					// released first: the redelivered copy is the one to complete
+				default:
+					t.Fatalf("round %d: complete=%d events=%d redelivered=%d; want completed once or redelivered once",
+						i, status, completed, len(again))
+				}
+			}
+		})
 	}
 }

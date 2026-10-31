@@ -49,6 +49,7 @@ bridge/stranded\_check.go Defense\-in\-depth counterpart to the engine's primary
   - [func \(am \*AckMap\) LoadWithTokenID\(taskID string\) \(jetstream.Msg, string, bool\)](<#AckMap.LoadWithTokenID>)
   - [func \(am \*AckMap\) MarkResolved\(taskID, tokenID string\)](<#AckMap.MarkResolved>)
   - [func \(am \*AckMap\) PendingState\(taskID string\) \(\[\]byte, bool\)](<#AckMap.PendingState>)
+  - [func \(am \*AckMap\) ResolveLock\(taskID string\) \*sync.Mutex](<#AckMap.ResolveLock>)
   - [func \(am \*AckMap\) SetJournal\(taskID string, j \*journal.Journal\) bool](<#AckMap.SetJournal>)
   - [func \(am \*AckMap\) SetJournalStop\(taskID string, err error\) bool](<#AckMap.SetJournalStop>)
   - [func \(am \*AckMap\) SetPendingState\(taskID string, state \[\]byte\) bool](<#AckMap.SetPendingState>)
@@ -78,7 +79,7 @@ The ackmap size is an observable gauge rather than an up/down counter deliberate
 Mirrors RegisterSchedulerMetrics \(internal/trigger/metrics.go\): a standalone registration function rather than construction inside NewBridge, so the error is returned to a caller that can assert on it instead of being discarded at startup.
 
 <a name="AckMap"></a>
-## type [AckMap](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L114-L130>)
+## type [AckMap](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L120-L137>)
 
 AckMap tracks in\-flight tasks for HTTP workers. Maps task\_id \(\{runID\}.\{stepID\}\) to the NATS message so the bridge can ack/nak on behalf of the HTTP client when it resolves the task.
 
@@ -95,7 +96,7 @@ type AckMap struct {
 ```
 
 <a name="NewAckMap"></a>
-### func [NewAckMap](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L141>)
+### func [NewAckMap](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L148>)
 
 ```go
 func NewAckMap() *AckMap
@@ -104,7 +105,7 @@ func NewAckMap() *AckMap
 NewAckMap creates an empty AckMap ready for use.
 
 <a name="AckMap.Count"></a>
-### func \(\*AckMap\) [Count](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L425>)
+### func \(\*AckMap\) [Count](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L511>)
 
 ```go
 func (am *AckMap) Count() int64
@@ -113,7 +114,7 @@ func (am *AckMap) Count() int64
 Count returns the number of in\-flight tasks.
 
 <a name="AckMap.Delete"></a>
-### func \(\*AckMap\) [Delete](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L351>)
+### func \(\*AckMap\) [Delete](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L437>)
 
 ```go
 func (am *AckMap) Delete(taskID string)
@@ -122,7 +123,7 @@ func (am *AckMap) Delete(taskID string)
 Delete removes a task from the map after resolution.
 
 <a name="AckMap.Journal"></a>
-### func \(\*AckMap\) [Journal](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L497>)
+### func \(\*AckMap\) [Journal](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L583>)
 
 ```go
 func (am *AckMap) Journal(taskID string) (*journal.Journal, bool)
@@ -131,7 +132,7 @@ func (am *AckMap) Journal(taskID string) (*journal.Journal, bool)
 Journal returns the journal claim opened for taskID's delivery.
 
 <a name="AckMap.JournalLock"></a>
-### func \(\*AckMap\) [JournalLock](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L484>)
+### func \(\*AckMap\) [JournalLock](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L570>)
 
 ```go
 func (am *AckMap) JournalLock(taskID string) *sync.Mutex
@@ -140,7 +141,7 @@ func (am *AckMap) JournalLock(taskID string) *sync.Mutex
 JournalLock returns the mutex that serializes journal actions on taskID's claim, or nil when the task is not claimed.
 
 <a name="AckMap.JournalStop"></a>
-### func \(\*AckMap\) [JournalStop](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L588>)
+### func \(\*AckMap\) [JournalStop](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L674>)
 
 ```go
 func (am *AckMap) JournalStop(taskID string) error
@@ -149,7 +150,7 @@ func (am *AckMap) JournalStop(taskID string) error
 JournalStop returns the fence recorded for taskID, or nil.
 
 <a name="AckMap.Load"></a>
-### func \(\*AckMap\) [Load](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L225>)
+### func \(\*AckMap\) [Load](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L311>)
 
 ```go
 func (am *AckMap) Load(taskID string) (jetstream.Msg, bool)
@@ -160,7 +161,7 @@ Load retrieves the NATS message for the given task ID. Returns \(nil, false\) if
 Deliberately does not reap: a resolve arriving concurrently with the reaper must not race into a "task not found" that the worker cannot distinguish from a genuine unknown\-task error.
 
 <a name="AckMap.LoadWithTokenID"></a>
-### func \(\*AckMap\) [LoadWithTokenID](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L235>)
+### func \(\*AckMap\) [LoadWithTokenID](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L321>)
 
 ```go
 func (am *AckMap) LoadWithTokenID(taskID string) (jetstream.Msg, string, bool)
@@ -169,7 +170,7 @@ func (am *AckMap) LoadWithTokenID(taskID string) (jetstream.Msg, string, bool)
 LoadWithTokenID retrieves the NATS message and the TokenID recorded at Store time for the given task ID \(\#627 per\-task authorization: a resolve must present the same TokenID that claimed the task, or be Admin\). Returns \(nil, "", false\) if not found. Same does\-not\-reap contract as Load.
 
 <a name="AckMap.MarkResolved"></a>
-### func \(\*AckMap\) [MarkResolved](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L372>)
+### func \(\*AckMap\) [MarkResolved](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L458>)
 
 ```go
 func (am *AckMap) MarkResolved(taskID, tokenID string)
@@ -178,7 +179,7 @@ func (am *AckMap) MarkResolved(taskID, tokenID string)
 MarkResolved records that taskID was just resolved \(complete/fail/ pause/continue\) by tokenID \(empty for the admin bearer or dev mode\) — called alongside Delete, from the same resolve call, so a POST /v1/tasks/\{id\}/logs that arrives afterwards can be told 409 \(already resolved\) instead of 404 \(never existed\) — but ONLY for the SAME caller that resolved it; see WasResolvedBy. Bounded and TTL'd the same way Store bounds entries: evicts the oldest resolvedTasks entry at resolvedTaskMax, and WasResolvedBy expires an entry past resolvedTaskTTL.
 
 <a name="AckMap.PendingState"></a>
-### func \(\*AckMap\) [PendingState](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L311>)
+### func \(\*AckMap\) [PendingState](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L397>)
 
 ```go
 func (am *AckMap) PendingState(taskID string) ([]byte, bool)
@@ -186,8 +187,17 @@ func (am *AckMap) PendingState(taskID string) ([]byte, bool)
 
 PendingState returns the state buffered for taskID and whether a \`checkpoint\` set one since the claim.
 
+<a name="AckMap.ResolveLock"></a>
+### func \(\*AckMap\) [ResolveLock](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L267>)
+
+```go
+func (am *AckMap) ResolveLock(taskID string) *sync.Mutex
+```
+
+ResolveLock returns the mutex that serializes ending taskID's claim against its release; nil when the task is not in flight.
+
 <a name="AckMap.SetJournal"></a>
-### func \(\*AckMap\) [SetJournal](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L512>)
+### func \(\*AckMap\) [SetJournal](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L598>)
 
 ```go
 func (am *AckMap) SetJournal(taskID string, j *journal.Journal) bool
@@ -196,7 +206,7 @@ func (am *AckMap) SetJournal(taskID string, j *journal.Journal) bool
 SetJournal records the journal claim for taskID and reports whether the entry exists. Never creates an entry.
 
 <a name="AckMap.SetJournalStop"></a>
-### func \(\*AckMap\) [SetJournalStop](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L569>)
+### func \(\*AckMap\) [SetJournalStop](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L655>)
 
 ```go
 func (am *AckMap) SetJournalStop(taskID string, err error) bool
@@ -205,7 +215,7 @@ func (am *AckMap) SetJournalStop(taskID string, err error) bool
 SetJournalStop records that taskID's delivery was fenced, so every later action on it reports err. It reports whether the entry exists.
 
 <a name="AckMap.SetPendingState"></a>
-### func \(\*AckMap\) [SetPendingState](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L290>)
+### func \(\*AckMap\) [SetPendingState](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L376>)
 
 ```go
 func (am *AckMap) SetPendingState(taskID string, state []byte) bool
@@ -214,7 +224,7 @@ func (am *AckMap) SetPendingState(taskID string, state []byte) bool
 SetPendingState buffers state for taskID's next \`continue\` \(\#801\) and reports whether the entry exists. Never creates an entry.
 
 <a name="AckMap.Store"></a>
-### func \(\*AckMap\) [Store](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L168>)
+### func \(\*AckMap\) [Store](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L176>)
 
 ```go
 func (am *AckMap) Store(taskID string, msg jetstream.Msg, tokenID string)
@@ -223,7 +233,7 @@ func (am *AckMap) Store(taskID string, msg jetstream.Msg, tokenID string)
 Store saves a NATS message keyed by task ID, stamped with the insertion time and the TokenID of the caller that claimed it \(\#627; empty for the admin bearer or dev mode\). Sweeps expired entries and enforces the size cap before inserting. Panics on empty taskID or nil msg — both are programmer errors.
 
 <a name="AckMap.Touch"></a>
-### func \(\*AckMap\) [Touch](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L332>)
+### func \(\*AckMap\) [Touch](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L418>)
 
 ```go
 func (am *AckMap) Touch(taskID string) bool
@@ -232,7 +242,7 @@ func (am *AckMap) Touch(taskID string) bool
 Touch restarts taskID's reap window and reports whether the entry exists. Call it after every successful msg.InProgress \(\#741\): that call resets NATS's AckWait, so the held delivery stays current and the reap window must count from it, not from the claim. Never creates an entry.
 
 <a name="AckMap.WasResolvedBy"></a>
-### func \(\*AckMap\) [WasResolvedBy](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L404>)
+### func \(\*AckMap\) [WasResolvedBy](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L490>)
 
 ```go
 func (am *AckMap) WasResolvedBy(taskID string, claims workertoken.Claims) bool
@@ -241,7 +251,7 @@ func (am *AckMap) WasResolvedBy(taskID string, claims workertoken.Claims) bool
 WasResolvedBy reports whether taskID was resolved within the last resolvedTaskTTL BY claims — i.e. claims.Admin, or claims.TokenID equals the TokenID that resolved it \(\#624 review round 3: gating this on the caller, not just the taskID, closes an enumeration hole — without it, any valid token could probe 409\-vs\-404 for a task it never claimed and learn whether that task ever existed/resolved\). Expires \(and removes\) a stale entry on read rather than waiting for a separate sweep — resolvedTasks is only ever queried from handleLogs's rejection path, so a lazy expiry costs nothing extra there.
 
 <a name="AckMap.WithLogState"></a>
-### func \(\*AckMap\) [WithLogState](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L260-L265>)
+### func \(\*AckMap\) [WithLogState](<https://github.com/danmestas/dagnats/blob/main/bridge/ackmap.go#L346-L351>)
 
 ```go
 func (am *AckMap) WithLogState(taskID string, fn func(seq uint64, totalBytes int64, truncated bool) (newSeq uint64, newTotalBytes int64, newTruncated bool)) bool
@@ -250,7 +260,7 @@ func (am *AckMap) WithLogState(taskID string, fn func(seq uint64, totalBytes int
 WithLogState atomically reads and updates the log\-ingest counters for taskID under AckMap's own mutex \(\#624\). fn receives the current \(seq, totalBytes, truncated\) and returns the updated values, which are written back before the lock releases — so concurrent POST /v1/tasks/\{id\}/logs calls for the same task never race each other's seq assignment or truncation decision. Returns false \(fn not called\) if taskID has no entry — same does\-not\-reap contract as LoadWithTokenID: a resolve racing the reaper must not surface as an ambiguous "not found" to the caller.
 
 <a name="Bridge"></a>
-## type [Bridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L48-L81>)
+## type [Bridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L48-L84>)
 
 Bridge is an HTTP\-to\-NATS gateway that lets non\-Go workers interact with DagNats over HTTP. Three deep endpoints expose the full worker lifecycle: connect, poll, and resolve.
 
@@ -265,7 +275,7 @@ type Bridge struct {
 ```
 
 <a name="NewBridge"></a>
-### func [NewBridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L104>)
+### func [NewBridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L107>)
 
 ```go
 func NewBridge(pub *natsutil.TracingPublisher) *Bridge
@@ -276,7 +286,7 @@ NewBridge creates a Bridge. Panics on nil pub — a programmer error at startup.
 Binds optional KV buckets for checkpoints and signals \(nil if not present\).
 
 <a name="Bridge.AuthorizesWorker"></a>
-### func \(\*Bridge\) [AuthorizesWorker](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L277>)
+### func \(\*Bridge\) [AuthorizesWorker](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L282>)
 
 ```go
 func (b *Bridge) AuthorizesWorker(header string) bool
@@ -285,7 +295,7 @@ func (b *Bridge) AuthorizesWorker(header string) bool
 AuthorizesWorker reports whether header carries a token this bridge accepts: its admin bearer or a minted worker token. In dev mode, with no admin bearer, it accepts nothing, so a front gate that defers to it never opens a route the bridge leaves open.
 
 <a name="Bridge.Handler"></a>
-### func \(\*Bridge\) [Handler](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L172>)
+### func \(\*Bridge\) [Handler](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L177>)
 
 ```go
 func (b *Bridge) Handler() http.Handler
@@ -307,7 +317,7 @@ func (b *Bridge) SetRestartLimit(n int)
 SetRestartLimit sets how many deliveries may claim one iteration of a journal step without progress before the step fails with reason restart\_limit, as worker.WithRestartLimit does for Go workers. It is safe to call while the bridge serves; a claim in flight uses the old value. Panics unless 1 \<= n \<= worker.RestartLimitMax.
 
 <a name="Bridge.SetTokenStore"></a>
-### func \(\*Bridge\) [SetTokenStore](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L199>)
+### func \(\*Bridge\) [SetTokenStore](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L204>)
 
 ```go
 func (b *Bridge) SetTokenStore(store *workertoken.Store)

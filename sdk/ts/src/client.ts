@@ -24,8 +24,8 @@ export interface PollOptions {
   /**
    * The worker id whose open connection owns this poll's claims: when that connection closes the
    * bridge releases them at once instead of after AckWait. Defaults to the id of the Connection
-   * this client opened with `connect`, while its stream is open. The bridge refuses (409) an id
-   * with no open connection on it, so pass one only for a connection held open at that bridge.
+   * this client opened with `connect`, while its stream is open. The bridge refuses (409 worker_id_owned) an id
+   * another token holds open; an id with no open connection there is accepted unbound.
    */
   worker_id?: string;
 }

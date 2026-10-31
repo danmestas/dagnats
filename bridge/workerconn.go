@@ -18,9 +18,13 @@ type workerConn struct {
 	id      string
 	tokenID string
 	admin   bool
-	// closed is set before the claims are collected, so a poll that
-	// stores a claim after the scan still sees it and releases it.
-	closed atomic.Bool
+	// release says whether the close released the connection's claims:
+	// false when the closing token no longer owned the id. It is set
+	// before closed, and closed before the claims are collected, so a
+	// poll that stores a claim after the scan still sees both and acts
+	// the same way as the scan.
+	release atomic.Bool
+	closed  atomic.Bool
 }
 
 // workerConns is the bridge's registry of open connections by worker id.
@@ -49,10 +53,11 @@ func (wc *workerConns) open(id string, claims workertoken.Claims) *workerConn {
 
 // close marks conn closed and forgets it if it is still the current
 // connection of its id.
-func (wc *workerConns) close(conn *workerConn) {
+func (wc *workerConns) close(conn *workerConn, release bool) {
 	if conn == nil {
 		panic("workerConns.close: conn must not be nil")
 	}
+	conn.release.Store(release)
 	conn.closed.Store(true)
 	wc.mu.Lock()
 	defer wc.mu.Unlock()
@@ -75,24 +80,27 @@ type pollWorkerRefusalBody struct {
 	Code  string `json:"code"`
 }
 
-// pollWorkerConn resolves the connection a poll's worker_id names: it
-// must be open on this bridge and owned by the caller by the same rule
-// as connect (same token, or an admin). On refusal it writes the 409 and
-// returns false.
+// pollWorkerConn resolves the connection a poll's worker_id names. An id
+// open on this bridge under another token is refused with a 409
+// (worker_id_owned), by the same rule as connect: same token, or an
+// admin. An id with no open connection here is not refused: the SSE
+// stream and the poll may reach different bridges, or the stream may
+// have just dropped, so the poll is accepted unbound (redelivery after
+// AckWait, as for a poll without worker_id), with a warning and a count.
+// ok false means the refusal was written.
 func (b *Bridge) pollWorkerConn(
-	w http.ResponseWriter, claims workertoken.Claims, workerID string,
-) (*workerConn, bool) {
+	ctx context.Context, w http.ResponseWriter, claims workertoken.Claims, workerID string,
+) (conn *workerConn, ok bool) {
 	if workerID == "" {
 		panic("pollWorkerConn: workerID must not be empty")
 	}
-	conn := b.conns.current(workerID)
+	conn = b.conns.current(workerID)
 	switch {
 	case conn == nil:
-		writeJSON(w, http.StatusConflict, pollWorkerRefusalBody{
-			Error: "worker_id has no open connection on this bridge; connect first",
-			Code:  "worker_not_connected",
-		})
-		return nil, false
+		slog.WarnContext(ctx, "poll names a worker_id with no open connection here; claims unbound",
+			"worker_id", workerID)
+		b.unboundPolls.Add(ctx, 1)
+		return nil, true
 	case !claims.Admin && conn.tokenID != claims.TokenID:
 		writeJSON(w, http.StatusConflict, pollWorkerRefusalBody{
 			Error: "worker_id is registered to another token",
@@ -119,40 +127,60 @@ func workerConnFrom(ctx context.Context) *workerConn {
 // worker id, every claim polled under this connection that is still
 // unresolved is Nak'd so NATS redelivers it now instead of after AckWait.
 func (b *Bridge) closeWorkerConn(ctx context.Context, conn *workerConn, owned bool) {
-	b.conns.close(conn)
+	b.conns.close(conn, owned)
 	if owned {
 		b.releaseWorkerClaims(ctx, conn)
 	}
 }
 
-// releaseWorkerClaims Naks the claims recorded under conn and drops them
-// from the ack map, so a late resolve from a worker that was only
-// partitioned answers "task not found" rather than racing the
-// redelivery. Resolved claims are already gone from the map, and a
-// fenced one belongs to its successor's delivery, so neither is Nak'd.
-// Bounded by the ack map's own entry cap.
+// releaseWorkerClaims releases the claims recorded under conn.
 func (b *Bridge) releaseWorkerClaims(ctx context.Context, conn *workerConn) {
 	if !conn.closed.Load() {
 		panic("releaseWorkerClaims: connection must be closed first")
 	}
-	released := b.ackMap.takeWorkerClaims(conn)
-	for _, msg := range released {
-		if err := msg.Nak(); err != nil {
-			slog.WarnContext(ctx, "release claim on disconnect failed; it redelivers after AckWait",
-				"worker_id", conn.id, "error", err)
+	released := 0
+	for _, ref := range b.ackMap.connClaims(conn) {
+		if b.releaseClaim(ctx, conn, ref) {
+			released++
 		}
 	}
-	if len(released) > 0 {
+	if released > 0 {
 		slog.InfoContext(ctx, "released claims of a disconnected worker",
-			"worker_id", conn.id, "count", len(released))
+			"worker_id", conn.id, "count", released)
 	}
 }
 
-// releaseIfClosed releases claims stored under conn after it closed: a
-// long poll that outlives its connection stores them once the scan has
-// already run.
-func (b *Bridge) releaseIfClosed(ctx context.Context, conn *workerConn) {
-	if conn != nil && conn.closed.Load() {
-		b.releaseWorkerClaims(ctx, conn)
+// releaseClaim Naks one claim and drops it from the ack map, so a late
+// resolve from a worker that was only partitioned answers "task not
+// found" rather than racing the redelivery. It holds the claim's
+// resolveMu: a resolve that ends the claim (Load through Ack) either
+// finished first, and the claim is gone, or waits and finds it gone, so
+// a delivery is never both acknowledged and Nak'd. A fenced claim
+// belongs to its successor's delivery and is left.
+func (b *Bridge) releaseClaim(ctx context.Context, conn *workerConn, ref claimRef) bool {
+	ref.mu.Lock()
+	defer ref.mu.Unlock()
+	if !b.ackMap.takeUnresolved(ref) {
+		return false
 	}
+	if err := ref.msg.Nak(); err != nil {
+		slog.WarnContext(ctx, "release claim on disconnect failed; it redelivers after AckWait",
+			"worker_id", conn.id, "task_id", ref.taskID, "error", err)
+	}
+	return true
+}
+
+// releaseIfClosed releases the claim of taskID just stored under conn
+// when conn has already closed and that close released its claims (a
+// long poll that outlives its connection stores them after the scan
+// ran). True means the claim was Nak'd and must not be handed out.
+func (b *Bridge) releaseIfClosed(ctx context.Context, conn *workerConn, taskID string) bool {
+	if conn == nil || !conn.closed.Load() || !conn.release.Load() {
+		return false
+	}
+	ref, ok := b.ackMap.connClaim(conn, taskID)
+	if !ok {
+		return false
+	}
+	return b.releaseClaim(ctx, conn, ref)
 }

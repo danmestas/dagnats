@@ -114,7 +114,7 @@ func (b *Bridge) handlePoll(
 		http.Error(w, claims.ExplainWorkerGroupRefusal(req.WorkerGroup), http.StatusForbidden)
 		return
 	}
-	conn, ok := b.pollConn(w, claims, req)
+	conn, ok := b.pollConn(ctx, w, claims, req)
 	if !ok {
 		return
 	}
@@ -683,7 +683,9 @@ func (b *Bridge) processPolledMsg(
 		return pollResponse{}, false
 	}
 	taskID := payload.RunID + "." + payload.StepID
-	b.storeClaimedTask(ctx, taskID, msg)
+	if !b.storeClaimedTask(ctx, taskID, msg) {
+		return pollResponse{}, false
+	}
 	traceHdr := dispatchTraceHeader(dispatchCtx)
 	delivered, streamSeq := deliveryIdentity(msg, attemptNumber)
 	resp := pollResponse{
@@ -745,7 +747,7 @@ func (b *Bridge) dispatchablePolledTask(
 // limit.
 func (b *Bridge) storeClaimedTask(
 	ctx context.Context, taskID string, msg jetstream.Msg,
-) {
+) bool {
 	if ctx == nil {
 		panic("storeClaimedTask: ctx must not be nil")
 	}
@@ -755,18 +757,20 @@ func (b *Bridge) storeClaimedTask(
 	claims := claimsFromContext(ctx)
 	conn := workerConnFrom(ctx)
 	b.ackMap.storeForConn(taskID, msg, claims.TokenID, conn)
-	b.releaseIfClosed(ctx, conn)
+	// False: the connection closed during this long poll and its close
+	// released its claims, so the task was Nak'd and goes to another worker.
+	return !b.releaseIfClosed(ctx, conn, taskID)
 }
 
 // pollConn is the connection a poll's worker_id names, nil without one.
 // False means the refusal was written.
 func (b *Bridge) pollConn(
-	w http.ResponseWriter, claims workertoken.Claims, req pollRequest,
+	ctx context.Context, w http.ResponseWriter, claims workertoken.Claims, req pollRequest,
 ) (*workerConn, bool) {
 	if req.WorkerID == "" {
 		return nil, true
 	}
-	return b.pollWorkerConn(w, claims, req.WorkerID)
+	return b.pollWorkerConn(ctx, w, claims, req.WorkerID)
 }
 
 // dispatchTraceHeader renders ctx's trace context as W3C headers so the
