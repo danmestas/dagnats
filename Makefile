@@ -1,7 +1,7 @@
 # dagnats Makefile
 # Build, test, lint, release, and Docker targets.
 
-VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+VERSION := $(shell git describe --tags --match 'v*' --always --dirty 2>/dev/null || echo dev)
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 DATE    := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
@@ -325,7 +325,7 @@ release-preflight:
 	@if ! git diff --quiet || ! git diff --cached --quiet; then \
 	  echo "ERROR: working directory has uncommitted changes"; exit 1; \
 	fi
-	@if ! git describe --tags --exact-match HEAD >/dev/null 2>&1; then \
+	@if ! git describe --tags --match 'v*' --exact-match HEAD >/dev/null 2>&1; then \
 	  echo "ERROR: HEAD is not at a tag. Tag first:"; \
 	  echo "  git tag -a vX.Y.Z -m 'Release vX.Y.Z'"; \
 	  echo "  git push origin vX.Y.Z"; \
@@ -333,7 +333,7 @@ release-preflight:
 	fi
 
 release: release-preflight lint test build-release build-mcp-duckdb-linux-amd64 build-mcp-duckdb-linux-arm64 build-mcp-duckdb-darwin-amd64 build-mcp-duckdb-darwin-arm64 ## Build artifacts and publish a GitHub release for the current tag
-	@TAG=$$(git describe --tags --exact-match HEAD); \
+	@TAG=$$(git describe --tags --match 'v*' --exact-match HEAD); \
 	VERSION_NO_V=$${TAG#v}; \
 	NOTES=$$(awk -v ver="$$VERSION_NO_V" '$$0 ~ "^## \\[" ver "\\]" {flag=1; next} flag && /^## \[/ {flag=0} flag' CHANGELOG.md); \
 	if [ -z "$$NOTES" ]; then \
