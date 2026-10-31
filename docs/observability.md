@@ -112,10 +112,37 @@ set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION`. The
 first S3 use downloads DuckDB's signed `httpfs` extension into the
 user's DuckDB extension cache.
 
-Queries can read only the data dir. Once the views exist, the server
-locks file access to that path or prefix: reading other files, writing,
-attaching another database or changing the lock is refused. Every query
-returns at most its row cap, whatever its text says.
+Queries can read only the data dir (and the lake dir, below). Once the
+views exist, the server locks file access to those paths or prefixes:
+reading other files, writing, attaching another database or changing the
+lock is refused. Every query returns at most its row cap, whatever its
+text says.
+
+#### Lake views
+
+`--lake-dir` points the server at a lake root, a local path or an S3
+prefix laid out as `<program>/<table>/dt=YYYY-MM-DD/part-<stem>.parquet`
+(dagnats' archive, lode). Each table gets a view named
+`<program>_<table>`, next to the telemetry views, which do not change.
+Unset, there are no lake views.
+
+- A view reads only live parts. A live part has a commit record
+  `part-<stem>.json` and no supersede record
+  `part-<stem>.json.superseded`. A part without a record is a writer's
+  crash residue and is never read. A superseded part stays out even
+  while its file exists, so lode's compacted part is counted once.
+- Liveness comes from file names alone: three globs over the lake, with
+  no record reads. A local dir and an S3 prefix cost the same LISTs.
+- Views are discovered at startup and refreshed before every query, so a
+  compaction or retention shows up in the next query. A view is replaced
+  only when its part list changed.
+- A table with no live part has no view. Its columns are only known from
+  a part.
+- A table gets no view when its program or table name breaks the lake's
+  naming rule (`[a-z][a-z0-9_]{0,31}`), or when its view name is taken
+  by a telemetry view or an earlier lake table. The skip is reported
+  once on stderr.
+- `dt` comes from the path, as a hive partition column.
 
 **Generic MCP client** (Cursor, Continue, anything that reads an
 `mcp.json`-style config):
