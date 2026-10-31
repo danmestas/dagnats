@@ -183,9 +183,11 @@ func dispatchWorkflows(
 		return
 	}
 	// Workflow names are opaque strings and may contain slashes, which is
-	// common in multi-tenant setups (<client>/<workflow>). Only the trailing
-	// "/run" is an action; every other suffix belongs to the name.
-	if name, ok := strings.CutSuffix(rest, "/run"); ok && name != "" {
+	// common in multi-tenant setups (<client>/<workflow>). Only a POST to a
+	// trailing "/run" is the run action: a name may itself end in "/run",
+	// so a GET of that path is the workflow's detail page.
+	name, ok := strings.CutSuffix(rest, "/run")
+	if ok && name != "" && r.Method == http.MethodPost {
 		handleWorkflowRun(w, r, cfg, name)
 		return
 	}
