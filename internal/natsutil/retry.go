@@ -139,6 +139,23 @@ func BindKeyValue(
 	return kv, err
 }
 
+// BindOptionalKeyValue binds a bucket a component can run without. A
+// bucket that does not exist is nil without a word, since it is optional;
+// any other failure is nil with a warning naming the bucket, so a node
+// running without it leaves a trace instead of failing silently.
+func BindOptionalKeyValue(
+	ctx context.Context, js jetstream.JetStream, bucket string,
+) jetstream.KeyValue {
+	kv, err := BindKeyValue(ctx, js, bucket)
+	if err == nil {
+		return kv
+	}
+	if !errors.Is(err, jetstream.ErrBucketNotFound) {
+		slog.Warn("optional KV bucket unbound", "bucket", bucket, "err", err)
+	}
+	return nil
+}
+
 // EnsureKeyValue creates cfg, or upgrades an existing bucket to it in
 // place, with the create-first order and retry budget SetupAll uses. It is
 // for buckets owned outside SetupAll (the console's audit bucket), so they

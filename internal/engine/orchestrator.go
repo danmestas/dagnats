@@ -330,7 +330,7 @@ func NewOrchestrator(
 	tp := natsutil.NewTracingPublisher(nc, js)
 	cm, _ := NewConcurrencyManagerSafe(js)
 	store := NewSnapshotStore(js)
-	singletonKV, _ := natsutil.BindKeyValue(
+	singletonKV := natsutil.BindOptionalKeyValue(
 		context.Background(), js, "singleton_locks",
 	)
 	ac := NewAdmissionController(
@@ -342,7 +342,7 @@ func NewOrchestrator(
 	pm := newPubMetrics(m)
 	tracer := otel.Tracer("dagnats/engine")
 	sleepTimer := NewSleepTimer(nc, js, tp)
-	stickyKV, _ := natsutil.BindKeyValue(
+	stickyKV := natsutil.BindOptionalKeyValue(
 		context.Background(), js, "sticky_bindings",
 	)
 	sticky := NewStickyRouter(

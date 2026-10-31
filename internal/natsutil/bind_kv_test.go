@@ -6,9 +6,13 @@
 package natsutil
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -55,5 +59,33 @@ func TestBindKeyValue_MissingBucketNotRetried(t *testing.T) {
 	}
 	if js.calls != 1 {
 		t.Fatalf("calls=%d, want 1: a missing bucket is an answer", js.calls)
+	}
+}
+
+// An optional bucket that does not exist binds to nil quietly; one whose
+// lookup keeps failing binds to nil and says so, so a node that runs
+// without its triggers or signals bucket leaves a trace in the log.
+func TestBindOptionalKeyValue(t *testing.T) {
+	var buf bytes.Buffer
+	orig := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+
+	missing := &scriptedBindJS{failErr: jetstream.ErrBucketNotFound, failCount: 5}
+	if kv := BindOptionalKeyValue(context.Background(), missing, "triggers"); kv != nil {
+		t.Fatalf("missing bucket bound to %v, want nil", kv)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("missing bucket logged %q, want nothing", buf.String())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	broken := &scriptedBindJS{failErr: context.DeadlineExceeded, failCount: 100}
+	if kv := BindOptionalKeyValue(ctx, broken, "signals"); kv != nil {
+		t.Fatalf("failed bind returned %v, want nil", kv)
+	}
+	if !strings.Contains(buf.String(), "signals") {
+		t.Fatalf("failed bind logged %q, want a warning naming the bucket", buf.String())
 	}
 }

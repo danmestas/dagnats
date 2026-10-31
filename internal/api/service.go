@@ -168,10 +168,10 @@ func NewServiceWithLimits(
 				err.Error(),
 		)
 	}
-	triggerKV, _ := natsutil.BindKeyValue(ctx, js, "triggers")
-	signalKV, _ := natsutil.BindKeyValue(ctx, js, "signals")
-	scheduledKV, _ := natsutil.BindKeyValue(ctx, js, "scheduled_runs")
-	idempotencyKV, _ := natsutil.BindKeyValue(
+	triggerKV := natsutil.BindOptionalKeyValue(ctx, js, "triggers")
+	signalKV := natsutil.BindOptionalKeyValue(ctx, js, "signals")
+	scheduledKV := natsutil.BindOptionalKeyValue(ctx, js, "scheduled_runs")
+	idempotencyKV := natsutil.BindOptionalKeyValue(
 		ctx, js, "idempotency_keys",
 	)
 	m := otel.Meter("dagnats/api")
