@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Test clusters retry when a reserved port is taken.** `dagnatstest.StartTestCluster` and the natsutil provisioning race fixture reserved ports by binding and closing them, so another process could take one before its node bound it; nats-server then served clients without a route listener and logged nothing, and readiness waited its full timeout. Each node now captures its fatal log, a failed bind is detected at once, and the cluster restarts on fresh ports, up to three attempts, as the journal conformance fixture already does (#865).
+- **A bridge worker's own token passes the API token gate.** With `DAGNATS_API_TOKEN_FILE` set, every HTTP request had to carry the API token, so a bridge worker presenting its `DAGNATS_BRIDGE_TOKEN` or a minted worker token got a 401 before the bridge saw it. On the bridge's worker routes the gate now also admits a token the bridge accepts, and the bridge checks it as before. A bridge in dev mode (no `DAGNATS_BRIDGE_TOKEN`) accepts nothing through the gate, so the API token still guards it.
 
 ## [0.0.36] - 2026-10-31
 

@@ -58,6 +58,7 @@ bridge/stranded\_check.go Defense\-in\-depth counterpart to the engine's primary
   - [func \(am \*AckMap\) WithLogState\(taskID string, fn func\(seq uint64, totalBytes int64, truncated bool\) \(newSeq uint64, newTotalBytes int64, newTruncated bool\)\) bool](<#AckMap.WithLogState>)
 - [type Bridge](<#Bridge>)
   - [func NewBridge\(pub \*natsutil.TracingPublisher\) \*Bridge](<#NewBridge>)
+  - [func \(b \*Bridge\) AuthorizesWorker\(header string\) bool](<#Bridge.AuthorizesWorker>)
   - [func \(b \*Bridge\) Handler\(\) http.Handler](<#Bridge.Handler>)
   - [func \(b \*Bridge\) SetRestartLimit\(n int\)](<#Bridge.SetRestartLimit>)
   - [func \(b \*Bridge\) SetTokenStore\(store \*workertoken.Store\)](<#Bridge.SetTokenStore>)
@@ -249,7 +250,7 @@ func (am *AckMap) WithLogState(taskID string, fn func(seq uint64, totalBytes int
 WithLogState atomically reads and updates the log\-ingest counters for taskID under AckMap's own mutex \(\#624\). fn receives the current \(seq, totalBytes, truncated\) and returns the updated values, which are written back before the lock releases — so concurrent POST /v1/tasks/\{id\}/logs calls for the same task never race each other's seq assignment or truncation decision. Returns false \(fn not called\) if taskID has no entry — same does\-not\-reap contract as LoadWithTokenID: a resolve racing the reaper must not surface as an ambiguous "not found" to the caller.
 
 <a name="Bridge"></a>
-## type [Bridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L46-L76>)
+## type [Bridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L47-L77>)
 
 Bridge is an HTTP\-to\-NATS gateway that lets non\-Go workers interact with DagNats over HTTP. Three deep endpoints expose the full worker lifecycle: connect, poll, and resolve.
 
@@ -264,7 +265,7 @@ type Bridge struct {
 ```
 
 <a name="NewBridge"></a>
-### func [NewBridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L99>)
+### func [NewBridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L100>)
 
 ```go
 func NewBridge(pub *natsutil.TracingPublisher) *Bridge
@@ -274,8 +275,17 @@ NewBridge creates a Bridge. Panics on nil pub — a programmer error at startup.
 
 Binds optional KV buckets for checkpoints and signals \(nil if not present\).
 
+<a name="Bridge.AuthorizesWorker"></a>
+### func \(\*Bridge\) [AuthorizesWorker](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L272>)
+
+```go
+func (b *Bridge) AuthorizesWorker(header string) bool
+```
+
+AuthorizesWorker reports whether header carries a token this bridge accepts: its admin bearer or a minted worker token. In dev mode, with no admin bearer, it accepts nothing, so a front gate that defers to it never opens a route the bridge leaves open.
+
 <a name="Bridge.Handler"></a>
-### func \(\*Bridge\) [Handler](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L166>)
+### func \(\*Bridge\) [Handler](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L167>)
 
 ```go
 func (b *Bridge) Handler() http.Handler
@@ -297,7 +307,7 @@ func (b *Bridge) SetRestartLimit(n int)
 SetRestartLimit sets how many deliveries may claim one iteration of a journal step without progress before the step fails with reason restart\_limit, as worker.WithRestartLimit does for Go workers. It is safe to call while the bridge serves; a claim in flight uses the old value. Panics unless 1 \<= n \<= worker.RestartLimitMax.
 
 <a name="Bridge.SetTokenStore"></a>
-### func \(\*Bridge\) [SetTokenStore](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L193>)
+### func \(\*Bridge\) [SetTokenStore](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L194>)
 
 ```go
 func (b *Bridge) SetTokenStore(store *workertoken.Store)

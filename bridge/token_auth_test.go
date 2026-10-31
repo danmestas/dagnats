@@ -333,3 +333,45 @@ func TestFirstUnauthorizedTaskTypeEmptyTokenIDNeverBypasses(t *testing.T) {
 		t.Fatal("firstUnauthorizedTaskType(admin) rejected a type, want bypass")
 	}
 }
+
+// AuthorizesWorker is what the server's API token gate defers to on the
+// bridge's worker routes, so it must accept the admin bearer and a minted
+// worker token, refuse anything else, and refuse everything in dev mode:
+// a gate that deferred to dev mode's allow-all would open those routes.
+func TestAuthorizesWorker(t *testing.T) {
+	_, nc := natstest.StartServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	store := openTokenStore(t, js)
+	mintCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, bearer, err := store.Mint(mintCtx, "worker-a", []string{"echo"}, nil, "tester")
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+
+	b := newTestBridge(t, nc)
+	b.SetTokenStore(store)
+	if b.AuthorizesWorker("Bearer " + bearer) {
+		t.Fatal("dev mode: AuthorizesWorker accepted a token")
+	}
+	if b.AuthorizesWorker("") {
+		t.Fatal("dev mode: AuthorizesWorker accepted no header")
+	}
+
+	b.token = "admin-token"
+	if !b.AuthorizesWorker("Bearer admin-token") {
+		t.Fatal("admin bearer refused")
+	}
+	if !b.AuthorizesWorker("Bearer " + bearer) {
+		t.Fatal("minted worker token refused")
+	}
+	if b.AuthorizesWorker("Bearer wrong") || b.AuthorizesWorker("") {
+		t.Fatal("a wrong or missing token was accepted")
+	}
+}

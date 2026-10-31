@@ -130,9 +130,13 @@ func warnUncoveredListeners(cfg Config) {
 }
 
 // apiTokenGate requires "Authorization: Bearer <token>" on every request
-// except the health and readiness probes, which carry no data. An empty
-// token returns next unchanged.
-func apiTokenGate(token string, next http.Handler) http.Handler {
+// except the health and readiness probes, which carry no data. On the
+// bridge's worker routes it also admits a header workerAuth accepts, so a
+// worker can present its own worker token; the bridge then checks that
+// token again. An empty token returns next unchanged.
+func apiTokenGate(
+	token string, workerAuth func(header string) bool, next http.Handler,
+) http.Handler {
 	if next == nil {
 		panic("apiTokenGate: next must not be nil")
 	}
@@ -147,7 +151,12 @@ func apiTokenGate(token string, next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		presented, ok := bearerToken(r.Header.Get("Authorization"))
+		header := r.Header.Get("Authorization")
+		if workerAuth != nil && isBridgeWorkerRoute(r) && workerAuth(header) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		presented, ok := bearerToken(header)
 		got := sha256.Sum256([]byte(presented))
 		if !ok || subtle.ConstantTimeCompare(got[:], want[:]) != 1 {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="dagnats"`)
@@ -168,6 +177,25 @@ func bearerToken(header string) (string, bool) {
 	return token, true
 }
 
+// isBridgeWorkerRoute reports whether r is one of the bridge's worker
+// routes, which authenticate with a worker token the API token does not
+// match. Every bridge worker route is a POST.
+func isBridgeWorkerRoute(r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		return false
+	}
+	return r.URL.Path == "/v1/workers/connect" || strings.HasPrefix(r.URL.Path, "/v1/tasks/")
+}
+
 func isProbePath(path string) bool {
 	return path == "/health" || path == "/health/cluster" || path == "/ready"
+}
+
+// bridgeWorkerAuth returns the bridge's worker-token check for the API
+// token gate, or nil when the server runs no bridge.
+func (s *Server) bridgeWorkerAuth() func(header string) bool {
+	if s.bridge == nil {
+		return nil
+	}
+	return s.bridge.AuthorizesWorker
 }
