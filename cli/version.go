@@ -1,22 +1,22 @@
 // cli/version.go
-// Version output for the CLI. Version is settable via ldflags at build
-// time: go build -ldflags "-X github.com/danmestas/dagnats/cli.Version=1.0.0"
+// Version output for the CLI. The version string lives in
+// internal/buildinfo, stamped via ldflags at build time.
 package cli
 
-import "fmt"
+import (
+	"fmt"
 
-// Version is the current CLI version. Set via ldflags at build time;
-// defaults to "dev" for local development builds.
-var Version = "dev"
+	"github.com/danmestas/dagnats/internal/buildinfo"
+)
 
 // printVersion prints the version string to stdout.
 func printVersion() {
-	if Version == "" {
+	if buildinfo.Version == "" {
 		panic("printVersion: Version must not be empty")
 	}
-	if len(Version) > 100 {
+	if len(buildinfo.Version) > 100 {
 		panic("printVersion: Version string unreasonably long")
 	}
 
-	fmt.Printf("dagnats %s\n", Version)
+	fmt.Printf("dagnats %s\n", buildinfo.Version)
 }

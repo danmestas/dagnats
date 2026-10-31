@@ -7,13 +7,15 @@ package cli
 import (
 	"strings"
 	"testing"
+
+	"github.com/danmestas/dagnats/internal/buildinfo"
 )
 
 func TestPrintVersionContainsVersionString(t *testing.T) {
-	original := Version
-	defer func() { Version = original }()
+	original := buildinfo.Version
+	defer func() { buildinfo.Version = original }()
 
-	Version = "1.2.3"
+	buildinfo.Version = "1.2.3"
 	output := captureOutput(func() {
 		printVersion()
 	})
@@ -30,10 +32,10 @@ func TestPrintVersionContainsVersionString(t *testing.T) {
 }
 
 func TestPrintVersionDefaultIsDev(t *testing.T) {
-	original := Version
-	defer func() { Version = original }()
+	original := buildinfo.Version
+	defer func() { buildinfo.Version = original }()
 
-	Version = "dev"
+	buildinfo.Version = "dev"
 	output := captureOutput(func() {
 		printVersion()
 	})

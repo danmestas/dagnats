@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/buildinfo"
 	"github.com/danmestas/dagnats/sidecar"
 )
 
@@ -319,7 +320,7 @@ func runSidecarInstallCmd(args []string) {
 		return
 	}
 
-	if err := sidecar.InstallAll(os.Stderr, Version); err != nil {
+	if err := sidecar.InstallAll(os.Stderr, buildinfo.Version); err != nil {
 		fmt.Fprintf(os.Stderr,
 			"error: install: %v\n", err)
 		exitFunc(1)

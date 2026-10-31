@@ -5,7 +5,7 @@ VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 DATE    := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
-LDFLAGS := -s -w -X github.com/danmestas/dagnats/cli.Version=$(VERSION)
+LDFLAGS := -s -w -X github.com/danmestas/dagnats/internal/buildinfo.Version=$(VERSION)
 
 # Cross-platform release matrix. Each row is GOOS/GOARCH.
 # Windows is excluded: the sidecar package uses Unix-only syscalls
@@ -113,6 +113,7 @@ docs-gen-sdk:
 	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/httpclient/api.md ./sdk/httpclient/
 	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/dagnatstest/api.md ./dagnatstest/
 	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/journal/api.md ./journal/
+	$(GOMARKDOC) --output docs/site/content/docs/reference/sdk/program/api.md ./program/
 
 # Writes docs/site/static/llms*.txt (git-ignored; the Cloudflare build regenerates them).
 docs-gen-llms:

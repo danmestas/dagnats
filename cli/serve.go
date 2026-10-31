@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/danmestas/dagnats/internal/buildinfo"
 	"github.com/danmestas/dagnats/server"
 )
 
@@ -44,7 +45,7 @@ func runServeCmd(args []string) {
 	// Thread the ldflags-stamped version into the served console
 	// footer + build-info. Empty when un-stamped — the console
 	// degrades it to the honest "dev" marker (consoleBuildLabel).
-	cfg.Build = Version
+	cfg.Build = buildinfo.Version
 
 	srv := server.New(cfg)
 
