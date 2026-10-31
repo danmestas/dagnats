@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Ordered-consumer reads wait until the replaced consumer has actually left the stream.** The delete in `natsutil.OrderedConsumer` polled consumer info until it answered not-found. nats-server sends that answer as soon as a consumer being deleted is marked closed, while the stream still counts it until the consumer is removed. When nats.go's own delete of a replaced consumer won the race, the read could return while the stream still held that consumer. The delete now polls the stream's consumer name list, which is updated when the consumer is removed. This fixes the flaky `TestConsumerLeak_HistoryReadReleasesItsConsumer` and the rare `TestConsumerLeak_OpenAndReadReleaseTheirConsumer` failures left after #864.
 - **`make build-release` names artifacts after the `v*` release tag.** With the lake module's own `lake/v*` tag on the same commit, `git describe --tags` returned `lake/v0.1.0`, so `VERSION` broke the tarball paths. The Makefile's version lookups now match `v*` only.
 - **`TestWatchTriggers_BoundedCatchUp` no longer times out on a loaded machine.** It wrote 10,001 KV entries and read 10,000 back one round trip at a time, so its wall time grew with CPU starvation until the 30s insert deadline ran out. The catch-up cap is now a per-Worker field defaulting to 10,000, and the test proves the cap with 11 entries and a cap of 10.
 

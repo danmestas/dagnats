@@ -241,3 +241,44 @@ func TestDeleteConsumer_WaitsUntilTheConsumerIsGone(t *testing.T) {
 		t.Fatalf("deleteConsumer with a failing delete = %v, want boom", err)
 	}
 }
+
+// fakeNames is a ConsumerNameLister over a fixed page of names.
+type fakeNames struct {
+	names chan string
+	err   error
+}
+
+func newFakeNames(err error, names ...string) func(context.Context) jetstream.ConsumerNameLister {
+	return func(context.Context) jetstream.ConsumerNameLister {
+		l := &fakeNames{names: make(chan string, len(names)), err: err}
+		for _, name := range names {
+			l.names <- name
+		}
+		close(l.names)
+		return l
+	}
+}
+
+func (l *fakeNames) Name() <-chan string { return l.names }
+func (l *fakeNames) Err() error          { return l.err }
+
+// A consumer being deleted answers consumer info with not-found as
+// soon as it is marked closed, while the stream still counts it until
+// it is removed from the stream's consumer list (nats-server
+// consumer.go infoWithSnap returns nil once o.closed is set;
+// stopWithFlags calls mset.removeConsumer later). So "gone" is read
+// from the name list, which removeConsumer updates.
+func TestConsumerListed_ReadsTheStreamsConsumerList(t *testing.T) {
+	ctx := context.Background()
+	if err := consumerListed(ctx, newFakeNames(nil, "a_1", "c_1"), "c_1"); err != nil {
+		t.Fatalf("listed consumer = %v, want present (nil)", err)
+	}
+	err := consumerListed(ctx, newFakeNames(nil, "a_1"), "c_1")
+	if !errors.Is(err, jetstream.ErrConsumerNotFound) {
+		t.Fatalf("unlisted consumer = %v, want ErrConsumerNotFound", err)
+	}
+	boom := errors.New("boom")
+	if err := consumerListed(ctx, newFakeNames(boom), "c_1"); !errors.Is(err, boom) {
+		t.Fatalf("failed listing = %v, want boom", err)
+	}
+}

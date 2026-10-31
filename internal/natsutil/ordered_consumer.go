@@ -66,6 +66,10 @@ const (
 	orderedGonePollMax = int(orderedCloseTimeout / orderedGonePoll)
 )
 
+// consumersListedMax bounds one scan of a stream's consumer names,
+// well above nats-server's default cap of 1000 consumers per stream.
+const consumersListedMax = 100_000
+
 // OrderedConsumerSpec is the caller-supplied half of an ordered
 // consumer's config — everything that legitimately varies by call
 // site (which subjects, where to start reading). MaxResetAttempts is
@@ -245,8 +249,11 @@ func OpenConsumer(
 					return js.DeleteConsumer(ctx, streamName, name)
 				},
 				func(ctx context.Context, name string) error {
-					_, err := js.Consumer(ctx, streamName, name)
-					return err
+					stream, err := js.Stream(ctx, streamName)
+					if err != nil {
+						return err
+					}
+					return consumerListed(ctx, stream.ConsumerNames, name)
 				})
 		}}, nil
 }
@@ -274,18 +281,17 @@ func OpenStreamConsumer(
 		remove: func(ctx context.Context, name string) error {
 			return deleteConsumer(ctx, name, stream.DeleteConsumer,
 				func(ctx context.Context, name string) error {
-					_, err := stream.Consumer(ctx, name)
-					return err
+					return consumerListed(ctx, stream.ConsumerNames, name)
 				})
 		}}, nil
 }
 
-// deleteConsumer deletes the named consumer and returns once the stream
-// no longer holds it. nats.go deletes a replaced consumer too, and when
-// two deletes race, nats-server answers the loser with success while
-// the winner is still removing it (server/consumer.go stopWithFlags
-// returns on o.closed before mset.removeConsumer), so success alone
-// does not mean gone.
+// deleteConsumer deletes the named consumer and returns once lookup
+// reports it gone (ErrConsumerNotFound). nats.go deletes a replaced
+// consumer too, and when two deletes race, nats-server answers the
+// loser with success while the winner is still removing it
+// (server/consumer.go stopWithFlags returns on o.closed before
+// mset.removeConsumer), so success alone does not mean gone.
 func deleteConsumer(
 	ctx context.Context, name string, remove, lookup func(context.Context, string) error,
 ) error {
@@ -313,4 +319,40 @@ func deleteConsumer(
 		}
 	}
 	return errors.New("consumer " + name + " still present after delete")
+}
+
+// consumerListed returns nil when name is in the stream's consumer
+// list and ErrConsumerNotFound when it is not. It is the lookup a
+// delete polls, not consumer info: nats-server answers consumer info
+// with not-found as soon as a consumer is marked closed
+// (consumer.go infoWithSnap), while the stream keeps counting it until
+// stopWithFlags reaches mset.removeConsumer, which is also what takes
+// it off the name list.
+func consumerListed(
+	ctx context.Context, list func(context.Context) jetstream.ConsumerNameLister, name string,
+) error {
+	if list == nil {
+		panic("consumerListed: list must not be nil")
+	}
+	if name == "" {
+		panic("consumerListed: name must not be empty")
+	}
+	// Returning early cancels the lister's goroutine through ctx.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	names := list(ctx)
+	listed := 0
+	for listedName := range names.Name() {
+		if listedName == name {
+			return nil
+		}
+		listed++
+		if listed >= consumersListedMax {
+			return errors.New("consumer list exceeds the scan bound")
+		}
+	}
+	if err := names.Err(); err != nil {
+		return err
+	}
+	return jetstream.ErrConsumerNotFound
 }
