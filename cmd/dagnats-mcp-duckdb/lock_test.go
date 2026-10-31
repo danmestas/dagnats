@@ -68,13 +68,7 @@ func TestOpenDB_ReadsAnS3DataDir(t *testing.T) {
 			"elsewhere/private.parquet":                     part,
 		},
 	}
-	server := httptest.NewServer(store)
-	defer server.Close()
-	t.Setenv("AWS_ACCESS_KEY_ID", "test-key")
-	t.Setenv("AWS_SECRET_ACCESS_KEY", "test-secret")
-	t.Setenv("AWS_REGION", "auto")
-
-	db, err := OpenDB("s3://bucket/telemetry", WithS3Endpoint(server.URL))
+	db, err := OpenDB("s3://bucket/telemetry", WithS3Endpoint(newFakeS3Server(t, store)))
 	if err != nil {
 		t.Fatalf("OpenDB over s3: %v", err)
 	}
@@ -111,6 +105,18 @@ func TestParseS3Endpoint(t *testing.T) {
 			t.Errorf("parseS3Endpoint(%q) = %q, %v; want %q, %v", c.in, host, ssl, c.host, c.ssl)
 		}
 	}
+}
+
+// newFakeS3Server serves store for the test and sets the credentials an endpoint needs; it
+// returns the endpoint URL.
+func newFakeS3Server(t *testing.T, store fakeS3) string {
+	t.Helper()
+	server := httptest.NewServer(store)
+	t.Cleanup(server.Close)
+	t.Setenv("AWS_ACCESS_KEY_ID", "test-key")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test-secret")
+	t.Setenv("AWS_REGION", "auto")
+	return server.URL
 }
 
 // fakeS3 serves path-style buckets from memory: ListObjectsV2, HEAD and

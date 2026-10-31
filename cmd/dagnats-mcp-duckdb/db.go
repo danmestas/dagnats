@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	_ "github.com/duckdb/duckdb-go/v2"
 )
@@ -16,10 +17,16 @@ const (
 	maxLimit     = 10000
 )
 
-// DB wraps a DuckDB connection with Parquet views over telemetry data.
+// DB wraps a DuckDB connection with Parquet views over telemetry data, and over the lake when
+// one is configured.
 type DB struct {
 	conn    *sql.DB
 	dataDir string
+	lakeDir string // empty: no lake views
+
+	lakeMu     sync.Mutex
+	lakeViews  map[string]string // view name -> its part list, to skip unchanged views
+	lakeWarned map[string]bool   // program/table names already reported as having no view
 }
 
 // Option adjusts OpenDB.
@@ -27,6 +34,7 @@ type Option func(*options)
 
 type options struct {
 	s3Endpoint string
+	lakeDir    string
 }
 
 // WithS3Endpoint points an s3:// data dir at an S3-compatible endpoint
@@ -65,6 +73,13 @@ func OpenDB(dataDir string, opts ...Option) (*DB, error) {
 		return nil, fmt.Errorf("open duckdb: %w", err)
 	}
 	db := &DB{conn: conn, dataDir: root}
+	if o.lakeDir != "" {
+		if db.lakeDir, err = dataRoot(o.lakeDir); err != nil {
+			conn.Close()
+			return nil, err
+		}
+		db.lakeViews, db.lakeWarned = map[string]string{}, map[string]bool{}
+	}
 	if err := db.setup(o); err != nil {
 		conn.Close()
 		return nil, err
@@ -73,7 +88,7 @@ func OpenDB(dataDir string, opts ...Option) (*DB, error) {
 }
 
 func (db *DB) setup(o options) error {
-	if isS3(db.dataDir) {
+	if isS3(db.dataDir) || isS3(db.lakeDir) {
 		if err := db.configureS3(o.s3Endpoint); err != nil {
 			return fmt.Errorf("configure s3: %w", err)
 		}
@@ -85,6 +100,12 @@ func (db *DB) setup(o options) error {
 	}
 	if err := db.lockToDataDir(); err != nil {
 		return fmt.Errorf("lock file access: %w", err)
+	}
+	if db.lakeDir != "" {
+		// After the lock, as every later refresh runs.
+		if err := db.refreshLakeViews(context.Background()); err != nil {
+			return fmt.Errorf("lake views: %w", err)
+		}
 	}
 	return nil
 }
@@ -167,12 +188,16 @@ func (db *DB) createView(name string) error {
 	return err
 }
 
-// lockToDataDir allows file access under the data dir only, turns all
-// other access off, and locks the configuration so no query can change
-// it back.
+// lockToDataDir allows file access under the data dir (and the lake dir)
+// only, turns all other access off, and locks the configuration so no
+// query can change it back.
 func (db *DB) lockToDataDir() error {
+	allowed := sqlString(db.dataDir + "/")
+	if db.lakeDir != "" {
+		allowed += ", " + sqlString(db.lakeDir+"/")
+	}
 	for _, stmt := range []string{
-		"SET allowed_directories = [" + sqlString(db.dataDir+"/") + "]",
+		"SET allowed_directories = [" + allowed + "]",
 		"SET enable_external_access = false",
 		"SET lock_configuration = true",
 	} {
@@ -204,6 +229,11 @@ func (db *DB) Query(
 		limit = defaultLimit
 	}
 	query = enforceLimit(query, limit)
+	if db.lakeDir != "" {
+		if err := db.refreshLakeViews(ctx); err != nil {
+			return nil, fmt.Errorf("lake views: %w", err)
+		}
+	}
 
 	rows, err := db.conn.QueryContext(ctx, query, args...)
 	if err != nil {
