@@ -12,6 +12,8 @@ on:
     branches: [main]
     paths:
       - 'sdk/ts/**'
+      - 'scripts/pack-sdk-ts.sh'
+      - Makefile
       - 'bridge/**'
       - 'journal/**'
       - 'protocol/**'
@@ -23,6 +25,8 @@ on:
     branches: [main]
     paths:
       - 'sdk/ts/**'
+      - 'scripts/pack-sdk-ts.sh'
+      - Makefile
       - 'bridge/**'
       - 'journal/**'
       - 'protocol/**'
@@ -68,9 +72,21 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Pack
-        # The release asset: only dist and the README, importable on its own.
-        run: npm pack --dry-run
+      - name: Pack and import the release asset
+        # The script `make build-release` runs, then the tarball is installed
+        # into an empty directory and imported on its own.
+        run: |
+          ../../scripts/pack-sdk-ts.sh 0.0.0-ci "$RUNNER_TEMP/pack"
+          mkdir "$RUNNER_TEMP/consumer"
+          cd "$RUNNER_TEMP/consumer"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund "$RUNNER_TEMP/pack/dagnats-bridge-0.0.0-ci.tgz"
+          node --input-type=module -e '
+            import { BridgeClient, isTerminal } from "@dagnats/bridge";
+            import { Journal, BridgeLog } from "@dagnats/bridge/journal";
+            if (typeof BridgeClient !== "function" || typeof Journal !== "function" || typeof BridgeLog !== "function" || typeof isTerminal !== "function") process.exit(1);
+          '
+          test -f node_modules/@dagnats/bridge/LICENSE
 
       - name: Test
         # pretest builds the Go dev server the integration tests start.
