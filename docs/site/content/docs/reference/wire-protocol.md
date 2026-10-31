@@ -259,7 +259,7 @@ A client that records model and tool calls in the journal applies the rules the 
 | `type` | `data` |
 |--------|--------|
 | `model.response` | `{"call", "output"}` |
-| `tool.intent` | `{"name", "input", "call", "key", "replay": "safe"\|"unsafe"}` |
+| `tool.intent` | `{"name", "input", "call", "key", "replay": "safe"\|"unsafe"}`, plus any field a client adds for itself (such as `tool_call_id`), which is stored as written and ignored by replay |
 | `tool.result` | `{"call", "key", "output", "error", "interrupted", "partial"}` |
 
 `call` is the call's position in the iteration, counted from 0, separately for tool and model calls. `key` is `{run_id}.{step_id}.{iteration}.{call}`, the same on every delivery and attempt of the iteration, for an external system to deduplicate on. `input` and `output` are JSON values; `error` is the tool's own failure, recorded for the model to see.

@@ -107,7 +107,7 @@ func TestBridgeJournalViewIsThisIterationBeforeTheClaim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open crashed holder: %v", err)
 	}
-	intent := `{"name":"send","call":0,"key":"k","replay":"unsafe"}`
+	intent := `{"name":"send","call":0,"key":"k","replay":"unsafe","tool_call_id":"tc-1"}`
 	if _, err := crashed.Append(ctx, journal.TypeToolIntent, []byte(intent)); err != nil {
 		t.Fatalf("append intent: %v", err)
 	}
@@ -130,6 +130,11 @@ func TestBridgeJournalViewIsThisIterationBeforeTheClaim(t *testing.T) {
 	if len(view.Records) != 2 || view.Records[0].Type != journal.TypeClaim ||
 		view.Records[1].Type != journal.TypeToolIntent {
 		t.Fatalf("view records = %+v, want the crashed claim and its intent", view.Records)
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(view.Records[1].Data, &body); err != nil ||
+		string(body["tool_call_id"]) != `"tc-1"` {
+		t.Fatalf("intent data = %s, want tool_call_id preserved", view.Records[1].Data)
 	}
 	for _, r := range view.Records {
 		if r.Iteration != 1 {
