@@ -176,14 +176,15 @@ func sharedBucketPublish(bucket string) []string {
 // control) and nothing under "$KV.<bucket>.>", so no put, delete or
 // purge. Deliveries arrive on the program's own inbox.
 //
-// Consumer delete is NOT granted: watcher names are random, so a grant
-// could not be scoped to the reader's own and would let it delete the
-// owner's watchers. A stopped watcher's ordered consumer is reaped by
-// its InactiveThreshold (nats.go sets 5 minutes) instead. Consumer
-// create cannot tell ephemeral from durable (durability is in the
-// request body), so a reader could pin a durable consumer on the
-// owner's stream; that is bounded by the stream's consumer limit, and a
-// reader is a trusted program per the package threat model.
+// Residual risk, accepted for a trusted reader (package threat model):
+// consumer delete is granted because nats.go's watcher Stop deletes its
+// consumer, and a denial makes every Stop block ~5s and error. Watcher
+// names are random, so the grant cannot be scoped to the reader's own:
+// a reader can delete the owner's watch consumer, which nats.go's
+// ordered consumer recreates (a resubscribe, not a broken watch).
+// Consumer create cannot tell ephemeral from durable (durability is in
+// the request body), so a reader could also pin a durable consumer on
+// the owner's stream, bounded by the stream's consumer limit.
 func readBucketPublish(bucket string) []string {
 	if bucket == "" {
 		panic("program.readBucketPublish: bucket must not be empty")
@@ -197,6 +198,7 @@ func readBucketPublish(bucket string) []string {
 		"$JS.API.DIRECT.GET." + stream + ".>",
 		"$JS.API.CONSUMER.CREATE." + stream + ".>",
 		"$JS.API.CONSUMER.INFO." + stream + ".*",
+		"$JS.API.CONSUMER.DELETE." + stream + ".*",
 		"$JS.FC." + stream + ".>",
 	}
 }
