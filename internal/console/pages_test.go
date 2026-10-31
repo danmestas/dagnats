@@ -1220,3 +1220,26 @@ func TestRunCountWithin_capsInsteadOfPanicking(t *testing.T) {
 		t.Errorf("out-of-window count = %d, want 0", got["wf"])
 	}
 }
+
+func TestWorkflowDetail_slashInName(t *testing.T) {
+	// Workflow names are opaque strings; the API and CLI accept slashes
+	// (common in multi-tenant setups: <client>/<workflow>). The console list
+	// links to /console/workflows/<name>, so the detail route must serve them.
+	fake := newFakeDS()
+	fake.workflows = []dag.WorkflowDef{{
+		Name:    "acme/support-ticket",
+		Version: "v1",
+		Steps:   []dag.StepDef{{ID: "only", Task: "echo", Timeout: time.Minute}},
+	}}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(
+		http.MethodGet, "/console/workflows/acme/support-ticket", nil))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "acme/support-ticket") {
+		t.Errorf("workflow detail missing name")
+	}
+}

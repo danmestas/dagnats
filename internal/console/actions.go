@@ -182,18 +182,14 @@ func dispatchWorkflows(
 		serveNotFound(w, r, ts, cfg)
 		return
 	}
-	parts := strings.SplitN(rest, "/", 2)
-	if len(parts) == 1 {
-		servePageWorkflowDetail(w, r, ts, cfg)
+	// Workflow names are opaque strings and may contain slashes, which is
+	// common in multi-tenant setups (<client>/<workflow>). Only the trailing
+	// "/run" is an action; every other suffix belongs to the name.
+	if name, ok := strings.CutSuffix(rest, "/run"); ok && name != "" {
+		handleWorkflowRun(w, r, cfg, name)
 		return
 	}
-	name, action := parts[0], parts[1]
-	switch action {
-	case "run":
-		handleWorkflowRun(w, r, cfg, name)
-	default:
-		serveNotFound(w, r, ts, cfg)
-	}
+	servePageWorkflowDetail(w, r, ts, cfg)
 }
 
 // handleWorkflowRun executes a POST /console/workflows/<name>/run.

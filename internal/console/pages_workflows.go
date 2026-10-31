@@ -474,7 +474,7 @@ func servePageWorkflowDetail(
 		panic("servePageWorkflowDetail: r is nil")
 	}
 	name := strings.TrimPrefix(r.URL.Path, "/console/workflows/")
-	if name == "" || strings.Contains(name, "/") {
+	if name == "" {
 		serveNotFound(w, r, ts, cfg)
 		return
 	}
