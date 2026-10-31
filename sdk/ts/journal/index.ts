@@ -1,5 +1,5 @@
 // The ADR-026 agent journal for TypeScript: replay rules over a Log.
-export { INTERRUPTED, Journal, canonical } from "./journal.ts";
+export { CALLS_MAX, INTERRUPTED, Journal, canonical } from "./journal.ts";
 export type { ModelOutcome, ToolOutcome } from "./journal.ts";
 export { MemoryLog } from "./memory.ts";
 export { ReplayMismatch } from "./types.ts";

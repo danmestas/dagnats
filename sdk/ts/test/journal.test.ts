@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { INTERRUPTED, Journal, canonical } from "../journal/journal.ts";
+import { CALLS_MAX, INTERRUPTED, Journal, canonical } from "../journal/journal.ts";
 import { MemoryLog } from "../journal/memory.ts";
 import { ReplayMismatch, type Task } from "../journal/types.ts";
 
@@ -132,4 +132,39 @@ test("model and tool positions count separately", async () => {
     "tool.intent:1",
     "tool.result:1",
   ]);
+});
+
+test("the newest intent recorded for a call wins, as in the Go SDK", async () => {
+  const log = new MemoryLog(task());
+  for (const name of ["read", "write"]) {
+    await log.append({
+      type: "tool.intent",
+      data: { name, input: { p: 1 }, call: 0, key: "r1.agent.0.0", replay: "safe" },
+    });
+  }
+  const j = await Journal.open<Msg>(redeliver(log), task(2));
+  const out = await j.tool("write", { p: 1 }, "safe", async () => ({ output: "w" }));
+  assert.equal(out.outcome, "ran");
+  await assert.rejects(
+    (await Journal.open<Msg>(redeliver(log), task(2))).tool("read", { p: 1 }, "safe", async () => ({})),
+    ReplayMismatch,
+  );
+});
+
+test("an iteration is bounded at CALLS_MAX tool calls and CALLS_MAX model calls", async () => {
+  const tools = await Journal.open<Msg>(new MemoryLog(task()), task());
+  for (let i = 0; i < CALLS_MAX; i++) await tools.tool("t", {}, "safe", async () => ({}));
+  await assert.rejects(tools.tool("t", {}, "safe", async () => ({})), /more than 10000 tool calls/);
+
+  const models = await Journal.open<Msg>(new MemoryLog(task()), task());
+  for (let i = 0; i < CALLS_MAX; i++) await models.model(async () => faux("m"));
+  let requested = false;
+  await assert.rejects(
+    models.model(async () => {
+      requested = true;
+      return faux("over");
+    }),
+    /more than 10000 model calls/,
+  );
+  assert.equal(requested, false, "the bound is checked before the request is made");
 });

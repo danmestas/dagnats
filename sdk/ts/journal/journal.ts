@@ -37,6 +37,9 @@ import {
 
 export const INTERRUPTED = "interrupted";
 
+/** Bounds the tool calls and the model calls of one iteration, as Go's callsMax does. */
+export const CALLS_MAX = 10_000;
+
 /** canonical JSON: keys sorted at every level, no whitespace. An absent input is only equal to an absent input. */
 export function canonical(value: unknown): string {
   if (value === undefined) return "";
@@ -104,7 +107,8 @@ export class Journal<M = unknown> {
               j.priorUnsafe.push({ rec: r, data: d, honoured: false });
               j.held.add(d.call);
             }
-          } else if (!j.intents.has(d.call)) {
+          } else {
+            // The newest intent for a call wins, as Go's recordedToolIntent does.
             j.intents.set(d.call, r);
           }
           break;
@@ -169,6 +173,7 @@ export class Journal<M = unknown> {
    */
   async model(run: () => Promise<M>): Promise<{ message: M; outcome: ModelOutcome }> {
     const call = this.nextModel;
+    if (call >= CALLS_MAX) throw new Error(`journal: more than ${CALLS_MAX} model calls in one iteration`);
     const recorded = this.models.get(call);
     if (recorded) {
       this.nextModel++;
@@ -193,6 +198,12 @@ export class Journal<M = unknown> {
     run: (key: string) => Promise<{ output?: unknown; error?: string }>,
     toolCallId?: string,
   ): Promise<{ result: ToolResultData; outcome: ToolOutcome }> {
+    // The next position not held by a prior unsafe intent (rule 4), found first so the
+    // bound applies to every call, as in Go where the check precedes rule 3.
+    let call = this.nextTool;
+    while (this.held.has(call)) call++;
+    if (call >= CALLS_MAX) throw new Error(`journal: more than ${CALLS_MAX} tool calls in one iteration`);
+
     // Rule 3: an unhonoured prior unsafe intent with the same name and input.
     const want = canonical(input);
     const prior = this.priorUnsafe.find((p) => !p.honoured && p.data.name === name && canonical(p.data.input) === want);
@@ -203,9 +214,7 @@ export class Journal<M = unknown> {
       return { result: await this.interrupt(prior.rec, prior.data), outcome: "interrupted" };
     }
 
-    // Rule 4: the next position not held by a prior unsafe intent.
-    let call = this.nextTool;
-    while (this.held.has(call)) call++;
+    // Rule 4: take that position.
     this.nextTool = call + 1;
     const key = this.key(call);
 
