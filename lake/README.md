@@ -60,4 +60,4 @@ file, fsyncs it, and links it into place with link(2), which fails if the key ex
 filesystem with hard links, and one instance per root per process, since an instance sweeps
 crashed runs' temp files on its first Put to a table. lode
 (`github.com/danmestas/lode`) holds the S3-compatible store. Its conditional-PUT path is tested
-by lode against Garage and SigV4 vectors, not yet live on R2.
+live against Cloudflare R2; Garage v2.1.0 ignores `If-None-Match` and is check-first.

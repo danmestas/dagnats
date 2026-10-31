@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.38] - 2026-10-31
+
+### Upgrade notes
+
+- **`Continue` with a wait is refused on a step that is not an `agent_loop` step.** The Go SDK's `Continue` returns `protocol.ErrWaitRequiresAgentLoop` and the bridge answers `400 wait_requires_agent_loop`. Such a wait never woke the step: it sat until its AckWait and was then refused as committed. Code that relied on it should complete the step or move it to an `agent_loop`.
+- **`lake` is tagged on its own** as `lake/v0.1.0`, the module programs such as lode depend on for `lake/writer`.
+- **`@dagnats/bridge` ships as `dagnats-bridge-0.0.38.tgz`** on this release.
+
 ### Added
 
 - **The bridge's `inputs.place` action places a step's queued inputs (#848).** `{"action":"inputs.place","mode":"steer"|"follow_up"}` answers `200 {"inputs":[{"request_id","mode","content"}]}` (`{"inputs":[]}` when none, never 204; any other mode is `400 {"code":"invalid_mode"}`). It claims the journal on first use and runs the same code as the Go SDK's `PlaceInputs`, now `journal.Placer` (compare-and-swap claim, `input.placed` append, unanswered fallback). A delivery gets each placement once, a redelivery of the same iteration gets the earlier placements back once, and the placed inputs settle to `done` when the iteration commits. `sdk/ts` gains `ctx.inputs.place(mode)`.
