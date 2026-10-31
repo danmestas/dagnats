@@ -10,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/danmestas/dagnats/inputs"
+	"github.com/danmestas/dagnats/internal/inputplace"
 	"github.com/danmestas/dagnats/journal"
 )
 
@@ -20,7 +21,7 @@ type inputsPlaceResponse struct {
 }
 
 // resolveInputsPlace moves the queued inputs of req.Mode into the
-// step's conversation through journal.Placer, the code the Go SDK's
+// step's conversation through inputplace.Placer, the code the Go SDK's
 // PlaceInputs runs, claiming the journal on first use. The placer lives
 // on the ack-map entry so a delivery returns each placement once; the
 // placed inputs settle to done when the iteration commits.
@@ -76,8 +77,8 @@ func (b *Bridge) resolveInputsPlace(
 // The caller holds the task's journal lock.
 func (b *Bridge) placerFor(
 	ctx context.Context, taskID string, j *journal.Journal,
-) (*journal.Placer, error) {
-	if placer := b.ackMap.Placer(taskID); placer != nil && placer.Journal == j {
+) (*inputplace.Placer, error) {
+	if placer := b.ackMap.placer(taskID); placer != nil && placer.Journal == j {
 		return placer, nil
 	}
 	store, err := inputs.Open(ctx, b.js)
@@ -85,7 +86,7 @@ func (b *Bridge) placerFor(
 		return nil, err
 	}
 	task := j.Task()
-	placer := &journal.Placer{
+	placer := &inputplace.Placer{
 		Journal: j, Store: store, RunID: task.RunID, StepID: task.StepID,
 		Iteration: task.Iteration,
 	}
@@ -95,7 +96,7 @@ func (b *Bridge) placerFor(
 	if b.placeSeam != nil {
 		b.placeSeam(placer)
 	}
-	if !b.ackMap.SetPlacer(taskID, placer) {
+	if !b.ackMap.setPlacer(taskID, placer) {
 		return nil, errors.New("task is no longer claimed")
 	}
 	return placer, nil

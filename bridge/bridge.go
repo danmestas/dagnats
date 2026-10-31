@@ -10,9 +10,9 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/danmestas/dagnats/internal/inputplace"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/workertoken"
-	"github.com/danmestas/dagnats/journal"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel"
@@ -50,7 +50,7 @@ type Bridge struct {
 	nc  *nats.Conn
 	js  jetstream.JetStream
 	// placeSeam is a test seam run on each new inputs placer.
-	placeSeam    func(*journal.Placer)
+	placeSeam    func(*inputplace.Placer)
 	ackMap       *AckMap
 	checkpointKV jetstream.KeyValue
 	signalKV     jetstream.KeyValue

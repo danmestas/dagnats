@@ -11,6 +11,7 @@ import (
 
 	"github.com/danmestas/dagnats/inputs"
 	"github.com/danmestas/dagnats/internal/chaos"
+	"github.com/danmestas/dagnats/internal/inputplace"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/journal"
 	"github.com/danmestas/dagnats/observe"
@@ -131,7 +132,7 @@ type taskContext struct {
 	// commits (ADR-027); it also remembers what it returned to this
 	// delivery.
 	inputs *inputs.Store
-	placer *journal.Placer
+	placer *inputplace.Placer
 	// Test seams: beforeClaim runs between reading the inputs and
 	// claiming them; placeFault fails an append by request id.
 	beforeClaim func()

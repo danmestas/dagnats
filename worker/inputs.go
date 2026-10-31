@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/inputs"
+	"github.com/danmestas/dagnats/internal/inputplace"
 	"github.com/danmestas/dagnats/journal"
 	"github.com/danmestas/dagnats/protocol"
 )
@@ -118,7 +119,7 @@ func (c *taskContext) inputsStore() (*inputs.Store, error) {
 // PlaceInputs moves every queued input of mode into the conversation
 // and returns them in submission order, after any input of mode an
 // earlier delivery of this iteration already placed (see
-// journal.Placer.Place, the shared implementation). Call it at a turn
+// inputplace.Placer.Place, the shared implementation). Call it at a turn
 // boundary: ModeSteer after a tool round, ModeFollowUp after a final
 // answer. Needs a journal (ErrNoJournal). A fenced journal stops the
 // task like any other journal write.
@@ -140,7 +141,7 @@ func (c *taskContext) PlaceInputs(mode inputs.Mode) ([]journal.InputPlaced, erro
 		return nil, err
 	}
 	if c.placer == nil {
-		c.placer = &journal.Placer{
+		c.placer = &inputplace.Placer{
 			Journal: c.journal, Store: store, RunID: c.runID, StepID: c.stepID,
 			Iteration: c.iteration,
 			BeforeClaim: func() {

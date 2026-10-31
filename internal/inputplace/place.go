@@ -1,10 +1,10 @@
-// journal/place.go
+// internal/inputplace/place.go
 // Placer is the one implementation of placing queued inputs into a
 // step's conversation (ADR-027), used by the Go worker SDK and the HTTP
 // bridge so the two cannot differ. Each placement is one input.placed
 // record, the truth about placement; the submission's bucket status is
 // a projection repaired from it.
-package journal
+package inputplace
 
 import (
 	"context"
@@ -12,12 +12,13 @@ import (
 	"log/slog"
 
 	"github.com/danmestas/dagnats/inputs"
+	"github.com/danmestas/dagnats/journal"
 )
 
 // Placer places inputs for one claim of one iteration. It belongs to
 // the goroutine (or bridge claim) that owns the Journal.
 type Placer struct {
-	Journal   *Journal
+	Journal   *journal.Journal
 	Store     *inputs.Store
 	RunID     string
 	StepID    string
@@ -50,7 +51,7 @@ type Placer struct {
 // keeps any input from being placed twice. An input whose record
 // cannot be appended for a reason other than fencing is settled
 // unanswered rather than blocking every later turn.
-func (p *Placer) Place(ctx context.Context, mode inputs.Mode) ([]InputPlaced, error) {
+func (p *Placer) Place(ctx context.Context, mode inputs.Mode) ([]journal.InputPlaced, error) {
 	if p.Journal == nil || p.Store == nil || p.RunID == "" || p.StepID == "" {
 		panic("Placer.Place: journal, store, run and step are required")
 	}
@@ -116,11 +117,11 @@ func (p *Placer) Settle(ctx context.Context) {
 // recordedPlacements returns the placements of mode this iteration's
 // journal holds that this delivery has not returned yet, and adds them
 // to the inputs settled done when the iteration commits.
-func (p *Placer) recordedPlacements(ctx context.Context, mode inputs.Mode) []InputPlaced {
+func (p *Placer) recordedPlacements(ctx context.Context, mode inputs.Mode) []journal.InputPlaced {
 	if p.returned == nil {
 		p.returned = map[string]bool{}
 	}
-	var recorded []InputPlaced
+	var recorded []journal.InputPlaced
 	for _, rec := range p.Journal.PlacedInputs() {
 		if rec.Iteration != p.Iteration || rec.Mode != string(mode) || p.returned[rec.RequestID] {
 			continue
@@ -183,11 +184,11 @@ func (p *Placer) placeable(ctx context.Context, mode inputs.Mode) ([]inputs.Entr
 
 // record appends the input.placed record for a claimed input. nil
 // without error means the input was settled unanswered instead.
-func (p *Placer) record(ctx context.Context, claimed inputs.Entry) (*InputPlaced, error) {
+func (p *Placer) record(ctx context.Context, claimed inputs.Entry) (*journal.InputPlaced, error) {
 	if claimed.Status != inputs.StatusPlaced {
 		panic("Placer.record: input must be claimed")
 	}
-	rec := InputPlaced{
+	rec := journal.InputPlaced{
 		RequestID: claimed.RequestID, Mode: string(claimed.Mode), Content: claimed.Content,
 	}
 	err := p.appendOrFault(ctx, rec)
@@ -196,7 +197,7 @@ func (p *Placer) record(ctx context.Context, claimed inputs.Entry) (*InputPlaced
 		rec.Iteration = p.Iteration
 		p.placed = append(p.placed, claimed)
 		return &rec, nil
-	case errors.Is(err, ErrFenced), errors.Is(err, ErrCommitted):
+	case errors.Is(err, journal.ErrFenced), errors.Is(err, journal.ErrCommitted):
 		return nil, err
 	}
 	slog.WarnContext(ctx, "input cannot be journaled; settling it unanswered",
@@ -207,7 +208,7 @@ func (p *Placer) record(ctx context.Context, claimed inputs.Entry) (*InputPlaced
 	return nil, nil
 }
 
-func (p *Placer) appendOrFault(ctx context.Context, rec InputPlaced) error {
+func (p *Placer) appendOrFault(ctx context.Context, rec journal.InputPlaced) error {
 	if p.Fault != nil {
 		if err := p.Fault(rec.RequestID); err != nil {
 			return err

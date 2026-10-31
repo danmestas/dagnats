@@ -265,7 +265,7 @@ func (b *Bridge) commitJournal(
 	seq, err := j.Commit(ctx, commit)
 	switch {
 	case err == nil:
-		if placer := b.ackMap.Placer(taskID); placer != nil {
+		if placer := b.ackMap.placer(taskID); placer != nil {
 			placer.Settle(ctx)
 		}
 		return seq, nil

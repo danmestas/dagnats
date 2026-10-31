@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/inputs"
-	"github.com/danmestas/dagnats/journal"
+	"github.com/danmestas/dagnats/internal/inputplace"
 	"github.com/danmestas/dagnats/protocol"
 )
 
@@ -168,7 +168,7 @@ func TestBridgeInputsPlaceTransientErrorAfterPlacementKeepsPlacedInput(t *testin
 	b, ts := rig.front(t)
 	const runID, stepID = "run-place-fault", "step-place-fault"
 	var failing = true
-	b.placeSeam = func(p *journal.Placer) {
+	b.placeSeam = func(p *inputplace.Placer) {
 		p.ClaimFault = func(requestID string) error {
 			if failing && requestID == "q2" {
 				return errors.New("transient kv error")
