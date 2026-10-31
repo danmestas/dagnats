@@ -6,11 +6,29 @@ commit records. It is its own Go module, pure Go; DuckDB is a test-only dependen
 ```
 <root>/<program>/<table>/dt=YYYY-MM-DD/part-<sha256-16>.parquet
 <root>/<program>/<table>/dt=YYYY-MM-DD/part-<sha256-16>.json    (commit record)
+<root>/<program>/<table>/dt=YYYY-MM-DD/part-<sha256-16>.json.superseded    (supersede record)
 ```
 
 A reader trusts a part only through its commit record. `lake.ListCommitted` lists a local
 table's commits and reports records it will not trust (`Rejected`) and commits of one stream
 with overlapping sequence ranges (`Overlaps`).
+
+## Superseding parts
+
+Committed parts are immutable. Compaction and retention (lode) hide a part instead of rewriting
+it. `lake.Supersede` writes a create-only `part-<stem>.json.superseded` record beside the commit.
+The record holds the commit with `SupersededBy` set to the stem of the part that now holds the
+rows, or left empty when retention dropped them. Its `WrittenAt` is when the part stopped being
+live.
+
+`ListCommitted` lists a superseded part in `Superseded` instead of `Commits`, and leaves it out
+of `Overlaps`. A supersede record whose part has been deleted is not rejected: deleting the part
+is what follows. A compacted part therefore overlaps its inputs until the last of them is
+superseded. A second `Supersede` to the same successor returns the stored record. One naming
+another successor is an error.
+
+`Supersede` writes through a `lake.RecordStore` (Put and Get), which every `writer.Store`
+satisfies. The rewrite design is lode's `docs/design/lake-rewrite.md`.
 
 ## Writing
 

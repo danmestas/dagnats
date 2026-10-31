@@ -31,6 +31,10 @@ type Commit struct {
 	SchemaVersion int       `json:"schema_version"`
 	WrittenAt     time.Time `json:"written_at"`
 
+	// SupersededBy is set only in a part's supersede record: the stem of the part that now
+	// holds its rows, or empty when retention dropped them.
+	SupersededBy string `json:"superseded_by,omitempty"`
+
 	// Dt, Key and Path are derived from where the record was found, not stored in it.
 	Dt   string `json:"-"`
 	Key  string `json:"-"` // part key, slash-separated, relative to the lake root
@@ -51,9 +55,10 @@ type Overlap struct {
 
 // Listing is what a reader may trust, and what it should look at.
 type Listing struct {
-	Commits  []Commit // ordered by (dt, part)
-	Rejected []Rejected
-	Overlaps []Overlap
+	Commits    []Commit // live parts, ordered by (dt, part)
+	Superseded []Commit // supersede records, ordered by (dt, part); their parts may be gone
+	Rejected   []Rejected
+	Overlaps   []Overlap // among Commits only
 }
 
 func tableDir(root, program, table string) string {
@@ -76,6 +81,10 @@ func PartitionDir(root, program, table, dt string) string {
 // record does not hide the others; it is listed in Rejected (a commit whose part is missing is
 // rejected too, since writers remove commit records before the parts they cover; the remover is
 // L5). Overlaps reports commits of one stream with intersecting sequence ranges.
+//
+// A part with a supersede record (see Supersede) is not live: it is listed in Superseded, not in
+// Commits, and takes no part in Overlaps. A supersede record whose part is missing is not
+// rejected, since deleting the part is what follows it.
 func ListCommitted(root, program, table string) (Listing, error) {
 	if root == "" || !ValidName(program) || !ValidName(table) {
 		return Listing{}, fmt.Errorf("lake: list %q/%q under %q: bad name", program, table, root)
@@ -98,15 +107,20 @@ func ListCommitted(root, program, table string) (Listing, error) {
 			return Listing{}, err
 		}
 	}
-	sort.Slice(listing.Commits, func(i, j int) bool {
-		a, b := listing.Commits[i], listing.Commits[j]
+	sortCommits(listing.Commits)
+	sortCommits(listing.Superseded)
+	listing.Overlaps = findOverlaps(listing.Commits)
+	return listing, nil
+}
+
+func sortCommits(commits []Commit) {
+	sort.Slice(commits, func(i, j int) bool {
+		a, b := commits[i], commits[j]
 		if a.Dt != b.Dt {
 			return a.Dt < b.Dt
 		}
 		return a.Part < b.Part
 	})
-	listing.Overlaps = findOverlaps(listing.Commits)
-	return listing, nil
 }
 
 func readPartition(listing *Listing, root, prefix, dt string) error {
@@ -115,15 +129,22 @@ func readPartition(listing *Listing, root, prefix, dt string) error {
 	if err != nil {
 		return fmt.Errorf("lake: list %s: %w", dir, err)
 	}
+	superseded, err := readSuperseded(listing, entries, prefix, dir, dt)
+	if err != nil {
+		return err
+	}
 	for _, entry := range entries {
 		if !strings.HasPrefix(entry.Name(), "part-") || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-		if len(listing.Commits)+len(listing.Rejected) >= ListedCommitsMax {
+		if listedCount(listing) >= ListedCommitsMax {
 			return fmt.Errorf("lake: %s: more than %d commits", dir, ListedCommitsMax)
 		}
 		record := filepath.Join(dir, entry.Name())
 		commit, err := ReadCommit(record)
+		if err == nil && superseded[commit.Part] {
+			continue
+		}
 		if err == nil {
 			commit.Dt, commit.Key = dt, path.Join(prefix, commit.Part)
 			commit.Path = filepath.Join(dir, commit.Part)
@@ -139,6 +160,41 @@ func readPartition(listing *Listing, root, prefix, dt string) error {
 		listing.Commits = append(listing.Commits, commit)
 	}
 	return nil
+}
+
+func listedCount(listing *Listing) int {
+	return len(listing.Commits) + len(listing.Superseded) + len(listing.Rejected)
+}
+
+// readSuperseded lists a partition's supersede records and returns the parts they hide. One
+// that does not decode is rejected and hides nothing, so its part stays visible.
+func readSuperseded(
+	listing *Listing, entries []fs.DirEntry, prefix, dir, dt string,
+) (map[string]bool, error) {
+	if listing == nil || dir == "" {
+		panic("lake: readSuperseded needs a listing and a directory")
+	}
+	hidden := map[string]bool{}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, "part-") || !strings.HasSuffix(name, SupersededSuffix) {
+			continue
+		}
+		if listedCount(listing) >= ListedCommitsMax {
+			return nil, fmt.Errorf("lake: %s: more than %d commits", dir, ListedCommitsMax)
+		}
+		record := filepath.Join(dir, name)
+		commit, err := ReadCommit(record)
+		if err != nil {
+			listing.Rejected = append(listing.Rejected, Rejected{Record: record, Reason: err.Error()})
+			continue
+		}
+		commit.Dt, commit.Key = dt, path.Join(prefix, commit.Part)
+		commit.Path = filepath.Join(dir, commit.Part)
+		listing.Superseded = append(listing.Superseded, commit)
+		hidden[commit.Part] = true
+	}
+	return hidden, nil
 }
 
 // findOverlaps sorts a copy by (stream, seq_min) and compares each range to the furthest one
@@ -166,7 +222,7 @@ func findOverlaps(commits []Commit) []Overlap {
 
 // ReadCommit decodes one commit record and checks that it names the part beside it.
 func ReadCommit(path string) (Commit, error) {
-	if !strings.HasSuffix(path, ".json") {
+	if !isRecordName(path) {
 		return Commit{}, fmt.Errorf("lake: %q is not a commit record", path)
 	}
 	data, err := os.ReadFile(path)
@@ -176,17 +232,22 @@ func ReadCommit(path string) (Commit, error) {
 	return DecodeCommit(path, data)
 }
 
-// DecodeCommit decodes the bytes of the commit record at name (a path or key; only its base
-// matters) and checks that it names the part beside it.
+func isRecordName(name string) bool {
+	return strings.HasSuffix(name, ".json") || strings.HasSuffix(name, SupersededSuffix)
+}
+
+// DecodeCommit decodes the bytes of the commit or supersede record at name (a path or key; only
+// its base matters) and checks that it names the part beside it.
 func DecodeCommit(name string, data []byte) (Commit, error) {
-	if !strings.HasSuffix(name, ".json") {
+	if !isRecordName(name) {
 		return Commit{}, fmt.Errorf("lake: %q is not a commit record", name)
 	}
 	var commit Commit
 	if err := json.Unmarshal(data, &commit); err != nil {
 		return Commit{}, fmt.Errorf("lake: decode commit %s: %w", name, err)
 	}
-	want := strings.TrimSuffix(path.Base(filepath.ToSlash(name)), ".json") + ".parquet"
+	base := strings.TrimSuffix(path.Base(filepath.ToSlash(name)), SupersededSuffix)
+	want := strings.TrimSuffix(base, ".json") + ".parquet"
 	if commit.Part != want {
 		return Commit{}, fmt.Errorf("lake: commit %s names part %q, want %q", name, commit.Part, want)
 	}
