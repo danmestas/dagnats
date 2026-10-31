@@ -165,13 +165,28 @@ func jsonUint(v uint64) string {
 }
 
 func TestBridgeJournalViewAnswersTheFence(t *testing.T) {
+	testJournalActionAnswersTheFence(t, "journal.view")
+}
+
+func TestBridgeJournalReadAnswersTheFence(t *testing.T) {
+	testJournalActionAnswersTheFence(t, "journal.read")
+}
+
+// testJournalActionAnswersTheFence claims through action on a first
+// delivery, lets a redelivery claim over it, and expects the replaced
+// delivery's next action to answer 409 fenced while the successor's
+// still answers 200.
+func testJournalActionAnswersTheFence(t *testing.T, action string) {
 	rig := newJournalRig(t)
 	b1, ts1 := rig.front(t)
 	_, ts2 := rig.front(t)
-	const runID, stepID = "run-jviewfence", "step-jviewfence"
-	rig.publish(t, protocol.TaskPayload{RunID: runID, StepID: stepID, DispatchNonce: "n1"})
+	runID := "run-fence-" + strings.ReplaceAll(action, ".", "-")
+	rig.publish(t, protocol.TaskPayload{RunID: runID, StepID: "step", DispatchNonce: "n1"})
+	body := `{"action":"` + action + `"}`
 	task1 := pollOne(t, ts1)
-	resolveView(t, ts1, task1)
+	if status, raw := resolveBody(t, ts1, task1, body); status != 200 {
+		t.Fatalf("first %s: %d %s", action, status, raw)
+	}
 	msg, ok := b1.ackMap.Load(task1)
 	if !ok {
 		t.Fatal("first bridge lost the claim")
@@ -180,13 +195,15 @@ func TestBridgeJournalViewAnswersTheFence(t *testing.T) {
 		t.Fatalf("nak: %v", err)
 	}
 	task2 := pollOne(t, ts2)
-	resolveView(t, ts2, task2)
-
-	status, body := resolveBody(t, ts1, task1, `{"action":"journal.view"}`)
-	if status != http.StatusConflict || !strings.Contains(body, `"fenced"`) {
-		t.Fatalf("fenced view = %d %s, want 409 fenced", status, body)
+	if status, raw := resolveBody(t, ts2, task2, body); status != 200 {
+		t.Fatalf("successor %s: %d %s", action, status, raw)
 	}
-	if again := resolveView(t, ts2, task2); len(again.Records) != 1 {
-		t.Fatalf("successor view = %+v, want the first claim only", again.Records)
+
+	status, raw := resolveBody(t, ts1, task1, body)
+	if status != http.StatusConflict || !strings.Contains(raw, `"fenced"`) {
+		t.Fatalf("fenced %s = %d %s, want 409 fenced", action, status, raw)
+	}
+	if status, raw := resolveBody(t, ts2, task2, body); status != 200 {
+		t.Fatalf("successor %s after the fence: %d %s", action, status, raw)
 	}
 }

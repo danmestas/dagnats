@@ -357,7 +357,8 @@ func (b *Bridge) resolveJournalAppend(
 }
 
 // resolveJournalRead claims the journal if needed and returns the
-// step's records.
+// step's records, or the fence when another claim has replaced this
+// one: a read never appends, so it checks the tail first.
 func (b *Bridge) resolveJournalRead(
 	ctx context.Context, taskID, tokenID string, msg jetstream.Msg, w http.ResponseWriter,
 ) error {
@@ -367,6 +368,9 @@ func (b *Bridge) resolveJournalRead(
 	runID, stepID := splitTaskID(taskID)
 	return b.withJournal(ctx, taskID, tokenID, msg, w,
 		func(j *journal.Journal) (any, error) {
+			if err := j.Resync(ctx); err != nil {
+				return nil, err
+			}
 			records, err := journal.Read(ctx, b.js, runID, stepID)
 			if err != nil {
 				return nil, err
@@ -399,8 +403,6 @@ func (b *Bridge) resolveJournalView(
 	}
 	return b.withJournal(ctx, taskID, tokenID, msg, w,
 		func(j *journal.Journal) (any, error) {
-			// The view never appends, so without this a fenced claim
-			// would read as live until the client's next append.
 			if err := j.Resync(ctx); err != nil {
 				return nil, err
 			}
