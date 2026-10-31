@@ -66,6 +66,13 @@ func Validate(m Manifest) error {
 	return nil
 }
 
+// ValidateName checks only a manifest's Name, the first rule Validate
+// applies. Registration uses it to tell name_invalid apart from the
+// other manifest errors.
+func ValidateName(name string) error {
+	return validateName(name)
+}
+
 func validateName(name string) error {
 	if len(name) < nameLenMin || len(name) > nameLenMax {
 		return fmt.Errorf("name %q must be %d to %d bytes", name, nameLenMin, nameLenMax)
