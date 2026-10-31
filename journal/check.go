@@ -455,8 +455,10 @@ func taskOf(r Record) Task {
 // once its attempt ended: a fail commit of the iteration follows it,
 // or a higher attempt wrote its own intent for the call (the engine
 // timed the attempt out; the next attempt runs a safe call afresh and
-// supersedes it). The last unanswered intent is tolerated when the
-// step ended failed: nothing could answer it.
+// supersedes it). An unsafe intent's position is never reused, so one
+// a higher attempt left alone is no violation (unsafeIntentLeftAlone).
+// The last unanswered intent is tolerated when the step ended failed:
+// nothing could answer it.
 func checkToolPairs(records []Record, stepFailed bool) []string {
 	if records == nil {
 		panic("checkToolPairs: records must not be nil")
@@ -511,7 +513,8 @@ func checkToolPairs(records []Record, stepFailed bool) []string {
 		last = max(last, pending.Seq)
 	}
 	for key, pending := range open {
-		if pending.Seq <= lastCommit[key.iteration] || (stepFailed && pending.Seq == last) {
+		if pending.Seq <= lastCommit[key.iteration] || unsafeIntentLeftAlone(pending, records) ||
+			(stepFailed && pending.Seq == last) {
 			continue
 		}
 		violations = append(violations, fmt.Sprintf(
@@ -520,6 +523,38 @@ func checkToolPairs(records []Record, stepFailed bool) []string {
 	}
 	sort.Strings(violations)
 	return violations
+}
+
+// unsafeIntentLeftAlone reports whether pending, an unanswered intent,
+// is unsafe and a higher attempt wrote to its iteration without
+// running the same call (name and canonical input). A higher attempt
+// that ran the same call afresh should have honoured pending instead:
+// that is a silent re-execution, not an ended attempt.
+func unsafeIntentLeftAlone(pending Record, records []Record) bool {
+	if pending.Type != TypeToolIntent {
+		panic("unsafeIntentLeftAlone: pending must be a tool intent")
+	}
+	if len(records) > recordsMax {
+		panic("unsafeIntentLeftAlone: records exceed the read bound")
+	}
+	var intent ToolIntent
+	if err := json.Unmarshal(pending.Data, &intent); err != nil || intent.Replay != Unsafe {
+		return false
+	}
+	ended := false
+	for _, r := range records {
+		if r.Iteration != pending.Iteration || r.Attempt <= pending.Attempt {
+			continue
+		}
+		ended = true
+		var later ToolIntent
+		if r.Type == TypeToolIntent && json.Unmarshal(r.Data, &later) == nil &&
+			later.Name == intent.Name &&
+			canonicalJSON(later.Input) == canonicalJSON(intent.Input) {
+			return false
+		}
+	}
+	return ended
 }
 
 // checkPlacedInputs is the journal half of invariant 5: each placed

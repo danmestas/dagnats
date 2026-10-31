@@ -230,9 +230,14 @@ type Journal struct {
 	// guard's count (ADR-028).
 	restarts int
 	// toolCalls and modelCalls are the positions of the next Tool and
-	// Model calls, matched against a previous holder's records.
+	// Model calls, matched against a previous holder's records; a Tool
+	// call skips past positions a prior attempt's unsafe intents hold.
 	toolCalls  int
 	modelCalls int
+	// heldPositions are the tool positions a prior attempt's unsafe
+	// intents hold in this iteration, from the records before the
+	// claim: a Tool call in this attempt never takes one.
+	heldPositions map[int]bool
 	// honoured holds the sequences of prior-attempt unsafe intents
 	// this attempt has already answered.
 	honoured map[uint64]bool
@@ -687,6 +692,7 @@ func (j *Journal) rebuild(records []Record) {
 			j.resume = ""
 		}
 	}
+	j.heldPositions = j.priorUnsafePositions()
 }
 
 // commitState decodes a commit record's state; nil on a bad body.

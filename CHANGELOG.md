@@ -7,9 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Drain agent journal steps before upgrading workers** (let in-flight agent steps finish). An in-flight agent step whose attempt was recorded by an older SDK, with a fresh tool call at a position a prior attempt's unsafe call held, is replayed under the new positions on a redelivery after the upgrade: that call runs again, under a new key.
+
 ### Fixed
 
 - **The console opens workflows whose names contain a slash** (`acme/support-ticket`), including a name that itself ends in `/run`: only a POST to a trailing `/run` starts a run, and a GET always shows the detail page. Contributed by @calionauta (#836).
+- **A fresh tool call in a new attempt no longer reuses a prior unsafe call's idempotency key** (affects v0.0.32 through v0.0.35, since agent journal tool replay shipped). A new attempt numbered its fresh calls from 0 without skipping the positions the prior attempt's unsafe intents held, so a fresh call could run under the key `{run}.{step}.{iteration}.{call}` of a call whose effect may already have happened, and a service deduplicating on the key dropped the real effect: a second `send` after an interrupted one, or a different call at a prior unsafe call's position. A redelivery of such an attempt could also answer the interrupted call with the fresh call's result. Fresh calls in a new attempt now skip every position a prior attempt's unsafe intent holds in the iteration. `dagnats journal check` accepts an unanswered unsafe intent once a higher attempt wrote to the iteration, and reports it when that attempt ran the same call (name and canonical input) afresh instead of honouring it. The idempotency key is the same on every delivery of an attempt; a fresh call's key can differ between attempts.
 
 ### Security
 

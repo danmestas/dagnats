@@ -38,8 +38,10 @@ const callsMax = recordsMax
 // ToolCall is one tool invocation. The handler sets Name and Input;
 // Tool fills Call (the call's position in the iteration, counting
 // from 0) and Key, the idempotency key {run}.{step}.{iteration}.{call},
-// which is the same on every delivery and attempt of the iteration so
-// the tool can hand it to an external system that deduplicates.
+// which is the same on every delivery of an attempt so the tool can
+// hand it to an external system that deduplicates. A new attempt
+// keeps a prior unsafe call's key when it honours the call; a fresh
+// call's position, and so its key, can differ between attempts.
 type ToolCall struct {
 	Name  string          `json:"name"`
 	Input json.RawMessage `json:"input,omitempty"`
@@ -98,7 +100,9 @@ type ModelFunc func(ctx context.Context) ([]byte, error)
 // are honoured, matched by content rather than position: the first
 // prior unsafe intent with the same name and input not yet honoured
 // in this attempt answers the call under its own key, with its
-// recorded result or as interrupted; safe calls run afresh.
+// recorded result or as interrupted; safe calls run afresh. A call
+// that takes a position in a new attempt skips the positions prior
+// unsafe intents hold, so it never shares their keys.
 //
 // The guarantee is that the SDK starts an unsafe call at most once
 // per position. A holder stalled between its intent and the tool's
@@ -118,10 +122,10 @@ func (j *Journal) Tool(
 		panic("journal.Tool: fn and call.Name must not be empty")
 	}
 	defer j.enter("Tool")()
-	if j.toolCalls >= callsMax {
+	call.Call = j.nextToolPosition()
+	if call.Call >= callsMax {
 		return ToolResult{}, fmt.Errorf("journal: more than %d tool calls in one iteration", callsMax)
 	}
-	call.Call = j.toolCalls
 	call.Key = j.task.RunID + "." + j.task.StepID + "." +
 		strconv.Itoa(j.task.Iteration) + "." + strconv.Itoa(call.Call)
 	// Prior unsafe intents are matched by content before this
@@ -138,7 +142,7 @@ func (j *Journal) Tool(
 		return ToolResult{}, fmt.Errorf("%w: call %d recorded as %s %s, now %s %s",
 			ErrReplayMismatch, call.Call, intent.Name, intent.Input, call.Name, call.Input)
 	}
-	j.toolCalls++
+	j.toolCalls = call.Call + 1
 	if result, done := j.recordedToolResult(call.Call, recorded.Seq); done {
 		return result, nil
 	}
@@ -180,6 +184,52 @@ func interruptedResult(call ToolCall, partial json.RawMessage) ToolResult {
 	return ToolResult{
 		Call: call.Call, Key: call.Key, Error: ErrInterrupted, Interrupted: true, Partial: partial,
 	}
+}
+
+// nextToolPosition is the position of this attempt's next tool call:
+// the first from toolCalls that no prior attempt's unsafe intent
+// holds. The position makes the key, and a fresh call under a prior
+// unsafe call's key would be dropped by a system that deduplicates on
+// it. The held positions come from the records before the claim
+// alone, so every delivery of the attempt assigns the same positions.
+func (j *Journal) nextToolPosition() int {
+	if j.toolCalls < 0 {
+		panic("nextToolPosition: toolCalls must not be negative")
+	}
+	held := j.heldPositions
+	if len(held) > recordsMax {
+		panic("nextToolPosition: more held positions than records")
+	}
+	position := j.toolCalls
+	for range len(held) {
+		if !held[position] {
+			break
+		}
+		position++
+	}
+	if held[position] {
+		panic("nextToolPosition: position is held by a prior unsafe intent")
+	}
+	return position
+}
+
+// priorUnsafePositions is the set of positions held by prior-attempt
+// unsafe intents of this iteration.
+func (j *Journal) priorUnsafePositions() map[int]bool {
+	if len(j.records) > recordsMax {
+		panic("priorUnsafePositions: records exceed the read bound")
+	}
+	held := map[int]bool{}
+	for _, r := range j.records {
+		if r.Type != TypeToolIntent || !j.priorAttempt(r) {
+			continue
+		}
+		var intent ToolIntent
+		if err := json.Unmarshal(r.Data, &intent); err == nil && intent.Replay == Unsafe {
+			held[intent.Call] = true
+		}
+	}
+	return held
 }
 
 // priorUnsafeIntent finds the first unsafe intent of a prior attempt
@@ -224,7 +274,7 @@ func (j *Journal) freshTool(
 	if _, err := j.append(ctx, TypeToolIntent, data); err != nil {
 		return ToolResult{}, err
 	}
-	j.toolCalls++
+	j.toolCalls = call.Call + 1
 	if err := j.crashAt(ctx, chaos.WorkerAfterToolIntent); err != nil {
 		return ToolResult{}, err
 	}
