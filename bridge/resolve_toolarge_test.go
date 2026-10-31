@@ -104,3 +104,24 @@ func TestBridgeResolveBodyOverEightMiBAnswers413(t *testing.T) {
 		t.Fatalf("ordinary request after the refusal = %d %s, want 200", status, body)
 	}
 }
+
+func TestBridgeJournalAppendOverMaxPayloadAnswers413(t *testing.T) {
+	rig := newJournalRig(t)
+	b, ts := rig.front(t)
+	rig.publish(t, protocol.TaskPayload{RunID: "run-cap-rec", StepID: "step", DispatchNonce: "n1"})
+	taskID := pollOne(t, ts)
+	max := int(b.nc.MaxPayload())
+
+	big := `{"action":"journal.append","type":"entry","data":` + quotedBytes(max+1024) + `}`
+	status, body := resolveBody(t, ts, taskID, big)
+	if status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("append over max_payload = %d %s, want 413", status, body)
+	}
+	if got := decodeTooLarge(t, body); got.Code != "record_too_large" || got.MaxBytes != max {
+		t.Fatalf("413 body = %+v, want record_too_large max %d", got, max)
+	}
+	small := `{"action":"journal.append","type":"entry","data":"fits"}`
+	if status, body := resolveBody(t, ts, taskID, small); status != http.StatusOK {
+		t.Fatalf("append that fits after the refusal = %d %s, want 200", status, body)
+	}
+}

@@ -14,6 +14,7 @@ export {
   Fenced,
   NotProvisioned,
   RestartLimit,
+  RecordTooLarge,
   RunCancelled,
   Stale,
   StateTooLarge,

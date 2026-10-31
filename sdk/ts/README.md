@@ -62,7 +62,7 @@ Told apart by status and body, so a fence and a cancelled run are not confused (
 | `Fenced` | `409 {"code":"fenced"}` |
 | `RunCancelled` | `409`, plain text `run cancelled` |
 | `Stale`, `Committed`, `RestartLimit` | `410` with that `code` |
-| `StateTooLarge`, `BodyTooLarge` | `413` with that `code`; `StateTooLarge` carries `maxBytes` and `bytes` |
+| `StateTooLarge`, `BodyTooLarge`, `RecordTooLarge` | `413` with that `code`; `StateTooLarge` carries `maxBytes` and `bytes`, the others `maxBytes`. A journal record must fit the server's `max_payload` |
 | `NotProvisioned` | `503 {"code":"not_provisioned"}` |
 | `BridgeError` | anything else; carries `status`, `body` and the JSON `code` if any |
 

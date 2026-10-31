@@ -51,6 +51,15 @@ export class BodyTooLarge extends BridgeError {
     this.maxBytes = jsonNumber(body, "max_bytes");
   }
 }
+/** 413 record_too_large: a journal record over the server's max_payload. Not terminal: append less. */
+export class RecordTooLarge extends BridgeError {
+  readonly maxBytes: number | undefined;
+
+  constructor(status: number, body: string) {
+    super(status, body);
+    this.maxBytes = jsonNumber(body, "max_bytes");
+  }
+}
 /** 503 not_provisioned: the AGENT_JOURNAL stream is missing. */
 export class NotProvisioned extends BridgeError {}
 
@@ -92,6 +101,7 @@ export function errorFromResponse(status: number, body: string): BridgeError {
   }
   if (status === 413) {
     if (code === "state_too_large") return new StateTooLarge(status, body);
+    if (code === "record_too_large") return new RecordTooLarge(status, body);
     if (code === "body_too_large") return new BodyTooLarge(status, body);
   }
   if (status === 503 && code === "not_provisioned") return new NotProvisioned(status, body);

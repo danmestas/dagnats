@@ -10,7 +10,7 @@
 
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { BridgeClient, BridgeLog, Fenced, Journal, RunCancelled, StateTooLarge, TaskContext, isTerminal } from "../src/index.ts";
+import { BridgeClient, BridgeLog, Fenced, Journal, RecordTooLarge, RunCancelled, StateTooLarge, TaskContext, isTerminal } from "../src/index.ts";
 import type { PollItem } from "../src/index.ts";
 import {
   cancelRun,
@@ -243,5 +243,20 @@ test("a checkpoint over the state cap raises StateTooLarge, which is not termina
   assert.equal(err.maxBytes, 256 * 1024);
   assert.ok((err.bytes ?? 0) > 256 * 1024);
   assert.equal(isTerminal(err), false);
+  await ctx.complete(null);
+});
+
+test("a journal record over max_payload raises RecordTooLarge and the claim stays usable", async () => {
+  const type = uniqueType();
+  await publishTask(srv, type, { run_id: `rec-${type}`, step_id: "step", dispatch_nonce: "n1" });
+  const ctx = new TaskContext(client, await pollOne(client, type));
+  const err = await ctx.journal.append("entry", "x".repeat(2 * 1024 * 1024)).then(
+    () => undefined,
+    (e: unknown) => e,
+  );
+  assert.ok(err instanceof RecordTooLarge, String(err));
+  assert.equal(err.maxBytes, 1024 * 1024);
+  assert.equal(isTerminal(err), false);
+  assert.ok((await ctx.journal.append("entry", "fits")).seq > 0);
   await ctx.complete(null);
 });

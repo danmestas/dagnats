@@ -18,6 +18,7 @@ import {
   Stale,
   StateTooLarge,
   BodyTooLarge,
+  RecordTooLarge,
   errorFromResponse,
   isTerminal,
 } from "../src/errors.ts";
@@ -99,6 +100,10 @@ test("the two 413 codes carry their sizes and are not terminal", () => {
   const body = errorFromResponse(413, '{"error":"x","code":"body_too_large","max_bytes":8388608}');
   assert.ok(body instanceof BodyTooLarge);
   assert.equal(body.maxBytes, 8388608);
+  const record = errorFromResponse(413, '{"error":"x","code":"record_too_large","max_bytes":1048576}');
+  assert.ok(record instanceof RecordTooLarge);
+  assert.equal(record.maxBytes, 1048576);
+  assert.equal(isTerminal(record), false);
   assert.equal(isTerminal(state), false);
   assert.equal(isTerminal(body), false);
   assert.equal(errorFromResponse(413, "too big").constructor, BridgeError);

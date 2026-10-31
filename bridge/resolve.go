@@ -125,6 +125,14 @@ func (b *Bridge) handleResolve(
 			})
 			return
 		}
+		if errors.Is(err, nats.ErrMaxPayload) {
+			// A journal record or event is one NATS message, so it must fit
+			// the server's max_payload; this was an untyped 500.
+			writeJSON(w, http.StatusRequestEntityTooLarge, tooLargeBody{
+				Error: err.Error(), Code: "record_too_large", MaxBytes: int(b.nc.MaxPayload()),
+			})
+			return
+		}
 		var badRequest *badRequestError
 		if errors.As(err, &badRequest) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
