@@ -91,6 +91,23 @@ type Config struct {
 	NATSPort        int      `json:"nats_port"`
 	LeafRemotes     []string `json:"leaf_remotes"`
 	LeafCredentials string   `json:"leaf_credentials"`
+	// LeafUser and LeafPasswordFile, set together, are the login sent to
+	// every leaf remote that carries none in its URL. They need no operator
+	// mode, unlike LeafCredentials, and exclude it.
+	LeafUser         string `json:"leaf_user"`
+	LeafPasswordFile string `json:"leaf_password_file"`
+	// LeafPort opens a leafnode listener that other servers dial as leaf
+	// nodes; 0 leaves it off and -1 picks a free port. LeafHost is its bind
+	// IP, 127.0.0.1 when unset. LeafListenUser and LeafListenPasswordFile
+	// are the login a leaf must present, required whenever LeafPort is set.
+	LeafPort               int    `json:"leaf_port"`
+	LeafHost               string `json:"leaf_host"`
+	LeafListenUser         string `json:"leaf_listen_user"`
+	LeafListenPasswordFile string `json:"leaf_listen_password_file"`
+	// leafPassword and leafListenPassword are the files' contents, read at
+	// start.
+	leafPassword       string
+	leafListenPassword string
 
 	NATSClusterName      string   `json:"nats_cluster_name"`
 	NATSClusterRoutes    []string `json:"nats_cluster_routes"`
@@ -375,10 +392,10 @@ func ConfigWithPath(
 	if err := applyStepEventsEnv(&cfg); err != nil {
 		return Config{}, "", err
 	}
-	if err := validateLoopStateMaxBytes(cfg); err != nil {
+	if err := applyLeafEnv(&cfg); err != nil {
 		return Config{}, "", err
 	}
-	if err := validateJetStreamDomain(cfg.JetStreamDomain); err != nil {
+	if err := validateLoadedConfig(cfg); err != nil {
 		return Config{}, "", err
 	}
 
@@ -1042,6 +1059,22 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 		cfg.LeafRemotes = remotes
 	case "leaf_credentials":
 		cfg.LeafCredentials = val
+	case "leaf_user":
+		cfg.LeafUser = val
+	case "leaf_password_file":
+		cfg.LeafPasswordFile = val
+	case "leaf_port":
+		port, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid leaf_port: %w", err)
+		}
+		cfg.LeafPort = port
+	case "leaf_host":
+		cfg.LeafHost = val
+	case "leaf_listen_user":
+		cfg.LeafListenUser = val
+	case "leaf_listen_password_file":
+		cfg.LeafListenPasswordFile = val
 	case "nats_cluster_name":
 		cfg.NATSClusterName = val
 	case "nats_cluster_routes":
@@ -1400,22 +1433,40 @@ func validateClusterPortCollisions(cfg *Config) {
 	if port == 0 {
 		port = defaultClusterPort
 	}
-	others := map[string]int{
-		"nats_port":    cfg.NATSPort,
-		"monitor_port": cfg.MonitorPort,
-		"nats_ws_port": cfg.NATSWebsocketPort,
-	}
-	if _, httpPort, err := net.SplitHostPort(cfg.HTTPAddr); err == nil {
-		if n, convErr := strconv.Atoi(httpPort); convErr == nil {
-			others["http_addr"] = n
-		}
-	}
+	others := listenerPorts(*cfg)
+	delete(others, "nats_cluster_port")
 	for name, other := range others {
 		if other > 0 && other == port {
 			panic(fmt.Sprintf(
 				"nats_cluster_port %d collides with %s", port, name))
 		}
 	}
+}
+
+// listenerPorts names the ports this node's listeners open. The route
+// port appears only in cluster mode, where its 0 means defaultClusterPort.
+func listenerPorts(cfg Config) map[string]int {
+	ports := map[string]int{
+		"nats_port":    cfg.NATSPort,
+		"monitor_port": cfg.MonitorPort,
+		"nats_ws_port": cfg.NATSWebsocketPort,
+		"leaf_port":    cfg.LeafPort,
+	}
+	if _, httpPort, err := net.SplitHostPort(cfg.HTTPAddr); err == nil {
+		if n, convErr := strconv.Atoi(httpPort); convErr == nil {
+			ports["http_addr"] = n
+		}
+	}
+	if len(cfg.NATSClusterRoutes) > 0 {
+		ports["nats_cluster_port"] = cfg.NATSClusterPort
+		if cfg.NATSClusterPort == 0 {
+			ports["nats_cluster_port"] = defaultClusterPort
+		}
+	}
+	if len(ports) < 4 {
+		panic("listenerPorts: lost a listener")
+	}
+	return ports
 }
 
 // serverNameMaxLength bounds nats_server_name; nats-server itself has no
@@ -1452,6 +1503,18 @@ func isServerNameRune(r rune) bool {
 	return r == '_' || r == '-' || r == '.' ||
 		(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
 		(r >= '0' && r <= '9')
+}
+
+// validateLoadedConfig runs the checks that return errors once every file
+// key and env override is applied.
+func validateLoadedConfig(cfg Config) error {
+	if err := validateLoopStateMaxBytes(cfg); err != nil {
+		return err
+	}
+	if err := validateJetStreamDomain(cfg.JetStreamDomain); err != nil {
+		return err
+	}
+	return validateLeafConfig(cfg)
 }
 
 // jetStreamDomainMaxLength bounds jetstream_domain; the domain is a token

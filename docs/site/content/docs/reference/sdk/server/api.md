@@ -10,6 +10,8 @@ server/client\_auth.go Optional logins for a dagnats that other local users can 
 
 server/dry\_run.go Dry\-run validation: loads config, reports sources, checks prerequisites. Validates environment without starting any components.
 
+server/leaf\_config.go Leafnode settings beyond leaf\_remotes: a listener other servers dial as leaf nodes, guarded by a user and password, and a user/password login for this server's own leaf remotes.
+
 server/metrics\_auth.go METRICS\_AUTH gate around the /metrics exporter. Independent from the console gate: an operator may want the console locked behind basic auth while letting their Prometheus scraper hit /metrics with a service\-account token \(forward auth\). Documented modes:
 
 ```
@@ -92,7 +94,7 @@ func PrintDryRun(w io.Writer, rc ResolvedConfig) bool
 PrintDryRun writes the dry\-run report to w. Returns true if all validations passed.
 
 <a name="Config"></a>
-## type [Config](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L88-L244>)
+## type [Config](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L88-L261>)
 
 Config holds all server configuration.
 
@@ -103,6 +105,19 @@ type Config struct {
     NATSPort        int      `json:"nats_port"`
     LeafRemotes     []string `json:"leaf_remotes"`
     LeafCredentials string   `json:"leaf_credentials"`
+    // LeafUser and LeafPasswordFile, set together, are the login sent to
+    // every leaf remote that carries none in its URL. They need no operator
+    // mode, unlike LeafCredentials, and exclude it.
+    LeafUser         string `json:"leaf_user"`
+    LeafPasswordFile string `json:"leaf_password_file"`
+    // LeafPort opens a leafnode listener that other servers dial as leaf
+    // nodes; 0 leaves it off and -1 picks a free port. LeafHost is its bind
+    // IP, 127.0.0.1 when unset. LeafListenUser and LeafListenPasswordFile
+    // are the login a leaf must present, required whenever LeafPort is set.
+    LeafPort               int    `json:"leaf_port"`
+    LeafHost               string `json:"leaf_host"`
+    LeafListenUser         string `json:"leaf_listen_user"`
+    LeafListenPasswordFile string `json:"leaf_listen_password_file"`
 
     NATSClusterName      string   `json:"nats_cluster_name"`
     NATSClusterRoutes    []string `json:"nats_cluster_routes"`
@@ -256,7 +271,7 @@ type Config struct {
 ```
 
 <a name="ConfigFromEnv"></a>
-### func [ConfigFromEnv](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L320>)
+### func [ConfigFromEnv](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L337>)
 
 ```go
 func ConfigFromEnv() Config
@@ -265,7 +280,7 @@ func ConfigFromEnv() Config
 ConfigFromEnv loads config from defaults, config file, then env vars. Config file is dagnats.yaml in CWD. Missing file is not an error. Panics if DataDir is empty after resolution. Exits \(via log.Fatalf\) if MaxStoreBytes still resolves to \<= 0 \(e.g. the disk backing DataDir has no space left\) \-\- see ConfigWithPath.
 
 <a name="ConfigWithPath"></a>
-### func [ConfigWithPath](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L337-L339>)
+### func [ConfigWithPath](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L354-L356>)
 
 ```go
 func ConfigWithPath(configPath string) (Config, string, error)
@@ -274,7 +289,7 @@ func ConfigWithPath(configPath string) (Config, string, error)
 ConfigWithPath loads config using an explicit path or standard search. Returns the resolved config and the path of the file that was loaded \(empty string if no file was found\). When configPath is non\-empty, the file must exist or an error is returned. Panics if DataDir is empty after resolution. Returns an error if MaxStoreBytes still resolves to \<= 0 after the disk\-derived default is applied \(e.g. the disk backing DataDir has no space left\) \-\- that is operator/host state, not a programmer error, so it is reported rather than panicked on. See deriveMaxStoreBytes \(\#687\).
 
 <a name="DefaultConfig"></a>
-### func [DefaultConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L254>)
+### func [DefaultConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L271>)
 
 ```go
 func DefaultConfig() Config

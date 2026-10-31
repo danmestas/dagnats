@@ -71,6 +71,12 @@ func natsOptions(cfg Config) (*natsserver.Options, error) {
 	if cfg.NATSUser != "" && cfg.natsPassword == "" {
 		panic("natsOptions: nats_user set but its password was not resolved")
 	}
+	if cfg.LeafPort != 0 && cfg.leafListenPassword == "" {
+		panic("natsOptions: leaf_port set but its password was not resolved")
+	}
+	if cfg.LeafUser != "" && cfg.leafPassword == "" {
+		panic("natsOptions: leaf_user set but its password was not resolved")
+	}
 	host := natsBindHost(cfg)
 	opts := &natsserver.Options{
 		Host:               host,
@@ -90,7 +96,7 @@ func natsOptions(cfg Config) (*natsserver.Options, error) {
 		opts.Username = cfg.NATSUser
 		opts.Password = cfg.natsPassword
 	}
-	if len(cfg.LeafRemotes) > 0 {
+	if len(cfg.LeafRemotes) > 0 || cfg.LeafPort != 0 {
 		if err := configureLeafNode(opts, cfg); err != nil {
 			return nil, err
 		}
@@ -135,22 +141,32 @@ func startNATSWithPortFallback(
 	return tryStartNATS(opts)
 }
 
-// configureLeafNode wires cfg.LeafRemotes into opts.LeafNode. Extracted
-// from startNATS to keep it under the 70-line limit (#370); behavior is
-// unchanged. Caller guards on len(cfg.LeafRemotes) > 0.
+// configureLeafNode wires the leaf listener and cfg.LeafRemotes into
+// opts.LeafNode. Caller guards on remotes or a listener being configured.
 func configureLeafNode(opts *natsserver.Options, cfg Config) error {
 	if opts == nil {
 		panic("configureLeafNode: opts must not be nil")
 	}
-	if len(cfg.LeafRemotes) == 0 {
-		panic("configureLeafNode: no leaf remotes")
+	if len(cfg.LeafRemotes) == 0 && cfg.LeafPort == 0 {
+		panic("configureLeafNode: no leaf remotes and no listener")
 	}
 
+	if cfg.LeafPort != 0 {
+		opts.LeafNode.Host = leafBindHost(cfg)
+		opts.LeafNode.Port = cfg.LeafPort
+		opts.LeafNode.Username = cfg.LeafListenUser
+		opts.LeafNode.Password = cfg.leafListenPassword
+	}
 	remotes := make([]*natsserver.RemoteLeafOpts, 0, len(cfg.LeafRemotes))
 	for _, remote := range cfg.LeafRemotes {
 		remoteURL, err := url.Parse(remote)
 		if err != nil {
 			return fmt.Errorf("parse leaf remote %q: %w", remote, err)
+		}
+		// Like route URLs, nats-server sends a remote's login only from
+		// its URL's userinfo; an explicit login in the URL wins.
+		if cfg.LeafUser != "" && remoteURL.User == nil {
+			remoteURL.User = url.UserPassword(cfg.LeafUser, cfg.leafPassword)
 		}
 		leaf := &natsserver.RemoteLeafOpts{
 			URLs: []*url.URL{remoteURL},
@@ -160,7 +176,7 @@ func configureLeafNode(opts *natsserver.Options, cfg Config) error {
 		}
 		remotes = append(remotes, leaf)
 	}
-	opts.LeafNode = natsserver.LeafNodeOpts{Remotes: remotes}
+	opts.LeafNode.Remotes = remotes
 	return nil
 }
 

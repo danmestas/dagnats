@@ -94,7 +94,7 @@ nats request api.cluster.health ''
 
 ### Leaf node — production
 
-The hub (cluster or supercluster) is an external NATS deployment — `nats-server` processes you run separately, or Synadia Cloud. dagnats's embedded NATS does not run in cluster or supercluster mode itself; it only acts as a leaf connecting outward.
+The hub (cluster or supercluster) is an external NATS deployment — `nats-server` processes you run separately, or Synadia Cloud. dagnats's embedded NATS does not run in cluster or supercluster mode itself; it only acts as a leaf connecting outward. (A dagnats can also accept leaves itself with `leaf_port`; see [Configuration](configuration.md#leaf-listener-and-leaf-logins).)
 
 In all three leaf flavors, dagnats binds NATS to `0.0.0.0` because hub communication requires external connectivity. Restrict the port via firewall — see [Network Isolation](#network-isolation). Maximum 10 remotes per instance.
 
@@ -223,7 +223,10 @@ is not appropriate for production.
 
 Leaf node connections authenticate using NATS credentials files.
 Provide the path via `leaf_credentials` in the config file or
-`DAGNATS_LEAF_CREDENTIALS` as an environment variable.
+`DAGNATS_LEAF_CREDENTIALS` as an environment variable. A hub that is
+not in operator mode, such as another dagnats with `leaf_port` set,
+takes a plain user and password instead: set `leaf_user` and
+`leaf_password_file` (see [Configuration](configuration.md#leaf-listener-and-leaf-logins)).
 
 For CI/CD environments where mounting a file is inconvenient, pass
 inline PEM content. DagNats detects the `-----BEGIN` prefix and

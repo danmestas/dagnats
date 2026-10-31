@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A leafnode listener with a user/password login, and user/password leaf remotes.** `leaf_port` (`DAGNATS_LEAF_PORT`, `0` and off by default) opens a listener other servers dial as leaf nodes, bound to `leaf_host` (`DAGNATS_LEAF_HOST`, `127.0.0.1` when unset, never all interfaces by default). It always requires `leaf_listen_user` and `leaf_listen_password_file`, and dagnats refuses to start without them, because a linked leaf shares every subject and stream. The listener works in embedded cluster mode; `leaf_remotes` stays excluded there. On the dialing side, `leaf_user` and `leaf_password_file` log in to leaf remotes with a plain user and password, so a dagnats leaf can link to a dagnats hub without operator-mode creds; they exclude `leaf_credentials`. dagnats warns at start when a leaf's client port is open to the network with no `nats_user`, since a client there shares every subject of the hub, and when `leaf_host` is `0.0.0.0` or `::`, since the leaf login travels without TLS. Nothing changes while the new keys are unset.
+
 ## [0.0.36] - 2026-10-31
 
 ### Upgrade notes
