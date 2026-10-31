@@ -3,6 +3,7 @@ package worker
 import (
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -24,6 +25,9 @@ type lane struct {
 // in SLEEP_TIMERS), not AckWait, is what bounds a hung handler, and a
 // handler Stop abandons after its drain timeout stops heartbeating.
 type progressTicker struct {
+	// frozen counts the chaos hooks holding the task; ticks are skipped
+	// while it is above zero (see Freeze).
+	frozen        atomic.Int32
 	stopRequested chan struct{}
 	done          chan struct{}
 	stopOnce      sync.Once
@@ -79,6 +83,9 @@ func (p *progressTicker) run(
 		case <-abandoned:
 			return
 		case <-ticker.C:
+			if p.frozen.Load() > 0 {
+				continue
+			}
 			// A failed InProgress costs at most this tick; the next one
 			// (or the handler's own Heartbeat) tries again.
 			if err := msg.InProgress(); err != nil {
@@ -101,6 +108,28 @@ func (p *progressTicker) stop() {
 	}
 	p.stopOnce.Do(func() { close(p.stopRequested) })
 	<-p.done
+}
+
+// Freeze suspends the heartbeat until the matching Thaw; ticks in
+// between are skipped, not queued. It implements chaos.Freezer, so a
+// chaos stall freezes the task as a frozen process would be: one that
+// sends no heartbeat, whose delivery lapses at AckWait.
+func (p *progressTicker) Freeze() {
+	if p == nil {
+		panic("progressTicker.Freeze: p must not be nil")
+	}
+	if p.frozen.Add(1) < 1 {
+		panic("progressTicker.Freeze: count went below one")
+	}
+}
+
+func (p *progressTicker) Thaw() {
+	if p == nil {
+		panic("progressTicker.Thaw: p must not be nil")
+	}
+	if p.frozen.Add(-1) < 0 {
+		panic("progressTicker.Thaw: not frozen")
+	}
 }
 
 // deliveryKey names one stream message. Sequences are per stream, and a

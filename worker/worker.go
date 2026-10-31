@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/inputs"
+	"github.com/danmestas/dagnats/internal/chaos"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/runstate"
 	"github.com/danmestas/dagnats/journal"
@@ -1441,7 +1442,10 @@ func (w *Worker) runMessage(l lane, msg jetstream.Msg) {
 	// ticker itself before its NAK, and the explicit stop below precedes
 	// every Ack and NAK settleMessage sends.
 	defer progress.stop()
-	tc.stopProgress = progress.stop
+	tc.progress = progress
+	if chaos.Installed() {
+		tc.ctx = chaos.WithFreezer(tc.ctx, progress)
+	}
 	err := l.handler(tc)
 	progress.stop()
 	elapsed := float64(time.Since(start).Milliseconds())

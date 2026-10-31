@@ -3,7 +3,8 @@
 //
 // Methodology: pure unit tests. With no hook installed At must neither
 // allocate nor call anything; with one installed it must deliver the
-// point and site and carry the hook's kill back.
+// point and site, carry the hook's kill back, and freeze the holder
+// (a ctx Freezer) only while the hook runs.
 package chaos
 
 import (
@@ -68,5 +69,35 @@ func BenchmarkAt_NoHook(b *testing.B) {
 		if err := At(ctx, WorkerAfterClaim, site); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+type countingFreezer struct{ depth, peak int }
+
+func (f *countingFreezer) Freeze() {
+	f.depth++
+	f.peak = max(f.peak, f.depth)
+}
+
+func (f *countingFreezer) Thaw() { f.depth-- }
+
+func TestAt_FreezesTheHolderWhileTheHookRuns(t *testing.T) {
+	f := &countingFreezer{}
+	var depthInHook int
+	Install(func(context.Context, Point, Site) error {
+		depthInHook = f.depth
+		return nil
+	})
+	defer Install(nil)
+	ctx := WithFreezer(context.Background(), f)
+	if err := At(ctx, WorkerInsideTool, Site{RunID: "r"}); err != nil {
+		t.Fatalf("At: %v", err)
+	}
+	if depthInHook != 1 {
+		t.Errorf("freeze depth inside the hook = %d, want 1", depthInHook)
+	}
+	if f.depth != 0 || f.peak != 1 {
+		t.Errorf("after At depth = %d peak = %d, want thawed after one freeze",
+			f.depth, f.peak)
 	}
 }
