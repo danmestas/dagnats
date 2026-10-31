@@ -36,7 +36,8 @@ type Manifest struct {
 	// program's own buckets (those already get full access) and not an
 	// engine bucket. Whether the owner program exists is not checkable
 	// by Validate: an entry for a bucket nobody owns grants nothing
-	// usable.
+	// usable. A reader's watcher.Stop returns a timeout error after ~5s
+	// (consumer delete is denied); the server reaps the consumer itself.
 	Reads []string
 	// Protocols are shared subject roots the program speaks, e.g.
 	// "tool.exec": publish and subscribe on the root and below it.

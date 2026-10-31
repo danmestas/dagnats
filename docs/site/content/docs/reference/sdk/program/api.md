@@ -69,7 +69,7 @@ nc must have been dialed with nats.CustomInboxPrefix\(InboxPrefix\(name\)\); Att
 The returned stop func stops the worker \(draining in\-flight tasks\), then calls prog.Stop once; later calls return the first result. When Start fails, Attach returns its error without calling Stop. When the worker fails to start, Attach calls Stop and returns both errors.
 
 <a name="InboxPrefix"></a>
-## func [InboxPrefix](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L120>)
+## func [InboxPrefix](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L121>)
 
 ```go
 func InboxPrefix(name string) string
@@ -96,7 +96,7 @@ func Validate(m Manifest) error
 Validate checks names, prefixes, sizes, and that Protocols are not under the program's own prefix or an engine root. Pure; used by registration, by Use, and by a program's own tests. Whether a protocol falls under another registered program's prefix needs the registry and is checked at registration.
 
 <a name="BucketSpec"></a>
-## type [BucketSpec](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L65-L70>)
+## type [BucketSpec](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L66-L71>)
 
 BucketSpec declares one of the program's own KV buckets. The host creates it \(Provision\); the program reads and writes keys.
 
@@ -110,7 +110,7 @@ type BucketSpec struct {
 ```
 
 <a name="Grant"></a>
-## type [Grant](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L80-L88>)
+## type [Grant](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L81-L89>)
 
 Grant is what attach returns. Sizes are absolute: the program never does budget arithmetic.
 
@@ -127,7 +127,7 @@ type Grant struct {
 ```
 
 <a name="HTTPHandler"></a>
-## type [HTTPHandler](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L115>)
+## type [HTTPHandler](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L116>)
 
 HTTPHandler is optional. The host decides the listener and prefix.
 
@@ -136,7 +136,7 @@ type HTTPHandler interface{ Handler() http.Handler }
 ```
 
 <a name="Host"></a>
-## type [Host](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L93-L101>)
+## type [Host](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L94-L102>)
 
 Host is what Start receives. It is data: the connection the program was attached with, its Grant, a logger tagged with its name, and Handle, which registers a task handler on the worker Attach runs.
 
@@ -209,7 +209,7 @@ func (k Key) String() string
 String prints the public key, so logging a Key cannot leak the seed.
 
 <a name="Link"></a>
-## type [Link](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L73-L76>)
+## type [Link](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L74-L77>)
 
 Link is a console navigation entry.
 
@@ -221,7 +221,7 @@ type Link struct {
 ```
 
 <a name="Manifest"></a>
-## type [Manifest](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L16-L47>)
+## type [Manifest](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L16-L48>)
 
 Manifest is everything dagnats needs to admit a program. Name is the prefix root: task types and workflow names "name.\*", subjects "name.\>", streams "NAME\_\*", buckets "name\_\*".
 
@@ -249,7 +249,8 @@ type Manifest struct {
     // program's own buckets (those already get full access) and not an
     // engine bucket. Whether the owner program exists is not checkable
     // by Validate: an entry for a bucket nobody owns grants nothing
-    // usable.
+    // usable. A reader's watcher.Stop returns a timeout error after ~5s
+    // (consumer delete is denied); the server reaps the consumer itself.
     Reads []string
     // Protocols are shared subject roots the program speaks, e.g.
     // "tool.exec": publish and subscribe on the root and below it.
@@ -284,7 +285,7 @@ func PermissionsFor(m Manifest) Permissions
 PermissionsFor derives the NATS permission set for a manifest: every crossing the worker SDK and a micro service make, the program's own subjects, streams and buckets, its protocols, and subscribe on "\_INBOX.\<name\>.\>" and nothing wider. Pure. Panics on a manifest that fails Validate: permissions for an invalid manifest are meaningless.
 
 <a name="Program"></a>
-## type [Program](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L104-L112>)
+## type [Program](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L105-L113>)
 
 Program is a separately released binary's view of dagnats.
 
@@ -301,7 +302,7 @@ type Program interface {
 ```
 
 <a name="StreamSpec"></a>
-## type [StreamSpec](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L53-L61>)
+## type [StreamSpec](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L54-L62>)
 
 StreamSpec declares one of the program's own JetStream streams. The host creates it \(Provision\); the program only reads and consumes it. Its MaxBytes is resolved by dagnats from the fraction and floor and handed back in Grant.StreamMaxBytes.
 

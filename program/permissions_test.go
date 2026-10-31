@@ -483,7 +483,6 @@ func TestPermissions_ReadsGrantReadSubjectsOnly(t *testing.T) {
 		"$JS.API.DIRECT.GET.KV_tools_registry.$KV.tools_registry.k",
 		"$JS.API.CONSUMER.CREATE.KV_tools_registry.c.$KV.tools_registry.>",
 		"$JS.API.CONSUMER.INFO.KV_tools_registry.c",
-		"$JS.API.CONSUMER.DELETE.KV_tools_registry.c",
 		"$JS.FC.KV_tools_registry.c.x",
 	} {
 		// Positive: each read crossing is granted.
@@ -498,11 +497,86 @@ func TestPermissions_ReadsGrantReadSubjectsOnly(t *testing.T) {
 		"$JS.API.STREAM.UPDATE.KV_tools_registry",
 		"$JS.API.STREAM.MSG.DELETE.KV_tools_registry",
 		"$JS.API.STREAM.INFO.KV_tools_roles",
+		"$JS.API.CONSUMER.DELETE.KV_tools_registry.c",
 	} {
 		// Negative: no write, purge or ungranted bucket.
 		if allowedBy(perms.Publish, subject) {
 			t.Errorf("publish %q granted, want denied", subject)
 		}
+	}
+}
+
+func consumerCount(ctx context.Context, t *testing.T, js jetstream.JetStream, stream string) int {
+	t.Helper()
+	s, err := js.Stream(ctx, stream)
+	if err != nil {
+		t.Fatalf("stream %s: %v", stream, err)
+	}
+	n := 0
+	names := s.ListConsumers(ctx)
+	for range names.Info() {
+		n++
+	}
+	if err := names.Err(); err != nil {
+		t.Fatalf("list consumers: %v", err)
+	}
+	return n
+}
+
+// TestPermissions_ReaderCannotDeleteOwnersWatcher: the owner's watch
+// consumer survives a reader's delete, which would otherwise be a DoS.
+func TestPermissions_ReaderCannotDeleteOwnersWatcher(t *testing.T) {
+	owner := program.Manifest{
+		Name: "tools", Dagnats: ">=0.0.35 <0.1.0",
+		Buckets: []program.BucketSpec{{Name: "tools_registry", History: 1, MaxBytes: 1 << 20}},
+	}
+	reader := validManifest()
+	reader.Reads = []string{"tools_registry"}
+	f := startFixture(t, owner, reader)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	adminJS, err := jetstream.New(f.admin)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	kv, err := adminJS.CreateKeyValue(ctx, jetstream.KeyValueConfig{
+		Bucket: "tools_registry", History: 1, MaxBytes: 1 << 20,
+	})
+	if err != nil {
+		t.Fatalf("create bucket: %v", err)
+	}
+	w, err := kv.WatchAll(ctx)
+	if err != nil {
+		t.Fatalf("owner watch: %v", err)
+	}
+	defer w.Stop()
+	stream, err := adminJS.Stream(ctx, "KV_tools_registry")
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	var name string
+	for ci := range stream.ListConsumers(ctx).Info() {
+		name = ci.Name
+	}
+	if name == "" {
+		t.Fatal("owner watcher consumer not found")
+	}
+	js, err := jetstream.New(f.dialProgram(t, reader.Name))
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	short, cancelShort := context.WithTimeout(ctx, time.Second)
+	defer cancelShort()
+	// Negative: the reader's delete is refused and logged.
+	if err := js.DeleteConsumer(short, "KV_tools_registry", name); err == nil {
+		t.Error("reader deleted the owner's watcher, want denial")
+	}
+	if !f.violations.contains("$JS.API.CONSUMER.DELETE.KV_tools_registry." + name) {
+		t.Error("no violation logged for the denied consumer delete")
+	}
+	// Positive: the owner's consumer is still there.
+	if got := consumerCount(ctx, t, adminJS, "KV_tools_registry"); got != 1 {
+		t.Errorf("consumers after denied delete = %d, want 1", got)
 	}
 }
 
@@ -553,8 +627,14 @@ func TestPermissions_ReaderGetsWatchesButCannotWrite(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("watch: no initial value")
 	}
-	if err := w.Stop(); err != nil {
-		t.Fatalf("watch stop: %v", err)
+	// Stop's own consumer delete is denied (the grant is withheld), so
+	// it returns an error after nats.go's timeout; the server reaps the
+	// ephemeral consumer once its interest is gone.
+	if err := w.Stop(); err == nil {
+		t.Error("watch stop deleted the consumer, want the delete denied")
+	}
+	if !waitFor(func() bool { return consumerCount(ctx, t, adminJS, "KV_tools_registry") == 0 }) {
+		t.Error("stopped watcher's consumer was not reaped")
 	}
 	// Negative: Put and Delete are refused and the key is untouched.
 	short, cancelShort := context.WithTimeout(ctx, time.Second)

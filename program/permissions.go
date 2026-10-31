@@ -175,6 +175,15 @@ func sharedBucketPublish(bucket string) []string {
 // bucket: open, get, watch (consumer create, info, delete, flow
 // control) and nothing under "$KV.<bucket>.>", so no put, delete or
 // purge. Deliveries arrive on the program's own inbox.
+//
+// Consumer delete is NOT granted: watcher names are random, so a grant
+// could not be scoped to the reader's own and would let it delete the
+// owner's watchers. A stopped watcher's ordered consumer is reaped by
+// its InactiveThreshold (nats.go sets 5 minutes) instead. Consumer
+// create cannot tell ephemeral from durable (durability is in the
+// request body), so a reader could pin a durable consumer on the
+// owner's stream; that is bounded by the stream's consumer limit, and a
+// reader is a trusted program per the package threat model.
 func readBucketPublish(bucket string) []string {
 	if bucket == "" {
 		panic("program.readBucketPublish: bucket must not be empty")
@@ -188,7 +197,6 @@ func readBucketPublish(bucket string) []string {
 		"$JS.API.DIRECT.GET." + stream + ".>",
 		"$JS.API.CONSUMER.CREATE." + stream + ".>",
 		"$JS.API.CONSUMER.INFO." + stream + ".*",
-		"$JS.API.CONSUMER.DELETE." + stream + ".*",
 		"$JS.FC." + stream + ".>",
 	}
 }
