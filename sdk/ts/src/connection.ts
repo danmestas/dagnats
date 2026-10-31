@@ -52,6 +52,7 @@ export class Connection {
   private readonly options: ConnectOptions;
   private readonly stop = new AbortController();
   private stopped = false;
+  private streamOpen = false;
   /** Set by a refused attempt that carried Retry-After; consumed by the next wait. */
   private retryAfterMs = 0;
   private resolveReady!: () => void;
@@ -72,6 +73,19 @@ export class Connection {
     this.ready.catch(() => {});
     this.closed.catch(() => {});
     void this.run();
+  }
+
+  /** The worker id this connection registers. */
+  get worker(): string {
+    return this.options.worker;
+  }
+
+  /**
+   * True while the bridge holds this connection's stream open. A poll that names the worker id
+   * (`worker_id`) is only valid then, and only then does a drop release the poll's claims at once.
+   */
+  get open(): boolean {
+    return this.streamOpen && !this.stopped;
   }
 
   /** close ends the connection for good; `closed` rejects with a "connection closed" error. */
@@ -129,6 +143,7 @@ export class Connection {
         throw errorFromResponse(res.status, await res.text());
       }
       established = true;
+      this.streamOpen = true;
       this.resolveReady();
       const parser = new SSEParser();
       const decoder = new TextDecoder();
@@ -148,6 +163,7 @@ export class Connection {
       // A dropped or silent stream is retried; one that had opened resets the backoff.
       return established;
     } finally {
+      this.streamOpen = false;
       clearTimeout(idle);
       this.stop.signal.removeEventListener("abort", abortBoth);
     }

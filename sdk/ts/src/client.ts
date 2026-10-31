@@ -21,6 +21,13 @@ export interface PollOptions {
   max?: number;
   /** How long the bridge holds the poll open when the queue is empty; default 5000, bridge max 60000. */
   wait_ms?: number;
+  /**
+   * The worker id whose open connection owns this poll's claims: when that connection closes the
+   * bridge releases them at once instead of after AckWait. Defaults to the id of the Connection
+   * this client opened with `connect`, while its stream is open. The bridge refuses (409) an id
+   * with no open connection on it, so pass one only for a connection held open at that bridge.
+   */
+  worker_id?: string;
 }
 
 /** One task as the bridge hands it out. Absent wire fields are absent here. */
@@ -55,6 +62,7 @@ const POLL_WAIT_MS_DEFAULT = 5_000;
 export class BridgeClient {
   private readonly baseURL: string;
   private readonly token: string;
+  private connection: Connection | undefined;
 
   /** `token` is the bridge bearer token; "" sends no Authorization header (dev mode). */
   constructor(baseURL: string, token: string) {
@@ -64,7 +72,8 @@ export class BridgeClient {
 
   /** connect registers the worker and holds the heartbeat stream open, reconnecting when it drops. */
   connect(options: ConnectOptions): Connection {
-    return new Connection({ baseURL: this.baseURL, headers: () => this.headers() }, options);
+    this.connection = new Connection({ baseURL: this.baseURL, headers: () => this.headers() }, options);
+    return this.connection;
   }
 
   async poll(options: PollOptions, call: CallOptions = {}): Promise<PollItem[]> {
@@ -72,6 +81,7 @@ export class BridgeClient {
     const body = {
       task_types: options.task_types,
       worker_group: options.worker_group,
+      worker_id: options.worker_id ?? (this.connection?.open ? this.connection.worker : undefined),
       max_tasks: options.max,
       timeout_ms: wait_ms,
     };

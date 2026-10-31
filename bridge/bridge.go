@@ -52,6 +52,7 @@ type Bridge struct {
 	// placeSeam is a test seam run on each new inputs placer.
 	placeSeam    func(*inputplace.Placer)
 	ackMap       *AckMap
+	conns        *workerConns
 	checkpointKV jetstream.KeyValue
 	signalKV     jetstream.KeyValue
 	// workflowRunsKV lets dispatch and resolve see that a task's run was
@@ -139,6 +140,7 @@ func NewBridge(pub *natsutil.TracingPublisher) *Bridge {
 		nc:               nc,
 		js:               js,
 		ackMap:           NewAckMap(),
+		conns:            newWorkerConns(),
 		checkpointKV:     checkpointKV,
 		signalKV:         signalKV,
 		workflowRunsKV:   workflowRunsKV,

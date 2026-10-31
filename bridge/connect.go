@@ -81,7 +81,11 @@ func (b *Bridge) handleConnect(
 	if !registerOwnedOrReject(w, dir, reg, claims) {
 		return
 	}
-	defer deregisterOnDisconnect(ctx, dir, req.WorkerID, claims)
+	conn := b.conns.open(req.WorkerID, claims)
+	defer func() {
+		owned := deregisterOnDisconnect(ctx, dir, req.WorkerID, claims)
+		b.closeWorkerConn(ctx, conn, owned)
+	}()
 
 	writeSSEHeaders(w)
 	sendHeartbeatLoop(ctx, w, r, reg, dir, claims)
@@ -165,7 +169,7 @@ func writeContendedResponse(w http.ResponseWriter) {
 func deregisterOnDisconnect(
 	ctx context.Context, dir *worker.Directory,
 	workerID string, claims workertoken.Claims,
-) {
+) bool {
 	if dir == nil {
 		panic("deregisterOnDisconnect: dir must not be nil")
 	}
@@ -179,6 +183,7 @@ func deregisterOnDisconnect(
 			"stale disconnect for worker_id owned by another token",
 			"worker_id", workerID,
 		)
+		return false
 	case errors.Is(err, worker.ErrWorkerIDContended):
 		slog.WarnContext(ctx,
 			"deregister lost the revision race repeatedly",
@@ -193,6 +198,7 @@ func deregisterOnDisconnect(
 			"worker_id", workerID,
 		)
 	}
+	return true
 }
 
 // parseConnectRequest validates the connect JSON body.

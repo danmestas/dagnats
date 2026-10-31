@@ -41,6 +41,8 @@ for (;;) {
 }
 ```
 
+`poll` sends the `worker_id` of the Connection opened with `connect` while its stream is open, so when that stream drops the bridge releases the poll's claims at once instead of after AckWait (pass `worker_id` to override). It needs the connect and the poll to reach the same bridge.
+
 Every call takes an optional `{ signal, timeout_ms }`. The default timeout is 5 s, and a poll
 gets its `wait_ms` plus 5 s.
 

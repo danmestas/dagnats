@@ -60,6 +60,9 @@ type ackEntry struct {
 	msg      jetstream.Msg
 	storedAt time.Time
 	tokenID  string
+	// conn is the worker connection whose poll claimed this task, nil
+	// for a poll without worker_id. Its close releases the claim.
+	conn *workerConn
 
 	// Log-ingest counters for POST /v1/tasks/{id}/logs (#624). Piggybacks
 	// on AckMap's existing lifecycle rather than a second expiring map:
@@ -163,6 +166,14 @@ func newAckMapWithClock(now func() time.Time) *AckMap {
 // enforces the size cap before inserting.
 // Panics on empty taskID or nil msg — both are programmer errors.
 func (am *AckMap) Store(taskID string, msg jetstream.Msg, tokenID string) {
+	am.storeForConn(taskID, msg, tokenID, nil)
+}
+
+// storeForConn is Store for a claim polled under a worker connection;
+// conn is nil for a poll without worker_id.
+func (am *AckMap) storeForConn(
+	taskID string, msg jetstream.Msg, tokenID string, conn *workerConn,
+) {
 	if taskID == "" {
 		panic("AckMap.Store: taskID must not be empty")
 	}
@@ -177,8 +188,31 @@ func (am *AckMap) Store(taskID string, msg jetstream.Msg, tokenID string) {
 		am.evictOldestLocked()
 	}
 	am.entries[taskID] = ackEntry{
-		msg: msg, storedAt: now, tokenID: tokenID, journalMu: &sync.Mutex{},
+		msg: msg, storedAt: now, tokenID: tokenID, conn: conn, journalMu: &sync.Mutex{},
 	}
+}
+
+// takeWorkerClaims removes and returns the messages of the unresolved
+// claims polled under conn. A claim another claim has fenced is left:
+// its message belongs to the successor's delivery.
+func (am *AckMap) takeWorkerClaims(conn *workerConn) []jetstream.Msg {
+	if am == nil {
+		panic("AckMap.takeWorkerClaims: nil receiver")
+	}
+	if conn == nil {
+		panic("AckMap.takeWorkerClaims: conn must not be nil")
+	}
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	var taken []jetstream.Msg
+	for taskID, entry := range am.entries {
+		if entry.conn != conn || entry.journalStop != nil {
+			continue
+		}
+		taken = append(taken, entry.msg)
+		delete(am.entries, taskID)
+	}
+	return taken
 }
 
 // Load retrieves the NATS message for the given task ID.

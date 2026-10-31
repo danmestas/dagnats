@@ -69,6 +69,8 @@ Long-polls for tasks from the TASK_QUEUES stream. Returns a JSON array of task p
 
 `worker_group` is optional. Leave it out to poll the ungrouped queue; set it to poll that group's queue (see [Worker groups](#worker-groups)). `max_tasks` defaults to 1 and `timeout_ms` to 5000.
 
+`worker_id` is optional and ties the poll's claims to the worker's open `connect` stream (see [Redelivery timing](#redelivery-timing)). The worker must hold an open connection under that id on this bridge, owned by the polling token by the same rule as connect; otherwise the poll answers `409 {"error":"...","code":"worker_not_connected"}` (no open connection) or `409 {"error":"...","code":"worker_id_owned"}` (another token's). A poll without `worker_id` is unchanged.
+
 Response:
 
 ```json
@@ -252,6 +254,15 @@ reconnect window (capped at 30s), not zero.
 The bridge binds the **checkpoints** and **signals** KV buckets when it is created. If a bucket is missing, the corresponding resolve actions return an error.
 
 A claimed task is kept in the bridge's in-memory ack map. Every action that extends the claim (`heartbeat`, `stream`, `checkpoint`, `send_signal`, `wait_signal`) restarts that window, so a worker that keeps heartbeating keeps its task. A worker that goes silent loses it, and NATS redelivers it.
+
+### Redelivery timing
+
+How fast a dead worker's task comes back depends on whether the poll named the worker:
+
+- **Poll without `worker_id`:** the bridge cannot tell whose claim it is, so NATS redelivers the task only after the consumer's AckWait (5 minutes by default) with no ack or heartbeat.
+- **Poll with `worker_id`:** the bridge records the id, and the open `connect` stream it belongs to, on each claim. When that stream closes (the process crashed, the network dropped, the client closed it), the bridge Naks every claim of that connection that is still unresolved, and NATS redelivers within seconds. Claims already resolved are untouched, and so is a claim fenced by a successor's delivery. A released claim leaves the ack map, so a late resolve from a worker that was only partitioned answers `404`.
+
+The release is keyed on the connection, not just the id: a worker that reconnects under the same id before the old stream's cleanup runs keeps the claims it polled on the new connection, and the old close releases only the old connection's. A close from a token that no longer owns the id (an admin took it over) releases nothing. The connection is held by one bridge process, so with several bridges the `connect` and the `poll` must reach the same one; a poll that reaches another answers `409 worker_not_connected`.
 
 ## Worker groups
 
