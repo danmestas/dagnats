@@ -126,13 +126,12 @@ type taskContext struct {
 	restartLimit int
 
 	// inputs is the submissions bucket, bound on first use;
-	// placedEntries are the inputs this claim placed, settled to done
-	// when the iteration commits (ADR-027).
-	inputs        *inputs.Store
-	placedEntries []inputs.Entry
-	// returnedInputs are the request ids PlaceInputs has returned to
-	// this delivery, recorded by it or by an earlier one.
-	returnedInputs map[string]bool
+	// inputs is the submissions bucket, bound on first use; placer
+	// places inputs and settles them to done when the iteration
+	// commits (ADR-027); it also remembers what it returned to this
+	// delivery.
+	inputs *inputs.Store
+	placer *journal.Placer
 	// Test seams: beforeClaim runs between reading the inputs and
 	// claiming them; placeFault fails an append by request id.
 	beforeClaim func()

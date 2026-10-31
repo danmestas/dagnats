@@ -325,7 +325,7 @@ type CheckpointTask interface {
 ```
 
 <a name="ContinueOption"></a>
-## type [ContinueOption](<https://github.com/danmestas/dagnats/blob/main/worker/inputs.go#L39>)
+## type [ContinueOption](<https://github.com/danmestas/dagnats/blob/main/worker/inputs.go#L38>)
 
 ContinueOption asks the engine to wait before the next iteration \(ADR\-027\). Options combine: a time and UntilInput together wake on whichever comes first; Until wins over Delay.
 
@@ -334,7 +334,7 @@ type ContinueOption func(*protocol.ContinueWait)
 ```
 
 <a name="Delay"></a>
-### func [Delay](<https://github.com/danmestas/dagnats/blob/main/worker/inputs.go#L42>)
+### func [Delay](<https://github.com/danmestas/dagnats/blob/main/worker/inputs.go#L41>)
 
 ```go
 func Delay(d time.Duration) ContinueOption
@@ -343,7 +343,7 @@ func Delay(d time.Duration) ContinueOption
 Delay wakes the step after d.
 
 <a name="Until"></a>
-### func [Until](<https://github.com/danmestas/dagnats/blob/main/worker/inputs.go#L50>)
+### func [Until](<https://github.com/danmestas/dagnats/blob/main/worker/inputs.go#L49>)
 
 ```go
 func Until(t time.Time) ContinueOption
@@ -352,7 +352,7 @@ func Until(t time.Time) ContinueOption
 Until wakes the step at t.
 
 <a name="UntilInput"></a>
-### func [UntilInput](<https://github.com/danmestas/dagnats/blob/main/worker/inputs.go#L60>)
+### func [UntilInput](<https://github.com/danmestas/dagnats/blob/main/worker/inputs.go#L59>)
 
 ```go
 func UntilInput() ContinueOption

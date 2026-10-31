@@ -35,6 +35,16 @@ export interface ContinueOptions {
   wait?: ContinueWait;
 }
 
+/** Which turn boundary an input waits for: steers join after a tool round, follow-ups after a final answer. */
+export type InputMode = "steer" | "follow_up";
+
+/** One input moved into the conversation by inputs.place; `content` is the submitted JSON, absent when it had none. */
+export interface InputPlaced {
+  request_id: string;
+  mode: InputMode;
+  content?: unknown;
+}
+
 /** The claim a journal.view answers: this delivery's identity. */
 export type Claim = Omit<Task, "run_id" | "step_id">;
 
@@ -140,6 +150,20 @@ export class TaskContext {
   async stream(chunk: unknown, call?: CallOptions): Promise<void> {
     await this.resolve("stream", { data: chunk }, call);
   }
+
+  readonly inputs = {
+    /**
+     * Moves the queued inputs of `mode` into the conversation, in submission order, and answers
+     * them (an empty array when there are none). Each is returned once per delivery, a
+     * redelivery of the same iteration gets the earlier placements back once, and the placed
+     * inputs settle to done when the iteration's `continue` or `complete` commits. Claims the
+     * journal on first use, so a fenced task answers Fenced.
+     */
+    place: async (mode: InputMode, call?: CallOptions): Promise<InputPlaced[]> => {
+      const res = (await this.resolve("inputs.place", { mode }, call)) as { inputs: InputPlaced[] };
+      return res.inputs;
+    },
+  };
 
   readonly journal = {
     /** The claim and the records the claim was opened with. A fenced task answers Fenced. */

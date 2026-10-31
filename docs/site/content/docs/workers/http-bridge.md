@@ -121,6 +121,7 @@ Resolves a polled task. The `action` field determines behavior:
 | `complete` | Publishes step.completed with `output`, acks the NATS message |
 | `fail` | Publishes step.failed with `error` and a `failure_type` |
 | `continue` | Requests another iteration of an agent loop, with `output` as the next input. An optional `wait` parks the step first (below) |
+| `inputs.place` | Places the step's queued inputs of `mode` (`steer` or `follow_up`) into the conversation and answers `{"inputs":[{"request_id","mode","content"}]}`, `{"inputs":[]}` when there are none; each is returned once per delivery and settles to done when the iteration commits. An unknown `mode` answers `400 {"code":"invalid_mode"}` |
 | `pause` | Saves `checkpoint`, NAKs for `duration_ms` (1 to 3,600,000) so the task comes back |
 | `checkpoint` | Buffers `data` as the task's loop state for the next `continue`, and extends the claim |
 | `heartbeat` | Extends the claim with nothing else |

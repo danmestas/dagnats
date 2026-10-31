@@ -83,6 +83,10 @@ type ackEntry struct {
 	// is one writer's cursor and not safe for concurrent use.
 	journal   *journal.Journal
 	journalMu *sync.Mutex
+	// placer is the inputs.place state of this delivery (what it has
+	// returned, what to settle done at the commit). It is created under
+	// journalMu on first use and dies with the entry.
+	placer *journal.Placer
 	// journalStop is set once another claim fences this delivery. The
 	// entry stays so every later action on it gets the same answer
 	// instead of a "not found" or, worse, a fresh claim.
@@ -487,6 +491,40 @@ func (am *AckMap) SetJournal(taskID string, j *journal.Journal) bool {
 		return false
 	}
 	entry.journal = j
+	am.entries[taskID] = entry
+	return true
+}
+
+// Placer returns the inputs placer of taskID's delivery, nil when the
+// delivery has not placed any.
+func (am *AckMap) Placer(taskID string) *journal.Placer {
+	if am == nil {
+		panic("AckMap.Placer: nil receiver")
+	}
+	if taskID == "" {
+		panic("AckMap.Placer: taskID must not be empty")
+	}
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	return am.entries[taskID].placer
+}
+
+// SetPlacer records the inputs placer for taskID; false when the entry
+// is gone. Never creates an entry.
+func (am *AckMap) SetPlacer(taskID string, p *journal.Placer) bool {
+	if am == nil {
+		panic("AckMap.SetPlacer: nil receiver")
+	}
+	if taskID == "" || p == nil {
+		panic("AckMap.SetPlacer: taskID and placer must not be empty")
+	}
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	entry, ok := am.entries[taskID]
+	if !ok {
+		return false
+	}
+	entry.placer = p
 	am.entries[taskID] = entry
 	return true
 }

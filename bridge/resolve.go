@@ -37,6 +37,8 @@ type resolveRequest struct {
 	Data         json.RawMessage `json:"data,omitempty"`
 	RunID        string          `json:"run_id,omitempty"`
 	TimeoutMs    int64           `json:"timeout_ms,omitempty"`
+	// Mode is the inputs.place mode: "steer" or "follow_up".
+	Mode string `json:"mode,omitempty"`
 	// Wait is the durable wait a `continue` asks for (ADR-027).
 	Wait *protocol.ContinueWait `json:"wait,omitempty"`
 	// Type is the journal.append record type; "entry" when empty.
@@ -260,6 +262,7 @@ func parseResolveRequest(
 		"journal.append":  true,
 		"journal.read":    true,
 		"journal.view":    true,
+		"inputs.place":    true,
 		"load_checkpoint": true,
 	}
 	if !validActions[req.Action] {
@@ -312,6 +315,8 @@ func (b *Bridge) dispatchAction(
 		return b.resolveJournalRead(ctx, taskID, claimingTokenID, msg, w)
 	case "journal.view":
 		return b.resolveJournalView(ctx, taskID, claimingTokenID, msg, w)
+	case "inputs.place":
+		return b.resolveInputsPlace(ctx, taskID, claimingTokenID, msg, req, w)
 	case "load_checkpoint":
 		return b.resolveLoadCheckpoint(ctx, taskID, msg, w)
 	default:

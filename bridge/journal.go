@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/danmestas/dagnats/inputs"
 	"github.com/danmestas/dagnats/journal"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
@@ -58,7 +59,7 @@ func journalHTTPStatus(err error) (status int, code string, ok bool) {
 		return http.StatusGone, "committed", true
 	case errors.Is(err, journal.ErrRestartLimit):
 		return http.StatusGone, "restart_limit", true
-	case errors.Is(err, journal.ErrNotProvisioned):
+	case errors.Is(err, journal.ErrNotProvisioned), errors.Is(err, inputs.ErrNotProvisioned):
 		return http.StatusServiceUnavailable, "not_provisioned", true
 	}
 	return 0, "", false
@@ -264,6 +265,9 @@ func (b *Bridge) commitJournal(
 	seq, err := j.Commit(ctx, commit)
 	switch {
 	case err == nil:
+		if placer := b.ackMap.Placer(taskID); placer != nil {
+			placer.Settle(ctx)
+		}
 		return seq, nil
 	case errors.Is(err, journal.ErrFenced):
 		return 0, b.settleJournalStop(ctx, taskID, tokenID, msg, err)

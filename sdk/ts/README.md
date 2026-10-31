@@ -50,7 +50,7 @@ gets its `wait_ms` plus 5 s.
 `loadCheckpoint()` (`{ state, source }`, with the bridge's own `source`: `"journal"`, `"checkpoint"`
 or `"payload"`; `undefined` when there is none), `heartbeat()`, `stream(chunk)`,
 `journal.view()` (`{ claim, records }`), `journal.append(type, data)` and
-`continue({ output?, state?, wait? })`. `task` is the
+`continue({ output?, state?, wait? })` and `inputs.place(mode)`. `task` is the
 delivery identity from the poll item (including `dispatch_nonce` and `task_type`) and goes to
 `Journal.open`. A `checkpoint` is durable only once a later `continue` commits it.
 
@@ -61,6 +61,15 @@ the step durably (no claim is held meanwhile): `{ delay_ms?, until?, input? }`, 
 `Date` or ISO-8601 string and `input: true` wakes on the next submitted input; a time and `input`
 wake on whichever comes first. With `input: true` while inputs are already queued the call throws
 `InputsQueued` and the task stays claimed: place the inputs, then continue without the input wait.
+
+### Placing inputs
+
+`ctx.inputs.place("steer" | "follow_up")` moves the inputs queued for the step into the
+conversation and answers `[{ request_id, mode, content? }]` in submission order, `[]` when there are
+none (steers after a tool round, follow-ups after a final answer). It claims the journal on first
+use. A redelivery of the same iteration gets the earlier placements back once; the inputs settle to
+done when the iteration commits. Pair it with a `continue` wait: on `InputsQueued`, place, then
+continue without the input wait.
 
 ### Errors
 
@@ -96,7 +105,7 @@ const { result } = await journal.tool("bash", { cmd: "ls" }, "unsafe", (key) => 
 
 `BridgeLog` serializes appends: one in flight at a time, in call order. `MemoryLog` is for tests.
 Record `data` shapes are the Go ones, so `dagnats journal check` and Go workers read the same
-journal. Not yet here: `inputs.place`.
+journal. Placing inputs is `ctx.inputs.place` (below).
 
 ## Develop
 

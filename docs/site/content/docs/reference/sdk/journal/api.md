@@ -12,6 +12,8 @@ Package journal is the agent journal of ADR\-026: one append\-only JetStream sub
 
 A Journal is one claim on one dispatch of a step. Open reads the tail from the stream leader, stops without writing when the step has moved to a later iteration, rebuilds what this iteration needs from the records so far, and appends a claim record. Append and Commit then carry Nats\-Expected\-Last\-Subject\-Sequence and a stable Nats\-Msg\-Id. A rejected append is not fencing by itself: the writer re\-reads the tail and only a record from another claim of the same or a later iteration fences it.
 
+journal/place.go Placer is the one implementation of placing queued inputs into a step's conversation \(ADR\-027\), used by the Go worker SDK and the HTTP bridge so the two cannot differ. Each placement is one input.placed record, the truth about placement; the submission's bucket status is a projection repaired from it.
+
 ## Index
 
 - [Constants](<#constants>)
@@ -43,6 +45,9 @@ A Journal is one claim on one dispatch of a step. Open reads the tail from the s
 - [type ModelFunc](<#ModelFunc>)
 - [type ModelResponse](<#ModelResponse>)
 - [type Pause](<#Pause>)
+- [type Placer](<#Placer>)
+  - [func \(p \*Placer\) Place\(ctx context.Context, mode inputs.Mode\) \(\[\]InputPlaced, error\)](<#Placer.Place>)
+  - [func \(p \*Placer\) Settle\(ctx context.Context\)](<#Placer.Settle>)
 - [type Record](<#Record>)
   - [func DecodeMsg\(msg jetstream.Msg\) \(Record, error\)](<#DecodeMsg>)
   - [func Read\(ctx context.Context, js jetstream.JetStream, runID, stepID string\) \(\[\]Record, error\)](<#Read>)
@@ -416,6 +421,46 @@ type Pause struct {
     DurationMs int64  `json:"duration_ms"`
 }
 ```
+
+<a name="Placer"></a>
+## type [Placer](<https://github.com/danmestas/dagnats/blob/main/journal/place.go#L19-L32>)
+
+Placer places inputs for one claim of one iteration. It belongs to the goroutine \(or bridge claim\) that owns the Journal.
+
+```go
+type Placer struct {
+    Journal   *Journal
+    Store     *inputs.Store
+    RunID     string
+    StepID    string
+    Iteration int
+    // Test seams: BeforeClaim runs between reading the inputs and
+    // claiming them; Fault fails an append by request id.
+    BeforeClaim func()
+    Fault       func(requestID string) error
+    // contains filtered or unexported fields
+}
+```
+
+<a name="Placer.Place"></a>
+### func \(\*Placer\) [Place](<https://github.com/danmestas/dagnats/blob/main/journal/place.go#L50>)
+
+```go
+func (p *Placer) Place(ctx context.Context, mode inputs.Mode) ([]InputPlaced, error)
+```
+
+Place moves every queued input of mode into the conversation and returns them in submission order, after any input of mode an earlier delivery of this iteration already placed: a redelivery rebuilds the conversation from the last checkpoint, so it gets those back once, as Tool and Model give back recorded results.
+
+Each input is claimed before it is recorded: a compare\-and\-swap of its status to placed at the revision it was read at, then the input.placed append. A withdrawal that lands in between wins the swap, so a 204 never precedes a placement \(ADR\-027 R7\). A claim whose writer died before appending leaves placed with no record; only a claim of this step writes that state, so a later delivery reclaims it, and the journal \(which knows every record\) is what keeps any input from being placed twice. An input whose record cannot be appended for a reason other than fencing is settled unanswered rather than blocking every later turn.
+
+<a name="Placer.Settle"></a>
+### func \(\*Placer\) [Settle](<https://github.com/danmestas/dagnats/blob/main/journal/place.go#L92>)
+
+```go
+func (p *Placer) Settle(ctx context.Context)
+```
+
+Settle moves the inputs this claim placed to done, once the iteration's commit is stored. Best effort: the journal is the record, and a status read repairs the projection from it.
 
 <a name="Record"></a>
 ## type [Record](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L133-L144>)
