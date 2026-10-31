@@ -1466,13 +1466,20 @@ func validateJetStreamDomain(domain string) error {
 		return fmt.Errorf("jetstream_domain is %d bytes; max %d",
 			len(domain), jetStreamDomainMaxLength)
 	}
-	invalid := strings.IndexFunc(domain, func(r rune) bool {
-		return r == '.' || r == '*' || r == '>' ||
-			unicode.IsSpace(r) || unicode.IsControl(r)
-	})
-	if invalid >= 0 {
-		return fmt.Errorf("jetstream_domain must be one NATS token "+
-			"(no dots, spaces or wildcards); got %q", domain)
+	for _, r := range domain {
+		reason := ""
+		switch {
+		case r == '.':
+			reason = "contains a dot"
+		case r == '*' || r == '>':
+			reason = "contains a wildcard"
+		case unicode.IsSpace(r) || unicode.IsControl(r):
+			reason = "contains whitespace or a control character"
+		}
+		if reason != "" {
+			return fmt.Errorf("jetstream_domain must be one NATS token; %q %s",
+				domain, reason)
+		}
 	}
 	return nil
 }

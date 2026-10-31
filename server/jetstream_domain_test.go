@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -41,21 +42,82 @@ func TestJetStreamDomainConfig_DefaultFileAndEnv(t *testing.T) {
 }
 
 func TestJetStreamDomainConfig_RejectsNonTokens(t *testing.T) {
-	for _, bad := range []string{"e.mac", "e mac", "e*", ">", "e\tmac", "e>mac"} {
-		_, _, err := ConfigWithPath(writeConfigFile(t, "jetstream_domain: "+bad+"\n"))
-		if err == nil || !strings.Contains(err.Error(), "jetstream_domain") {
-			t.Errorf("jetstream_domain %q: err = %v, want a jetstream_domain error", bad, err)
+	cases := []struct{ value, reason string }{
+		{"e.mac", "contains a dot"},
+		{"e*", "contains a wildcard"},
+		{">", "contains a wildcard"},
+		{"e>mac", "contains a wildcard"},
+		{"e mac", "contains whitespace or a control character"},
+		{"e\tmac", "contains whitespace or a control character"},
+		{strings.Repeat("d", jetStreamDomainMaxLength+1), "bytes; max 64"},
+	}
+	for _, tc := range cases {
+		_, _, err := ConfigWithPath(writeConfigFile(t, "jetstream_domain: "+tc.value+"\n"))
+		if err == nil || !strings.Contains(err.Error(), "jetstream_domain") ||
+			!strings.Contains(err.Error(), tc.reason) {
+			t.Errorf("jetstream_domain %q: err = %v, want %q", tc.value, err, tc.reason)
 		}
 	}
-	for _, good := range []string{"", "e-mac", "hub", "E_MAC_2"} {
+	// Non-ASCII letters are legal in a NATS token.
+	for _, good := range []string{"", "e-mac", "hub", "E_MAC_2", "équipe", "東京"} {
 		if err := validateJetStreamDomain(good); err != nil {
 			t.Errorf("jetstream_domain %q rejected: %v", good, err)
 		}
 	}
 	t.Setenv("DAGNATS_JETSTREAM_DOMAIN", "a.b")
-	if _, _, err := ConfigWithPath(writeConfigFile(t, "")); err == nil {
-		t.Fatal("DAGNATS_JETSTREAM_DOMAIN with a dot accepted")
+	_, _, err := ConfigWithPath(writeConfigFile(t, ""))
+	if err == nil || !strings.Contains(err.Error(), "contains a dot") {
+		t.Fatalf("DAGNATS_JETSTREAM_DOMAIN with a dot: err = %v, want a dot error", err)
 	}
+}
+
+// Every node of a cluster carries the same domain; a clustered node with
+// one must start and report it.
+func TestStartNATS_ClusterNodeWithJetStreamDomain(t *testing.T) {
+	ports := freeTCPPorts(t, 3)
+	cfg := Config{
+		DataDir: t.TempDir(), NATSPort: -1, MaxStoreBytes: 1 << 30,
+		MaxMemoryBytes: 1 << 28, JetStreamDomain: "mesh",
+		NATSClusterName: "mesh", NATSClusterHost: "127.0.0.1", NATSClusterPort: ports[0],
+		NATSClusterRoutes: []string{
+			fmt.Sprintf("nats://127.0.0.1:%d", ports[1]),
+			fmt.Sprintf("nats://127.0.0.1:%d", ports[2]),
+		},
+	}
+	ns, err := startNATS(cfg)
+	if err != nil {
+		t.Fatalf("startNATS clustered with a domain: %v", err)
+	}
+	defer ns.Shutdown()
+	if ns.ClusterAddr() == nil {
+		t.Fatal("cluster listener not bound")
+	}
+	varz, err := ns.Varz(nil)
+	if err != nil || varz.JetStream.Config == nil || varz.JetStream.Config.Domain != "mesh" {
+		t.Fatalf("clustered node domain: varz %+v, err %v; want mesh", varz.JetStream, err)
+	}
+}
+
+// freeTCPPorts holds n listeners open until all are chosen, so the ports
+// are distinct from each other.
+func freeTCPPorts(t *testing.T, n int) []int {
+	t.Helper()
+	listeners := make([]net.Listener, 0, n)
+	ports := make([]int, 0, n)
+	for range n {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen: %v", err)
+		}
+		listeners = append(listeners, ln)
+		ports = append(ports, ln.Addr().(*net.TCPAddr).Port)
+	}
+	for _, ln := range listeners {
+		if err := ln.Close(); err != nil {
+			t.Fatalf("close listener: %v", err)
+		}
+	}
+	return ports
 }
 
 // A domain-bearing server still answers plain $JS.API locally, so every

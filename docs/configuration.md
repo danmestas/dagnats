@@ -52,7 +52,7 @@ These fields enable self-clustered topology (see [`production.md`](production.md
 
 ### JetStream domain
 
-`jetstream_domain` (string, default none) names this server's JetStream domain. A server linked to this one over a leaf connection reaches its JetStream as `$JS.<domain>.API` (for example `jetstream.NewWithDomain(nc, "e-mac")`), while that server's own `$JS.API` stays its own. Local clients, dagnats itself included, keep using plain `$JS.API`: a server with a domain answers both. Set it on a leaf node that runs its own JetStream, such as a laptop that works offline and is mirrored by a hub; leave it unset on the hub. The value must be one NATS subject token: no dots, spaces or wildcards (`*`, `>`), max 64 bytes.
+`jetstream_domain` (string, default none) names this server's JetStream domain. A server linked to this one over a leaf connection reaches its JetStream as `$JS.<domain>.API` (for example `jetstream.NewWithDomain(nc, "e-mac")`), while that server's own `$JS.API` stays its own. Local clients, dagnats itself included, keep using plain `$JS.API`: a server with a domain answers both. Set it on a leaf node that runs its own JetStream, such as a laptop that works offline and is mirrored by a hub; leave it unset on the hub. The value must be one NATS subject token: no dots, spaces or wildcards (`*`, `>`), max 64 bytes. Non-ASCII letters are accepted, since they are legal in a NATS token. In embedded cluster mode the domain belongs to the whole cluster, so every node sets the same value.
 
 ### Message size
 
