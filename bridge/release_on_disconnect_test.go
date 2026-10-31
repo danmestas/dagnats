@@ -1,0 +1,419 @@
+// release_on_disconnect_test.go
+// Methodology: real embedded NATS and a bridge over httptest. A worker
+// connects (SSE), polls with its worker_id and then its connection is
+// dropped by cancelling the client request; a second worker polling
+// without a worker_id must be handed the task well inside AckWait (the
+// stream's AckWait is minutes, every wait here is seconds). Negative
+// space: a poll without worker_id keeps the AckWait behaviour, a claim
+// resolved before the drop is not Nak'd, a token that does not own the
+// id can neither poll under it nor release anything, and a stale
+// connection's cleanup after a reconnect releases only its own claims.
+package bridge
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/danmestas/dagnats/protocol"
+)
+
+// pollAs posts a poll with an optional worker_id and bearer and returns
+// the status, body and decoded tasks.
+func pollAs(
+	t *testing.T, ts *httptest.Server, bearer, workerID string, timeoutMs int,
+) (int, string, []pollResponse) {
+	t.Helper()
+	body := fmt.Sprintf(`{"task_types":["echo"],"max_tasks":1,"timeout_ms":%d`, timeoutMs)
+	if workerID != "" {
+		body += fmt.Sprintf(`,"worker_id":%q`, workerID)
+	}
+	body += "}"
+	req, err := http.NewRequest("POST", ts.URL+"/v1/tasks/poll", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("poll request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("poll body: %v", err)
+	}
+	var tasks []pollResponse
+	if resp.StatusCode == http.StatusOK {
+		if err := json.Unmarshal(raw, &tasks); err != nil {
+			t.Fatalf("decode poll: %v (%s)", err, raw)
+		}
+	}
+	return resp.StatusCode, string(raw), tasks
+}
+
+// openConn connects workerID and returns the function that drops the
+// connection and waits for the bridge to have processed the close.
+func openConn(t *testing.T, ts *httptest.Server, b *Bridge, bearer, workerID string) func() {
+	t.Helper()
+	resp, cancel := connectWorker(t, ts.URL, bearer, workerID)
+	if resp.StatusCode != http.StatusOK {
+		cancel()
+		t.Fatalf("connect %s: %d", workerID, resp.StatusCode)
+	}
+	conn := b.conns.current(workerID)
+	if conn == nil {
+		cancel()
+		t.Fatalf("bridge holds no connection for %s", workerID)
+	}
+	t.Cleanup(cancel)
+	return func() {
+		cancel()
+		resp.Body.Close()
+		deadline := time.Now().Add(5 * time.Second)
+		for !conn.closed.Load() {
+			if time.Now().After(deadline) {
+				t.Fatalf("bridge did not see %s close", workerID)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+}
+
+func publishEcho(t *testing.T, rig *journalRig, runID string) {
+	t.Helper()
+	rig.publish(t, protocol.TaskPayload{RunID: runID, StepID: "s", DispatchNonce: "n-" + runID})
+}
+
+func TestReleaseOnDisconnect_RedeliversBeforeAckWait(t *testing.T) {
+	rig := newJournalRig(t)
+	b, ts := rig.front(t)
+	publishEcho(t, rig, "run-rel")
+	drop := openConn(t, ts, b, "", "w1")
+	status, body, tasks := pollAs(t, ts, "", "w1", 3000)
+	if status != 200 || len(tasks) != 1 {
+		t.Fatalf("poll with worker_id = %d %s, want one task", status, body)
+	}
+	drop()
+	start := time.Now()
+	_, _, again := pollAs(t, ts, "", "", 8000)
+	if len(again) != 1 || again[0].RunID != "run-rel" || again[0].Delivered < 2 {
+		t.Fatalf("second worker got %+v, want the released task redelivered", again)
+	}
+	if time.Since(start) > 7*time.Second {
+		t.Errorf("redelivery took %s, want seconds", time.Since(start))
+	}
+}
+
+func TestReleaseOnDisconnect_PollWithoutWorkerIDKeepsAckWait(t *testing.T) {
+	rig := newJournalRig(t)
+	b, ts := rig.front(t)
+	publishEcho(t, rig, "run-norel")
+	drop := openConn(t, ts, b, "", "w1")
+	if _, _, tasks := pollAs(t, ts, "", "", 3000); len(tasks) != 1 {
+		t.Fatal("poll without worker_id got no task")
+	}
+	drop()
+	if _, _, again := pollAs(t, ts, "", "", 1500); len(again) != 0 {
+		t.Fatalf("a claim without worker_id was released on disconnect: %+v", again)
+	}
+}
+
+func TestReleaseOnDisconnect_ResolvedClaimIsNotNakked(t *testing.T) {
+	rig := newJournalRig(t)
+	b, ts := rig.front(t)
+	publishEcho(t, rig, "run-done")
+	drop := openConn(t, ts, b, "", "w1")
+	_, _, tasks := pollAs(t, ts, "", "w1", 3000)
+	if len(tasks) != 1 {
+		t.Fatal("no task")
+	}
+	if status, body := resolveBody(t, ts, tasks[0].TaskID, `{"action":"complete","output":{}}`); status != 200 {
+		t.Fatalf("complete: %d %s", status, body)
+	}
+	drop()
+	if _, _, again := pollAs(t, ts, "", "", 1500); len(again) != 0 {
+		t.Fatalf("a resolved claim was redelivered after the drop: %+v", again)
+	}
+}
+
+func TestReleaseOnDisconnect_NonOwnerCannotPollOrRelease(t *testing.T) {
+	rig := newJournalRig(t)
+	b, ts := rig.front(t)
+	store := openTokenStore(t, rig.js)
+	b.token = "admin-secret"
+	b.SetTokenStore(store)
+	mintCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, bearerA, err := store.Mint(mintCtx, "a", []string{"echo"}, nil, "tester")
+	if err != nil {
+		t.Fatalf("Mint A: %v", err)
+	}
+	_, bearerB, err := store.Mint(mintCtx, "b", []string{"echo"}, nil, "tester")
+	if err != nil {
+		t.Fatalf("Mint B: %v", err)
+	}
+	publishEcho(t, rig, "run-own")
+	openConn(t, ts, b, bearerA, "w1")
+	if _, _, tasks := pollAs(t, ts, bearerA, "w1", 3000); len(tasks) != 1 {
+		t.Fatal("owner poll got no task")
+	}
+
+	status, body, _ := pollAs(t, ts, bearerB, "w1", 500)
+	if status != http.StatusConflict || !strings.Contains(body, `"worker_id_owned"`) {
+		t.Fatalf("non-owner poll = %d %s, want 409 worker_id_owned", status, body)
+	}
+	respB, cancelB := connectWorker(t, ts.URL, bearerB, "w1")
+	respB.Body.Close()
+	cancelB()
+	if respB.StatusCode != http.StatusConflict {
+		t.Fatalf("non-owner connect = %d, want 409", respB.StatusCode)
+	}
+	if _, _, again := pollAs(t, ts, bearerA, "", 1500); len(again) != 0 {
+		t.Fatalf("a non-owner's connect attempt released the owner's claim: %+v", again)
+	}
+}
+
+// The same id reconnects before the old stream's cleanup: closing the
+// old connection releases the claims polled under it, not the new one's.
+func TestReleaseOnDisconnect_ReconnectRaceKeepsNewConnectionClaims(t *testing.T) {
+	rig := newJournalRig(t)
+	b, ts := rig.front(t)
+	publishEcho(t, rig, "run-old")
+	publishEcho(t, rig, "run-new")
+	dropOld := openConn(t, ts, b, "", "w1")
+	_, _, first := pollAs(t, ts, "", "w1", 3000)
+	if len(first) != 1 {
+		t.Fatal("old connection poll got no task")
+	}
+	dropNew := openConn(t, ts, b, "", "w1")
+	_, _, second := pollAs(t, ts, "", "w1", 3000)
+	if len(second) != 1 {
+		t.Fatal("new connection poll got no task")
+	}
+
+	dropOld()
+	_, _, got := pollAs(t, ts, "", "", 8000)
+	if len(got) != 1 || got[0].RunID != first[0].RunID {
+		t.Fatalf("after the old close got %+v, want only the old connection's task %s", got, first[0].RunID)
+	}
+	if _, _, more := pollAs(t, ts, "", "", 1500); len(more) != 0 {
+		t.Fatalf("the old close released the new connection's claim: %+v", more)
+	}
+	if _, ok := b.ackMap.Load(second[0].TaskID); !ok {
+		t.Fatal("the new connection's claim left the ack map")
+	}
+	dropNew()
+	_, _, last := pollAs(t, ts, "", "", 8000)
+	if len(last) != 1 || last[0].RunID != second[0].RunID {
+		t.Fatalf("after the new close got %+v, want %s", last, second[0].RunID)
+	}
+}
+
+// An id with no open connection on this bridge is accepted unbound: the
+// SSE stream and the poll may reach different bridges.
+func TestReleaseOnDisconnect_NotConnectedPollIsAcceptedUnbound(t *testing.T) {
+	rig := newJournalRig(t)
+	_, ts := rig.front(t)
+	publishEcho(t, rig, "run-ghost")
+	status, body, tasks := pollAs(t, ts, "", "ghost", 3000)
+	if status != 200 || len(tasks) != 1 {
+		t.Fatalf("poll with an unconnected worker_id = %d %s, want 200 with the task", status, body)
+	}
+}
+
+// A long poll that outlives its connection stores its claim after the
+// close: the claim is Nak'd, not returned, and another worker gets it.
+func TestReleaseOnDisconnect_LateClaimOfClosedConnectionIsNotReturned(t *testing.T) {
+	rig := newJournalRig(t)
+	b, ts := rig.front(t)
+	drop := openConn(t, ts, b, "", "w1")
+	type result struct {
+		tasks []pollResponse
+	}
+	done := make(chan result, 1)
+	go func() {
+		_, _, tasks := pollAs(t, ts, "", "w1", 4000)
+		done <- result{tasks}
+	}()
+	time.Sleep(300 * time.Millisecond) // the poll is waiting on an empty queue
+	drop()
+	publishEcho(t, rig, "run-late")
+	select {
+	case got := <-done:
+		if len(got.tasks) != 0 {
+			t.Fatalf("the closed connection's poll returned %+v, want nothing", got.tasks)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("poll did not end")
+	}
+	_, _, again := pollAs(t, ts, "", "", 8000)
+	if len(again) != 1 || again[0].RunID != "run-late" {
+		t.Fatalf("second worker got %+v, want the released late task", again)
+	}
+}
+
+// A release waits for an in-flight resolve of the same claim: while the
+// claim's resolve lock is held nothing is Nak'd, and once it is let go
+// the release proceeds.
+func TestReleaseOnDisconnect_WaitsForInFlightResolve(t *testing.T) {
+	rig := newJournalRig(t)
+	b, ts := rig.front(t)
+	publishEcho(t, rig, "run-lock")
+	drop := openConn(t, ts, b, "", "w1")
+	_, _, tasks := pollAs(t, ts, "", "w1", 3000)
+	if len(tasks) != 1 {
+		t.Fatal("no task")
+	}
+	mu := b.ackMap.ResolveLock(tasks[0].TaskID)
+	mu.Lock()
+	dropped := make(chan struct{})
+	go func() { drop(); close(dropped) }()
+	if _, _, again := pollAs(t, ts, "", "", 1200); len(again) != 0 {
+		t.Fatalf("the claim was released while its resolve lock was held: %+v", again)
+	}
+	mu.Unlock()
+	<-dropped
+	if _, _, again := pollAs(t, ts, "", "", 8000); len(again) != 1 {
+		t.Fatalf("the claim was not released after the lock was let go: %+v", again)
+	}
+}
+
+// Resolve (complete) racing the drop: whatever the interleaving, the
+// task is completed exactly once or redelivered exactly once, never both.
+func TestReleaseOnDisconnect_CompleteRacingDropNeverBoth(t *testing.T) {
+	for _, journaled := range []bool{false, true} {
+		name := "plain"
+		if journaled {
+			name = "journal"
+		}
+		t.Run(name, func(t *testing.T) {
+			rig := newJournalRig(t)
+			b, ts := rig.front(t)
+			const rounds = 15
+			for i := 0; i < rounds; i++ {
+				runID := fmt.Sprintf("run-race-%d", i)
+				publishEcho(t, rig, runID)
+				drop := openConn(t, ts, b, "", fmt.Sprintf("w%d", i))
+				_, _, tasks := pollAs(t, ts, "", fmt.Sprintf("w%d", i), 3000)
+				if len(tasks) != 1 {
+					t.Fatalf("round %d: no task", i)
+				}
+				if journaled {
+					if status, body := resolveBody(t, ts, tasks[0].TaskID,
+						`{"action":"journal.append","type":"entry","data":{}}`); status != 200 {
+						t.Fatalf("round %d append: %d %s", i, status, body)
+					}
+				}
+				var wg sync.WaitGroup
+				var status int
+				wg.Add(2)
+				go func() {
+					defer wg.Done()
+					status, _ = resolveBody(t, ts, tasks[0].TaskID, `{"action":"complete","output":{}}`)
+				}()
+				go func() { defer wg.Done(); drop() }()
+				wg.Wait()
+
+				_, _, again := pollAs(t, ts, "", "", 600)
+				completed := countHistory(t, rig.nc, runID, protocol.EventStepCompleted)
+				switch {
+				case status == 200 && completed == 1 && len(again) == 0:
+				case status != 200 && completed == 0 && len(again) == 1:
+					// released first: the redelivered copy is the one to complete
+				default:
+					t.Fatalf("round %d: complete=%d events=%d redelivered=%d; want completed once or redelivered once",
+						i, status, completed, len(again))
+				}
+			}
+		})
+	}
+}
+
+// A resolve queued behind a release must not end the redelivery that
+// replaced its claim under the same task id: it answers 404, the new
+// delivery is untouched and its worker can still complete it.
+func TestReleaseOnDisconnect_StaleResolveDoesNotEndRedelivery(t *testing.T) {
+	for _, journaled := range []bool{false, true} {
+		name := "plain"
+		if journaled {
+			name = "journal"
+		}
+		t.Run(name, func(t *testing.T) {
+			rig := newJournalRig(t)
+			b, ts := rig.front(t)
+			const runID = "run-stale"
+			publishEcho(t, rig, runID)
+			openConn(t, ts, b, "", "w1")
+			_, _, first := pollAs(t, ts, "", "w1", 3000)
+			if len(first) != 1 {
+				t.Fatal("no task")
+			}
+			taskID := first[0].TaskID
+			if journaled {
+				if status, body := resolveBody(t, ts, taskID,
+					`{"action":"journal.append","type":"entry","data":{}}`); status != 200 {
+					t.Fatalf("append: %d %s", status, body)
+				}
+			}
+			oldMsg, _ := b.ackMap.Load(taskID)
+			held := b.ackMap.ResolveLock(taskID)
+			held.Lock() // stands for the release in flight
+
+			aStatus := make(chan int, 1)
+			go func() {
+				status, _ := resolveBody(t, ts, taskID, `{"action":"complete","output":{"a":1}}`)
+				aStatus <- status
+			}()
+			time.Sleep(300 * time.Millisecond) // A has loaded the claim and waits on the lock
+
+			ref := claimRef{taskID: taskID, msg: oldMsg, mu: held}
+			if !b.ackMap.takeUnresolved(ref) {
+				t.Fatal("release found no claim")
+			}
+			if err := oldMsg.Nak(); err != nil {
+				t.Fatalf("nak: %v", err)
+			}
+			_, _, second := pollAs(t, ts, "", "", 8000)
+			if len(second) != 1 || second[0].Delivered < 2 {
+				t.Fatalf("redelivery = %+v, want the Nak'd task", second)
+			}
+			newMsg, ok := b.ackMap.Load(taskID)
+			if !ok || newMsg == oldMsg {
+				t.Fatal("the redelivery did not replace the claim")
+			}
+			held.Unlock()
+
+			select {
+			case status := <-aStatus:
+				if status != http.StatusNotFound {
+					t.Fatalf("stale complete = %d, want 404", status)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("stale complete did not return")
+			}
+			if cur, ok := b.ackMap.Load(taskID); !ok || cur != newMsg {
+				t.Fatal("the stale resolve disturbed the new delivery's claim")
+			}
+			if n := countHistory(t, rig.nc, runID, protocol.EventStepCompleted); n != 0 {
+				t.Fatalf("%d step.completed events from the stale resolve, want 0", n)
+			}
+			if status, body := resolveBody(t, ts, taskID, `{"action":"complete","output":{"b":1}}`); status != 200 {
+				t.Fatalf("new delivery complete: %d %s", status, body)
+			}
+			if n := countHistory(t, rig.nc, runID, protocol.EventStepCompleted); n != 1 {
+				t.Fatalf("%d step.completed events, want 1", n)
+			}
+		})
+	}
+}

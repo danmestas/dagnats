@@ -25,6 +25,9 @@ import (
 
 // pollRequest is the JSON body for POST /v1/tasks/poll.
 type pollRequest struct {
+	// WorkerID ties the claims of this poll to the worker's open connect
+	// stream: when that stream closes the bridge releases them at once.
+	WorkerID    string   `json:"worker_id,omitempty"`
 	TaskTypes   []string `json:"task_types"`
 	WorkerGroup string   `json:"worker_group,omitempty"`
 	MaxTasks    int      `json:"max_tasks"`
@@ -111,6 +114,11 @@ func (b *Bridge) handlePoll(
 		http.Error(w, claims.ExplainWorkerGroupRefusal(req.WorkerGroup), http.StatusForbidden)
 		return
 	}
+	conn, ok := b.pollConn(ctx, w, claims, req)
+	if !ok {
+		return
+	}
+	ctx = withWorkerConn(ctx, conn)
 	tasks, err := b.fetchTasks(ctx, req)
 	if err != nil {
 		// Loud by construction: a consumer the bridge cannot obtain is
@@ -675,7 +683,9 @@ func (b *Bridge) processPolledMsg(
 		return pollResponse{}, false
 	}
 	taskID := payload.RunID + "." + payload.StepID
-	b.storeClaimedTask(ctx, taskID, msg)
+	if !b.storeClaimedTask(ctx, taskID, msg) {
+		return pollResponse{}, false
+	}
 	traceHdr := dispatchTraceHeader(dispatchCtx)
 	delivered, streamSeq := deliveryIdentity(msg, attemptNumber)
 	resp := pollResponse{
@@ -737,7 +747,7 @@ func (b *Bridge) dispatchablePolledTask(
 // limit.
 func (b *Bridge) storeClaimedTask(
 	ctx context.Context, taskID string, msg jetstream.Msg,
-) {
+) bool {
 	if ctx == nil {
 		panic("storeClaimedTask: ctx must not be nil")
 	}
@@ -745,7 +755,22 @@ func (b *Bridge) storeClaimedTask(
 		panic("storeClaimedTask: taskID must not be empty")
 	}
 	claims := claimsFromContext(ctx)
-	b.ackMap.Store(taskID, msg, claims.TokenID)
+	conn := workerConnFrom(ctx)
+	b.ackMap.storeForConn(taskID, msg, claims.TokenID, conn)
+	// False: the connection closed during this long poll and its close
+	// released its claims, so the task was Nak'd and goes to another worker.
+	return !b.releaseIfClosed(ctx, conn, taskID)
+}
+
+// pollConn is the connection a poll's worker_id names, nil without one.
+// False means the refusal was written.
+func (b *Bridge) pollConn(
+	ctx context.Context, w http.ResponseWriter, claims workertoken.Claims, req pollRequest,
+) (*workerConn, bool) {
+	if req.WorkerID == "" {
+		return nil, true
+	}
+	return b.pollWorkerConn(ctx, w, claims, req.WorkerID)
 }
 
 // dispatchTraceHeader renders ctx's trace context as W3C headers so the

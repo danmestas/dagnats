@@ -60,6 +60,15 @@ type ackEntry struct {
 	msg      jetstream.Msg
 	storedAt time.Time
 	tokenID  string
+	// conn is the worker connection whose poll claimed this task, nil
+	// for a poll without worker_id. Its close releases the claim.
+	conn *workerConn
+	// resolveMu makes the ending of the claim (complete, fail, pause,
+	// continue: Load through Ack and Delete) and the release of the claim
+	// on disconnect mutually exclusive, so a delivery is never both
+	// acknowledged by a resolve and Nak'd by a release. Lock order:
+	// resolveMu, then journalMu; am.mu is only ever taken inside either.
+	resolveMu *sync.Mutex
 
 	// Log-ingest counters for POST /v1/tasks/{id}/logs (#624). Piggybacks
 	// on AckMap's existing lifecycle rather than a second expiring map:
@@ -111,6 +120,7 @@ type ackEntry struct {
 type AckMap struct {
 	mu        sync.Mutex
 	entries   map[string]ackEntry
+	byConn    map[*workerConn]map[string]struct{}
 	lastSweep time.Time
 	now       func() time.Time
 	// resolvedTasks records taskIDs recently removed from entries via
@@ -151,6 +161,7 @@ func newAckMapWithClock(now func() time.Time) *AckMap {
 	}
 	return &AckMap{
 		entries:       make(map[string]ackEntry),
+		byConn:        make(map[*workerConn]map[string]struct{}),
 		lastSweep:     start,
 		now:           now,
 		resolvedTasks: make(map[string]resolvedTaskEntry),
@@ -163,6 +174,14 @@ func newAckMapWithClock(now func() time.Time) *AckMap {
 // enforces the size cap before inserting.
 // Panics on empty taskID or nil msg — both are programmer errors.
 func (am *AckMap) Store(taskID string, msg jetstream.Msg, tokenID string) {
+	am.storeForConn(taskID, msg, tokenID, nil)
+}
+
+// storeForConn is Store for a claim polled under a worker connection;
+// conn is nil for a poll without worker_id.
+func (am *AckMap) storeForConn(
+	taskID string, msg jetstream.Msg, tokenID string, conn *workerConn,
+) {
 	if taskID == "" {
 		panic("AckMap.Store: taskID must not be empty")
 	}
@@ -176,8 +195,109 @@ func (am *AckMap) Store(taskID string, msg jetstream.Msg, tokenID string) {
 	if len(am.entries) >= ackMapMaxEntries {
 		am.evictOldestLocked()
 	}
+	am.deleteLocked(taskID)
 	am.entries[taskID] = ackEntry{
-		msg: msg, storedAt: now, tokenID: tokenID, journalMu: &sync.Mutex{},
+		msg: msg, storedAt: now, tokenID: tokenID, conn: conn, journalMu: &sync.Mutex{}, resolveMu: &sync.Mutex{},
+	}
+	if conn != nil {
+		am.indexConnLocked(conn, taskID)
+	}
+}
+
+// claimRef names one unresolved claim polled under a connection.
+type claimRef struct {
+	taskID string
+	msg    jetstream.Msg
+	mu     *sync.Mutex
+}
+
+// connClaims snapshots the claims polled under conn, found through the
+// per-connection index rather than a scan of the whole map.
+func (am *AckMap) connClaims(conn *workerConn) []claimRef {
+	if am == nil {
+		panic("AckMap.connClaims: nil receiver")
+	}
+	if conn == nil {
+		panic("AckMap.connClaims: conn must not be nil")
+	}
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	refs := make([]claimRef, 0, len(am.byConn[conn]))
+	for taskID := range am.byConn[conn] {
+		entry := am.entries[taskID]
+		refs = append(refs, claimRef{taskID: taskID, msg: entry.msg, mu: entry.resolveMu})
+	}
+	return refs
+}
+
+// connClaim returns the claim of taskID when it was polled under conn.
+func (am *AckMap) connClaim(conn *workerConn, taskID string) (claimRef, bool) {
+	if am == nil || conn == nil || taskID == "" {
+		panic("AckMap.connClaim: receiver, conn and taskID are required")
+	}
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	entry, ok := am.entries[taskID]
+	if !ok || entry.conn != conn {
+		return claimRef{}, false
+	}
+	return claimRef{taskID: taskID, msg: entry.msg, mu: entry.resolveMu}, true
+}
+
+// takeUnresolved removes the claim when it is still the same delivery
+// and no successor has fenced it (a fenced claim's message belongs to
+// the successor). The caller holds the claim's resolveMu. False means
+// leave the message alone.
+func (am *AckMap) takeUnresolved(ref claimRef) bool {
+	if am == nil {
+		panic("AckMap.takeUnresolved: nil receiver")
+	}
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	entry, ok := am.entries[ref.taskID]
+	if !ok || entry.msg != ref.msg || entry.journalStop != nil {
+		return false
+	}
+	am.deleteLocked(ref.taskID)
+	return true
+}
+
+// ResolveLock returns the mutex that serializes ending taskID's claim
+// against its release; nil when the task is not in flight.
+func (am *AckMap) ResolveLock(taskID string) *sync.Mutex {
+	if am == nil {
+		panic("AckMap.ResolveLock: nil receiver")
+	}
+	if taskID == "" {
+		panic("AckMap.ResolveLock: taskID must not be empty")
+	}
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	return am.entries[taskID].resolveMu
+}
+
+// indexConnLocked records taskID under conn. Caller holds am.mu.
+func (am *AckMap) indexConnLocked(conn *workerConn, taskID string) {
+	if am.byConn[conn] == nil {
+		am.byConn[conn] = map[string]struct{}{}
+	}
+	am.byConn[conn][taskID] = struct{}{}
+}
+
+// deleteLocked removes an entry and its connection index. Caller holds
+// am.mu.
+func (am *AckMap) deleteLocked(taskID string) {
+	entry, ok := am.entries[taskID]
+	if !ok {
+		return
+	}
+	delete(am.entries, taskID)
+	if entry.conn == nil {
+		return
+	}
+	delete(am.byConn[entry.conn], taskID)
+	if len(am.byConn[entry.conn]) == 0 {
+		delete(am.byConn, entry.conn)
 	}
 }
 
@@ -323,7 +443,7 @@ func (am *AckMap) Delete(taskID string) {
 	}
 	am.mu.Lock()
 	defer am.mu.Unlock()
-	delete(am.entries, taskID)
+	am.deleteLocked(taskID)
 }
 
 // MarkResolved records that taskID was just resolved (complete/fail/
@@ -413,7 +533,7 @@ func (am *AckMap) sweepLocked(now time.Time) {
 	am.lastSweep = now
 	for taskID, entry := range am.entries {
 		if now.Sub(entry.storedAt) >= ackMapReapAfter {
-			delete(am.entries, taskID)
+			am.deleteLocked(taskID)
 		}
 	}
 }
@@ -437,7 +557,7 @@ func (am *AckMap) evictOldestLocked() {
 			oldestID, oldestAt = taskID, entry.storedAt
 		}
 	}
-	delete(am.entries, oldestID)
+	am.deleteLocked(oldestID)
 	slog.Warn("ackmap at capacity, evicted oldest in-flight task",
 		"task_id", oldestID,
 		"stored_at", oldestAt,
