@@ -21,11 +21,20 @@ func main() {
 			"http:// turns TLS off. Credentials from AWS_ACCESS_KEY_ID, "+
 			"AWS_SECRET_ACCESS_KEY, AWS_REGION. Unset: the AWS credential chain",
 	)
+	lakeDir := flag.String(
+		"lake-dir",
+		"",
+		"Lake root (a local path or an s3://bucket/prefix): one view per table, "+
+			"<program>_<table>, over its live parts. Unset: no lake views",
+	)
 	flag.Parse()
 
 	var opts []Option
 	if *s3Endpoint != "" {
 		opts = append(opts, WithS3Endpoint(*s3Endpoint))
+	}
+	if *lakeDir != "" {
+		opts = append(opts, WithLakeDir(*lakeDir))
 	}
 	db, err := OpenDB(*dataDir, opts...)
 	if err != nil {
