@@ -225,6 +225,9 @@ func (w *Worker) runCatchUp(
 	if w.js == nil {
 		panic("runCatchUp: w.js must not be nil")
 	}
+	if w.catchupKeysMax <= 0 {
+		panic("runCatchUp: w.catchupKeysMax must be positive")
+	}
 	listCtx, cancelList := context.WithTimeout(ctx, catchupListTimeout)
 	defer cancelList()
 	kv, err := w.js.KeyValue(listCtx, "triggers")
@@ -243,14 +246,14 @@ func (w *Worker) runCatchUp(
 			"kind", kind, "error", err)
 		return
 	}
-	if len(keys) > maxCatchupKeys {
+	if len(keys) > w.catchupKeysMax {
 		slog.Warn(
 			"WatchTriggers: catch-up over cap, stopping scan",
 			"kind", kind,
 			"keys", len(keys),
-			"cap", maxCatchupKeys,
+			"cap", w.catchupKeysMax,
 		)
-		keys = keys[:maxCatchupKeys]
+		keys = keys[:w.catchupKeysMax]
 	}
 	for _, key := range keys {
 		w.catchUpOne(ctx, kv, kind, key, onActivate)

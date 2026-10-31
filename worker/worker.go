@@ -180,7 +180,11 @@ type Worker struct {
 	signalKV     jetstream.KeyValue
 	groups       []string
 	partitions   int
-	singletons   map[string]bool
+	// catchupKeysMax caps the WatchTriggers startup scan. Defaults to
+	// maxCatchupKeys; a field rather than the bare constant so tests
+	// can prove the cap with a small fixture instead of 10k KV writes.
+	catchupKeysMax int
+	singletons     map[string]bool
 	// handlerAckWait holds per-task AckWait overrides registered via
 	// WithAckWait. Sparse: only populated for task types whose caller
 	// supplied an override. coalesceAckWait falls back to defaultAckWait
@@ -422,6 +426,7 @@ func NewWorker(
 		logChunkFailures:      logChunkFail,
 		drainTimeout:          defaultDrainTimeout,
 		heartbeatMax:          DefaultHeartbeatMax,
+		catchupKeysMax:        maxCatchupKeys,
 		stopping:              make(chan struct{}),
 		abandoned:             make(chan struct{}),
 	}

@@ -121,49 +121,40 @@ func TestWatchTriggers_CatchUpOnStart(t *testing.T) {
 }
 
 func TestWatchTriggers_BoundedCatchUp(t *testing.T) {
-	// Honour the documented bound. Inserting 10001 matching entries
-	// must produce exactly maxCatchupKeys (10000) onActivate fires.
-	// CI-conscious: KV is in-memory; ~10k Puts on the embedded server
-	// fits well under the test's bounded deadline.
-	if testing.Short() {
-		t.Skip("BoundedCatchUp inserts 10001 KV entries; skipping in -short")
-	}
+	// Honour the documented bound: cap+1 matching entries must produce
+	// exactly cap onActivate fires. The cap is shrunk on this Worker so
+	// the fixture is a handful of KV writes; at the production cap the
+	// fixture was 10k sequential Puts plus 10k Gets, whose wall time
+	// scales with scheduler starvation and blew the insert deadline
+	// under heavy machine load. The cap logic is the same either way.
 	w := startWorkerForTriggers(t)
+	// Negative space first: a default Worker carries the production cap.
+	if w.catchupKeysMax != maxCatchupKeys {
+		t.Fatalf("default catchupKeysMax = %d, want %d",
+			w.catchupKeysMax, maxCatchupKeys)
+	}
+	const catchupKeysMax = 10
+	w.catchupKeysMax = catchupKeysMax
 	const kind = "fs.watch"
 
-	insertCtx, cancelInsert := context.WithTimeout(
-		context.Background(), 30*time.Second,
-	)
-	defer cancelInsert()
-	kv, err := w.js.KeyValue(insertCtx, "triggers")
-	if err != nil {
-		t.Fatalf("KeyValue: %v", err)
-	}
-	total := maxCatchupKeys + 1
+	total := catchupKeysMax + 1
 	for i := 0; i < total; i++ {
-		def := trigger.TriggerDef{
+		putTrigger(t, w, trigger.TriggerDef{
 			ID:         fmt.Sprintf("t-%05d", i),
 			WorkflowID: "wf-bound",
 			Enabled:    true,
 			External: &trigger.ExternalTriggerConfig{
 				Kind: kind, Config: json.RawMessage(`{}`),
 			},
-		}
-		data, err := json.Marshal(def)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		if _, err := kv.Put(insertCtx, def.ID, data); err != nil {
-			t.Fatalf("Put %d: %v", i, err)
-		}
+		})
 	}
 
 	var activates atomic.Int32
 	watchCtx, cancelWatch := context.WithTimeout(
-		context.Background(), 60*time.Second,
+		context.Background(), 30*time.Second,
 	)
 	defer cancelWatch()
-	err = w.WatchTriggers(watchCtx, kind,
+	err := w.WatchTriggers(watchCtx, kind,
 		func(_ context.Context, _ dagnatsext.TriggerDef) error {
 			activates.Add(1)
 			return nil
@@ -174,9 +165,10 @@ func TestWatchTriggers_BoundedCatchUp(t *testing.T) {
 		t.Fatalf("WatchTriggers: %v", err)
 	}
 
-	// Positive: count is exactly maxCatchupKeys (cap respected).
-	if got := activates.Load(); got != int32(maxCatchupKeys) {
-		t.Fatalf("activate count = %d, want %d", got, maxCatchupKeys)
+	// Positive: count is exactly the cap (cap respected, the over-cap
+	// entry did not fire).
+	if got := activates.Load(); got != int32(catchupKeysMax) {
+		t.Fatalf("activate count = %d, want %d", got, catchupKeysMax)
 	}
 }
 
