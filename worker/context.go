@@ -105,6 +105,9 @@ type taskContext struct {
 	// Continue leaves that entry alone, so a rollout that upgrades
 	// workers before engines loses no state.
 	legacyEngine bool
+	// dispatch is the payload this delivery was made from; Continue asks
+	// it whether a wait is allowed (protocol.TaskPayload.CheckWait).
+	dispatch protocol.TaskPayload
 	// pendingState buffers Checkpoint until Continue publishes it in
 	// the continue event (#801): checkpoint and continue are one write.
 	// pendingStateSet distinguishes Checkpoint(nil) from no checkpoint.
@@ -196,6 +199,7 @@ func newTaskContext(
 		loopState:     payload.State,
 		loopStateMax:  loopStateMax,
 		legacyEngine:  payload.StateMaxBytes <= 0,
+		dispatch:      payload,
 	}
 }
 

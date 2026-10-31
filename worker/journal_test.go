@@ -55,7 +55,7 @@ func journalServer(t *testing.T) (*nats.Conn, jetstream.JetStream) {
 func journalPayload(runID string, iteration int) protocol.TaskPayload {
 	return protocol.TaskPayload{
 		RunID: runID, StepID: "s", Iteration: iteration, Attempt: 1,
-		DispatchNonce: "nonce", StateMaxBytes: protocol.LoopStateMaxBytesDefault,
+		DispatchNonce: "nonce", StateMaxBytes: protocol.LoopStateMaxBytesDefault, AgentLoop: true,
 	}
 }
 

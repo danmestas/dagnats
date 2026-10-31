@@ -405,3 +405,18 @@ func TestInputs_RedeliveryReturnsThisIterationsPlacements(t *testing.T) {
 		t.Errorf("f1 has %d input.placed records, want exactly 1", n)
 	}
 }
+
+func TestInputs_ContinueWaitRefusedOnNonAgentLoopStep(t *testing.T) {
+	nc, _ := journalServer(t)
+	payload := journalPayload("run-nl", 0)
+	payload.AgentLoop = false
+	tc := delivery(t, nc, payload, 1)
+	if err := tc.Continue(nil, Delay(time.Second)); !errors.Is(err, protocol.ErrWaitRequiresAgentLoop) {
+		t.Fatalf("Continue(Delay) on a non-loop step = %v, want ErrWaitRequiresAgentLoop", err)
+	}
+	legacy := journalPayload("run-nl2", 0)
+	legacy.AgentLoop, legacy.StateMaxBytes = false, 0
+	if err := delivery(t, nc, legacy, 1).Continue(nil, Delay(time.Second)); errors.Is(err, protocol.ErrWaitRequiresAgentLoop) {
+		t.Fatal("a legacy payload (no state cap) must not be refused")
+	}
+}

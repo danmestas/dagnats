@@ -13,6 +13,7 @@ protocol/run\_event.go RunEvent is the payload for the run\-lifecycle consumer c
 ## Index
 
 - [Constants](<#constants>)
+- [Variables](<#variables>)
 - [func CancelSubject\(runID string\) string](<#CancelSubject>)
 - [type Annotation](<#Annotation>)
 - [type Annotations](<#Annotations>)
@@ -39,6 +40,7 @@ protocol/run\_event.go RunEvent is the payload for the run\-lifecycle consumer c
 - [type StepContinuePayload](<#StepContinuePayload>)
 - [type StepFailedPayload](<#StepFailedPayload>)
 - [type TaskPayload](<#TaskPayload>)
+  - [func \(p TaskPayload\) CheckWait\(wait \*ContinueWait\) error](<#TaskPayload.CheckWait>)
 - [type TaskResolution](<#TaskResolution>)
 - [type WorkerStatusSnapshot](<#WorkerStatusSnapshot>)
 
@@ -145,8 +147,17 @@ const CancelSubjectPrefix = "dagnats.cancel."
 const LoopStateMaxBytesDefault = 256 << 10
 ```
 
+## Variables
+
+<a name="ErrWaitRequiresAgentLoop"></a>ErrWaitRequiresAgentLoop: a step.continue carried a wait for a step that is not an agent\_loop step. The engine has no wake for it, so the step would sit until its claim lapsed and then be refused as already committed.
+
+```go
+var ErrWaitRequiresAgentLoop = errors.New(
+    "a continue with a wait needs an agent_loop step")
+```
+
 <a name="CancelSubject"></a>
-## func [CancelSubject](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L378>)
+## func [CancelSubject](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L402>)
 
 ```go
 func CancelSubject(runID string) string
@@ -181,7 +192,7 @@ type Annotations struct {
 ```
 
 <a name="ContinueWait"></a>
-## type [ContinueWait](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L102-L106>)
+## type [ContinueWait](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L126-L130>)
 
 ContinueWait is what a step.continue asks the engine to wait for before sending the next iteration \(ADR\-027\). DelayMs and Until are a time to wake at \(Until wins when both are set, as the later of the two is never wanted\); Input wakes the step as soon as an input is queued for it. A time and Input together wake on whichever comes first.
 
@@ -194,7 +205,7 @@ type ContinueWait struct {
 ```
 
 <a name="ContinueWait.IsZero"></a>
-### func \(\*ContinueWait\) [IsZero](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L109>)
+### func \(\*ContinueWait\) [IsZero](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L133>)
 
 ```go
 func (w *ContinueWait) IsZero() bool
@@ -203,7 +214,7 @@ func (w *ContinueWait) IsZero() bool
 IsZero reports whether w asks for no wait at all.
 
 <a name="ContinueWait.WakeAt"></a>
-### func \(\*ContinueWait\) [WakeAt](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L115>)
+### func \(\*ContinueWait\) [WakeAt](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L139>)
 
 ```go
 func (w *ContinueWait) WakeAt(now time.Time) (time.Time, bool)
@@ -212,7 +223,7 @@ func (w *ContinueWait) WakeAt(now time.Time) (time.Time, bool)
 WakeAt resolves the wait's time to wake at relative to now; false when the wait has no time component.
 
 <a name="Event"></a>
-## type [Event](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L210-L238>)
+## type [Event](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L234-L262>)
 
 Event is the core communication primitive published to the history stream. Payload carries event\-specific data as raw JSON to keep the type schema\-agnostic.
 
@@ -249,7 +260,7 @@ type Event struct {
 ```
 
 <a name="NewInputQueuedEvent"></a>
-### func [NewInputQueuedEvent](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L283>)
+### func [NewInputQueuedEvent](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L307>)
 
 ```go
 func NewInputQueuedEvent(runID, stepID, requestID string) Event
@@ -258,7 +269,7 @@ func NewInputQueuedEvent(runID, stepID, requestID string) Event
 NewInputQueuedEvent constructs the step.input.queued event the API publishes after creating a submission \(ADR\-027\). Its msg\-id names the request, so a resubmission is one event.
 
 <a name="NewStepEvent"></a>
-### func [NewStepEvent](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L264>)
+### func [NewStepEvent](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L288>)
 
 ```go
 func NewStepEvent(eventType EventType, runID string, stepID string, payload []byte) Event
@@ -267,7 +278,7 @@ func NewStepEvent(eventType EventType, runID string, stepID string, payload []by
 NewStepEvent constructs an Event for a step lifecycle transition. Panics on empty runID or stepID — these are programmer errors, not runtime errors.
 
 <a name="NewWorkflowEvent"></a>
-### func [NewWorkflowEvent](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L297>)
+### func [NewWorkflowEvent](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L321>)
 
 ```go
 func NewWorkflowEvent(eventType EventType, runID string, payload []byte) Event
@@ -276,7 +287,7 @@ func NewWorkflowEvent(eventType EventType, runID string, payload []byte) Event
 NewWorkflowEvent constructs an Event for a workflow lifecycle transition. Panics on empty runID — programmer error.
 
 <a name="UnmarshalEvent"></a>
-### func [UnmarshalEvent](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L355>)
+### func [UnmarshalEvent](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L379>)
 
 ```go
 func UnmarshalEvent(data []byte) (Event, error)
@@ -285,7 +296,7 @@ func UnmarshalEvent(data []byte) (Event, error)
 UnmarshalEvent deserializes a NATS message body into an Event.
 
 <a name="Event.HasIdentity"></a>
-### func \(Event\) [HasIdentity](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L243>)
+### func \(Event\) [HasIdentity](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L267>)
 
 ```go
 func (e Event) HasIdentity() bool
@@ -294,7 +305,7 @@ func (e Event) HasIdentity() bool
 HasIdentity reports whether the event names the dispatch it answers \(\#801\): Iteration is present and AttemptNumber is set. An event from a worker predating the identity fields has neither.
 
 <a name="Event.Marshal"></a>
-### func \(Event\) [Marshal](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L350>)
+### func \(Event\) [Marshal](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L374>)
 
 ```go
 func (e Event) Marshal() ([]byte, error)
@@ -303,7 +314,7 @@ func (e Event) Marshal() ([]byte, error)
 Marshal serializes the event to JSON for publishing to NATS.
 
 <a name="Event.NATSMsgID"></a>
-### func \(Event\) [NATSMsgID](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L332>)
+### func \(Event\) [NATSMsgID](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L356>)
 
 ```go
 func (e Event) NATSMsgID() string
@@ -312,7 +323,7 @@ func (e Event) NATSMsgID() string
 NATSMsgID returns the deduplication ID for JetStream idempotent publishing. Composed of run, step, and event type so replays are safe. For workflow events \(empty StepID\), omits the step segment to avoid double dots. An event that carries its dispatch identity \(\#801\) gets the stable \{run\}.\{step\}.\{type\}.\{attempt\}.\{iteration\}: a redelivery inside the dedup window is dropped by JetStream, one outside it by the engine's identity check, and no two iterations or attempts share an ID.
 
 <a name="Event.NATSSubject"></a>
-### func \(Event\) [NATSSubject](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L315>)
+### func \(Event\) [NATSSubject](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L339>)
 
 ```go
 func (e Event) NATSSubject() string
@@ -321,7 +332,7 @@ func (e Event) NATSSubject() string
 NATSSubject returns the JetStream subject for publishing this event. All events for a run share one subject so consumers get ordered history. Panics on empty RunID — subjects with empty segments are invalid in NATS.
 
 <a name="Event.SetIdentity"></a>
-### func \(\*Event\) [SetIdentity](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L250>)
+### func \(\*Event\) [SetIdentity](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L274>)
 
 ```go
 func (e *Event) SetIdentity(iteration, attempt int, nonce string)
@@ -330,7 +341,7 @@ func (e *Event) SetIdentity(iteration, attempt int, nonce string)
 SetIdentity stamps the dispatch identity on the event \(\#801\). nonce may be empty when the dispatch carried none \(a legacy task payload\); attempt must be the 1\-based attempt the event belongs to.
 
 <a name="EventType"></a>
-## type [EventType](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L164>)
+## type [EventType](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L188>)
 
 EventType identifies the kind of workflow lifecycle event. Using string constants makes events self\-describing over the wire.
 
@@ -385,7 +396,7 @@ const (
 ```
 
 <a name="FailureType"></a>
-## type [FailureType](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L145>)
+## type [FailureType](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L169>)
 
 FailureType distinguishes how the engine handles a step failure.
 
@@ -495,7 +506,7 @@ const (
 ```
 
 <a name="StepContinuePayload"></a>
-## type [StepContinuePayload](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L82-L94>)
+## type [StepContinuePayload](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L106-L118>)
 
 StepContinuePayload is the structured payload for EventStepContinue \(\#801\). Output is what the handler passed to Continue; State is the state it checkpointed during the iteration, committed by the engine in the same snapshot save that advances the iteration, so a crash between checkpoint and continue cannot repeat a turn.
 
@@ -516,7 +527,7 @@ type StepContinuePayload struct {
 ```
 
 <a name="StepFailedPayload"></a>
-## type [StepFailedPayload](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L156-L160>)
+## type [StepFailedPayload](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L180-L184>)
 
 StepFailedPayload is the structured payload for EventStepFailed. FailureType defaults to retriable when empty \(backward compat\). RetryAfterMs is only used with FailureTypeRetryAfter.
 
@@ -529,7 +540,7 @@ type StepFailedPayload struct {
 ```
 
 <a name="TaskPayload"></a>
-## type [TaskPayload](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L13-L69>)
+## type [TaskPayload](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L14-L75>)
 
 TaskPayload is the message body published to a task subject when the engine dispatches a step for execution. Workers unmarshal this to build a TaskContext. Iteration is the agent\-loop iteration index \(0 for the first execution\); workers include it in Continue event MsgIds to prevent JetStream deduplication across cycles.
 
@@ -590,11 +601,25 @@ type TaskPayload struct {
     // publishing it, with the same number the engine would enforce.
     // Zero (a legacy payload) means LoopStateMaxBytesDefault.
     StateMaxBytes int `json:"state_max_bytes,omitempty"`
+    // AgentLoop marks a dispatch of an agent_loop step, the only kind
+    // the engine continues or parks. A payload from an engine older than
+    // this field has no state cap either (StateMaxBytes 0); see
+    // CheckWait.
+    AgentLoop bool `json:"agent_loop,omitempty"`
 }
 ```
 
+<a name="TaskPayload.CheckWait"></a>
+### func \(TaskPayload\) [CheckWait](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L88>)
+
+```go
+func (p TaskPayload) CheckWait(wait *ContinueWait) error
+```
+
+CheckWait refuses a wait on a dispatch that is not an agent loop. A payload with no state cap predates the AgentLoop mark and is not refused: its engine cannot honor a wait anyway. Shared by the Go worker SDK and the HTTP bridge.
+
 <a name="TaskResolution"></a>
-## type [TaskResolution](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L134-L142>)
+## type [TaskResolution](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L158-L166>)
 
 TaskResolution is the wire format for HTTP bridge resolve actions. The action field discriminates between complete/fail/pause/checkpoint. Workers POST this to /v1/tasks/\{id\}/resolve to report task outcomes.
 
@@ -611,7 +636,7 @@ type TaskResolution struct {
 ```
 
 <a name="WorkerStatusSnapshot"></a>
-## type [WorkerStatusSnapshot](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L365-L368>)
+## type [WorkerStatusSnapshot](<https://github.com/danmestas/dagnats/blob/main/protocol/protocol.go#L389-L392>)
 
 WorkerStatusSnapshot is the per\-worker counter snapshot stored in the worker\_status KV bucket. Workers update their entry as counters change; the CLI reads and aggregates entries to surface drain progress \(issue \#182\). Last\-write\-wins on the WorkerID key.
 

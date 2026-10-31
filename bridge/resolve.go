@@ -318,7 +318,7 @@ func (b *Bridge) dispatchAction(
 	case "inputs.place":
 		return b.resolveInputsPlace(ctx, taskID, claimingTokenID, msg, req, w)
 	case "load_checkpoint":
-		return b.resolveLoadCheckpoint(ctx, taskID, msg, w)
+		return b.resolveLoadCheckpoint(ctx, taskID, claimingTokenID, msg, w)
 	default:
 		return fmt.Errorf("unhandled action: %s", req.Action)
 	}
@@ -558,7 +558,7 @@ func (b *Bridge) resolveContinue(
 	if err != nil {
 		return err
 	}
-	wait, err := b.continueWait(ctx, taskID, req.Wait)
+	wait, err := b.continueWait(ctx, taskID, dispatch, req.Wait)
 	if err != nil {
 		return err
 	}
@@ -784,6 +784,9 @@ type taskDispatch struct {
 	nonce         string
 	state         []byte
 	stateMaxBytes int
+	// payload is the dispatched task; continue asks it whether a wait
+	// is allowed.
+	payload protocol.TaskPayload
 }
 
 // resolveDispatch reads the task's dispatch identity and loop state
@@ -813,6 +816,7 @@ func resolveDispatch(msg jetstream.Msg) (taskDispatch, error) {
 		nonce:         payload.DispatchNonce,
 		state:         payload.State,
 		stateMaxBytes: stateMaxBytes,
+		payload:       payload,
 	}, nil
 }
 

@@ -14,6 +14,7 @@ import {
   Fenced,
   InputsQueued,
   InvalidWait,
+  WaitRequiresAgentLoop,
   NotProvisioned,
   RestartLimit,
   RunCancelled,
@@ -120,4 +121,11 @@ test("409 inputs_queued is InputsQueued and not terminal; 400 invalid_wait is In
   assert.ok(invalid instanceof InvalidWait);
   assert.equal(isTerminal(invalid), false);
   assert.equal(errorFromResponse(400, "bad\n").constructor, BridgeError);
+});
+
+test("400 wait_requires_agent_loop is WaitRequiresAgentLoop and not terminal", () => {
+  const err = errorFromResponse(400, json("wait_requires_agent_loop"));
+  assert.ok(err instanceof WaitRequiresAgentLoop);
+  assert.equal(isTerminal(err), false);
+  assert.equal(errorFromResponse(400, json("something_else")).constructor, BridgeError);
 });

@@ -25,7 +25,7 @@ type waitBody struct {
 // refused while submissions are queued, by the same check the Go SDK
 // makes (inputs.Store.RefuseIfQueued): a wake for them would never come.
 func (b *Bridge) continueWait(
-	ctx context.Context, taskID string, in *protocol.ContinueWait,
+	ctx context.Context, taskID string, dispatch taskDispatch, in *protocol.ContinueWait,
 ) (*protocol.ContinueWait, error) {
 	if ctx == nil {
 		panic("continueWait: ctx must not be nil")
@@ -50,6 +50,9 @@ func (b *Bridge) continueWait(
 	if wait.IsZero() {
 		return nil, nil
 	}
+	if err := dispatch.payload.CheckWait(wait); err != nil {
+		return nil, err
+	}
 	if !wait.Input {
 		return wait, nil
 	}
@@ -70,6 +73,10 @@ func writeWaitRefusal(w http.ResponseWriter, err error) bool {
 	var invalid *invalidWaitError
 	if errors.As(err, &invalid) {
 		writeJSON(w, http.StatusBadRequest, waitBody{Error: err.Error(), Code: "invalid_wait"})
+		return true
+	}
+	if errors.Is(err, protocol.ErrWaitRequiresAgentLoop) {
+		writeJSON(w, http.StatusBadRequest, waitBody{Error: err.Error(), Code: "wait_requires_agent_loop"})
 		return true
 	}
 	if errors.Is(err, inputs.ErrQueued) {
