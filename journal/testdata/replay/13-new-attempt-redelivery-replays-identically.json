@@ -1,0 +1,185 @@
+{
+  "description": "Attempt 1 died inside an unsafe send; attempt 2's first delivery honoured it (an interrupted result for call 0), took position 1 for read (the prior read was safe, so it holds nothing), and died inside it. This is attempt 2's second delivery (delivered 2). It replays exactly what the first delivery did: the send is answered by the interrupted result already recorded, appending nothing, and read is found at position 1 with both declarations safe, so it reruns and only its result is appended.",
+  "task": {
+    "run_id": "run",
+    "step_id": "agent",
+    "iteration": 0,
+    "attempt": 2,
+    "dispatch_nonce": "n2",
+    "delivered": 2,
+    "stream_seq": 8
+  },
+  "records": [
+    {
+      "seq": 1,
+      "type": "claim",
+      "iteration": 0,
+      "attempt": 1,
+      "dispatch_nonce": "n1",
+      "delivered": 1,
+      "stream_seq": 7,
+      "index": 0,
+      "data": {
+        "iteration": 0,
+        "attempt": 1,
+        "dispatch_nonce": "n1",
+        "delivered": 1,
+        "stream_seq": 7
+      }
+    },
+    {
+      "seq": 2,
+      "type": "tool.intent",
+      "iteration": 0,
+      "attempt": 1,
+      "dispatch_nonce": "n1",
+      "delivered": 1,
+      "stream_seq": 7,
+      "index": 1,
+      "data": {
+        "name": "send",
+        "input": {
+          "to": "ops"
+        },
+        "call": 0,
+        "key": "run.agent.0.0",
+        "replay": "unsafe"
+      }
+    },
+    {
+      "seq": 3,
+      "type": "tool.intent",
+      "iteration": 0,
+      "attempt": 1,
+      "dispatch_nonce": "n1",
+      "delivered": 1,
+      "stream_seq": 7,
+      "index": 2,
+      "data": {
+        "name": "read",
+        "input": {
+          "path": "a.txt"
+        },
+        "call": 1,
+        "key": "run.agent.0.1",
+        "replay": "safe"
+      }
+    },
+    {
+      "seq": 4,
+      "type": "tool.result",
+      "iteration": 0,
+      "attempt": 1,
+      "dispatch_nonce": "n1",
+      "delivered": 1,
+      "stream_seq": 7,
+      "index": 3,
+      "data": {
+        "call": 1,
+        "key": "run.agent.0.1",
+        "output": "contents"
+      }
+    },
+    {
+      "seq": 5,
+      "type": "claim",
+      "iteration": 0,
+      "attempt": 2,
+      "dispatch_nonce": "n2",
+      "delivered": 1,
+      "stream_seq": 8,
+      "index": 0,
+      "data": {
+        "iteration": 0,
+        "attempt": 2,
+        "dispatch_nonce": "n2",
+        "delivered": 1,
+        "stream_seq": 8
+      }
+    },
+    {
+      "seq": 6,
+      "type": "tool.result",
+      "iteration": 0,
+      "attempt": 2,
+      "dispatch_nonce": "n2",
+      "delivered": 1,
+      "stream_seq": 8,
+      "index": 1,
+      "data": {
+        "call": 0,
+        "key": "run.agent.0.0",
+        "error": "interrupted",
+        "interrupted": true
+      }
+    },
+    {
+      "seq": 7,
+      "type": "tool.intent",
+      "iteration": 0,
+      "attempt": 2,
+      "dispatch_nonce": "n2",
+      "delivered": 1,
+      "stream_seq": 8,
+      "index": 2,
+      "data": {
+        "name": "read",
+        "input": {
+          "path": "a.txt"
+        },
+        "call": 1,
+        "key": "run.agent.0.1",
+        "replay": "safe"
+      }
+    }
+  ],
+  "calls": [
+    {
+      "kind": "tool",
+      "name": "send",
+      "input": {
+        "to": "ops"
+      },
+      "replay": "unsafe",
+      "output": "sent"
+    },
+    {
+      "kind": "tool",
+      "name": "read",
+      "input": {
+        "path": "a.txt"
+      },
+      "replay": "safe",
+      "output": "contents"
+    }
+  ],
+  "expect": [
+    {
+      "outcome": "interrupted",
+      "result": {
+        "call": 0,
+        "key": "run.agent.0.0",
+        "error": "interrupted",
+        "interrupted": true
+      }
+    },
+    {
+      "outcome": "ran",
+      "result": {
+        "call": 1,
+        "key": "run.agent.0.1",
+        "output": "contents"
+      }
+    }
+  ],
+  "appended": [
+    {
+      "type": "tool.result",
+      "data": {
+        "call": 1,
+        "key": "run.agent.0.1",
+        "output": "contents"
+      }
+    }
+  ]
+}

@@ -1,0 +1,144 @@
+{
+  "description": "Attempt 1 recorded a safe read at position 0 and failed before its result; this is attempt 2. A prior safe intent is never honoured and holds no position: read runs afresh at position 0 with key run.agent.0.0, writing a new intent and result, and the next call takes position 1.",
+  "task": {
+    "run_id": "run",
+    "step_id": "agent",
+    "iteration": 0,
+    "attempt": 2,
+    "dispatch_nonce": "n2",
+    "delivered": 1,
+    "stream_seq": 8
+  },
+  "records": [
+    {
+      "seq": 1,
+      "type": "claim",
+      "iteration": 0,
+      "attempt": 1,
+      "dispatch_nonce": "n1",
+      "delivered": 1,
+      "stream_seq": 7,
+      "index": 0,
+      "data": {
+        "iteration": 0,
+        "attempt": 1,
+        "dispatch_nonce": "n1",
+        "delivered": 1,
+        "stream_seq": 7
+      }
+    },
+    {
+      "seq": 2,
+      "type": "tool.intent",
+      "iteration": 0,
+      "attempt": 1,
+      "dispatch_nonce": "n1",
+      "delivered": 1,
+      "stream_seq": 7,
+      "index": 1,
+      "data": {
+        "name": "read",
+        "input": {
+          "path": "a.txt"
+        },
+        "call": 0,
+        "key": "run.agent.0.0",
+        "replay": "safe"
+      }
+    },
+    {
+      "seq": 3,
+      "type": "commit",
+      "iteration": 0,
+      "attempt": 1,
+      "dispatch_nonce": "n1",
+      "delivered": 1,
+      "stream_seq": 7,
+      "index": 2,
+      "data": {
+        "action": "fail",
+        "error": "timeout"
+      }
+    }
+  ],
+  "calls": [
+    {
+      "kind": "tool",
+      "name": "read",
+      "input": {
+        "path": "a.txt"
+      },
+      "replay": "safe",
+      "output": "contents"
+    },
+    {
+      "kind": "tool",
+      "name": "send",
+      "input": {
+        "to": "ops"
+      },
+      "replay": "unsafe",
+      "output": "sent"
+    }
+  ],
+  "expect": [
+    {
+      "outcome": "ran",
+      "result": {
+        "call": 0,
+        "key": "run.agent.0.0",
+        "output": "contents"
+      }
+    },
+    {
+      "outcome": "ran",
+      "result": {
+        "call": 1,
+        "key": "run.agent.0.1",
+        "output": "sent"
+      }
+    }
+  ],
+  "appended": [
+    {
+      "type": "tool.intent",
+      "data": {
+        "name": "read",
+        "input": {
+          "path": "a.txt"
+        },
+        "call": 0,
+        "key": "run.agent.0.0",
+        "replay": "safe"
+      }
+    },
+    {
+      "type": "tool.result",
+      "data": {
+        "call": 0,
+        "key": "run.agent.0.0",
+        "output": "contents"
+      }
+    },
+    {
+      "type": "tool.intent",
+      "data": {
+        "name": "send",
+        "input": {
+          "to": "ops"
+        },
+        "call": 1,
+        "key": "run.agent.0.1",
+        "replay": "unsafe"
+      }
+    },
+    {
+      "type": "tool.result",
+      "data": {
+        "call": 1,
+        "key": "run.agent.0.1",
+        "output": "sent"
+      }
+    }
+  ]
+}

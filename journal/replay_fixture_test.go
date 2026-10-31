@@ -87,8 +87,8 @@ type fixtureCall struct {
 }
 
 // fixtureResult is the outcome of one call: "ran", "reused",
-// "interrupted" or "mismatch" for a tool; "requested" or "reused" for
-// a model. Result is the tool result handed back, Output the model's.
+// "interrupted" or "mismatch" for a tool; "requested", "reused" or
+// "failed" (the request returned an error) for a model. Result is the tool result handed back, Output the model's.
 type fixtureResult struct {
 	Outcome string          `json:"outcome"`
 	Result  *ToolResult     `json:"result,omitempty"`
@@ -210,8 +210,14 @@ func runFixtureCall(ctx context.Context, t *testing.T, j *Journal, call fixtureC
 	if call.Kind == "model" {
 		output, err := j.Model(ctx, func(context.Context) ([]byte, error) {
 			ran = true
+			if call.Error != "" {
+				return nil, errors.New(call.Error)
+			}
 			return call.Output, nil
 		})
+		if err != nil && call.Error != "" && err.Error() == call.Error {
+			return fixtureResult{Outcome: "failed"}
+		}
 		if err != nil {
 			t.Fatalf("Model: %v", err)
 		}

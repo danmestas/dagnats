@@ -33,8 +33,9 @@ server and fails when Go disagrees with the file.
   tool ran), `reused` (a recorded result answered it), `interrupted`
   (an interrupted result answered it) or `mismatch` (a replay
   mismatch: the case ends there); `result` is the `tool.result` body
-  the handler gets. A model's `outcome` is `requested` or `reused`, and
-  `output` is the response.
+  the handler gets. A model's `outcome` is `requested`, `reused` or
+  `failed` (the request returned the call's `error`), and `output` is
+  the response.
 - `appended` is every record the replay wrote after the claim, in
   order: its `type` and `data`.
 

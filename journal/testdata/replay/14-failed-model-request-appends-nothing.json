@@ -1,0 +1,47 @@
+{
+  "description": "A model request that fails records nothing and does not consume its position: the next request is call 0 again, and only its response is appended.",
+  "task": {
+    "run_id": "run",
+    "step_id": "agent",
+    "iteration": 0,
+    "attempt": 1,
+    "dispatch_nonce": "n1",
+    "delivered": 1,
+    "stream_seq": 7
+  },
+  "records": [],
+  "calls": [
+    {
+      "kind": "model",
+      "error": "rate limited"
+    },
+    {
+      "kind": "model",
+      "output": {
+        "text": "plan"
+      }
+    }
+  ],
+  "expect": [
+    {
+      "outcome": "failed"
+    },
+    {
+      "outcome": "requested",
+      "output": {
+        "text": "plan"
+      }
+    }
+  ],
+  "appended": [
+    {
+      "type": "model.response",
+      "data": {
+        "call": 0,
+        "output": {
+          "text": "plan"
+        }
+      }
+    }
+  ]
+}

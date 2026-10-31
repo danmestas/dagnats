@@ -1,5 +1,5 @@
 {
-  "description": "Attempt 1 died inside an unsafe call without committing; the engine dispatched attempt 2. Records of a lower attempt are prior. The first send matches the unfinished prior unsafe intent by content (not position) and is answered interrupted under call 1's key with that holder's partial entries. read reruns fresh at position 0. A second send finds the prior intent already honoured, so it runs fresh at position 1.",
+  "description": "Attempt 1 died inside an unsafe call without committing; the engine dispatched attempt 2. Records of a lower attempt are prior. The first send matches the unfinished prior unsafe intent by content (not position) and is answered interrupted under call 1's key with that holder's partial entries. read reruns fresh at position 0. A second send finds the prior intent already honoured, so it runs fresh; position 1 is held by that prior unsafe intent, so it takes position 2 and key run.agent.0.2.",
   "task": {
     "run_id": "run",
     "step_id": "agent",
@@ -149,8 +149,8 @@
     {
       "outcome": "ran",
       "result": {
-        "call": 1,
-        "key": "run.agent.0.1",
+        "call": 2,
+        "key": "run.agent.0.2",
         "output": "sent"
       }
     }
@@ -197,16 +197,16 @@
         "input": {
           "to": "ops"
         },
-        "call": 1,
-        "key": "run.agent.0.1",
+        "call": 2,
+        "key": "run.agent.0.2",
         "replay": "unsafe"
       }
     },
     {
       "type": "tool.result",
       "data": {
-        "call": 1,
-        "key": "run.agent.0.1",
+        "call": 2,
+        "key": "run.agent.0.2",
         "output": "sent"
       }
     }

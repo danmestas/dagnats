@@ -338,7 +338,7 @@ func (j *Journal) Resume() (string, bool)
 Resume returns the pause name when the newest record of this iteration before the claim is a pause: this delivery resumes it.
 
 <a name="Journal.Resync"></a>
-### func \(\*Journal\) [Resync](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L478>)
+### func \(\*Journal\) [Resync](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L528>)
 
 ```go
 func (j *Journal) Resync(ctx context.Context) error
