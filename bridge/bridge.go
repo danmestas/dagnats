@@ -56,6 +56,8 @@ type Bridge struct {
 	token          string
 	tokenStore     *workertoken.Store
 	tracer         trace.Tracer
+	// restartLimit is the crash-loop guard of journal steps (ADR-028).
+	restartLimit int
 
 	// Pre-allocated metric instruments — created once in constructor.
 	requestCount    metric.Int64Counter
@@ -137,6 +139,7 @@ func NewBridge(pub *natsutil.TracingPublisher) *Bridge {
 		workflowRunsKV:   workflowRunsKV,
 		token:            token,
 		tracer:           otel.Tracer("dagnats/bridge"),
+		restartLimit:     restartLimitFromEnv(),
 		requestCount:     reqCount,
 		requestDuration:  reqDur,
 		logChunkFailures: logChunkFail,

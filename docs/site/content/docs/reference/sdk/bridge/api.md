@@ -19,12 +19,19 @@ Outcomes the worker must handle, mirrored from the Go SDK's errors:
 410 {"code":"committed"}  this attempt already committed. The bridge
                           republished its lifecycle event and
                           acknowledged the task; stop.
+410 {"code":"restart_limit"}  the claim found the restart limit's
+                          worth of claims on this iteration with no
+                          progress between them (ADR-028). The bridge
+                          failed the step and acknowledged the task;
+                          stop.
 503 {"code":"not_provisioned"}  the AGENT_JOURNAL stream is missing.
 ```
 
 bridge/logs.go POST /v1/tasks/\{id\}/logs \(\#624\): the HTTP\-bridge counterpart to the worker SDK's LogOut\(\)/LogErr\(\) — lets a non\-Go worker publish stdout/stderr\-tagged chunks to the BUILD\_LOGS hot lane. Ownership is enforced exactly like resolve \(authorizeTaskOwner against the claiming TokenID\), and the bridge — not the caller — assigns Seq and owns the per\-step LogStepBytesMax budget, mirroring worker/log\_writer.go so a consumer reading BUILD\_LOGS sees the same chunk shape regardless of which lane produced it.
 
 Subject/attempt/iteration scoping \(\#624 review rounds 2\-3\): the subject is logs.\{runID\}.\{stepID\}.\{attempt\}.\{iteration\}, matching worker/log\_writer.go exactly — both are read from the claimed task's own message \(the same one authorizeTaskOwner already validated ownership against\), NOT from the caller's request body, so an HTTP worker can never spoof which attempt/iteration its chunks land on.
+
+bridge/restart\_limit.go The crash\-loop guard of ADR\-028 for bridge workers. The Go SDK fails a journal step whose deliveries keep claiming one iteration without progress \(worker/restart\_limit.go\); a non\-Go worker gets the same rule here, at its journal claim: the claim that finds restart\-limit claims already sitting at the journal tail with no progress between them fails the step with reason restart\_limit and the worker sees 410 \{"code":"restart\_limit"\}. The limit is the bridge's \(default worker.RestartLimitDefault\), set with SetRestartLimit or DAGNATS\_BRIDGE\_RESTART\_LIMIT, because a bridge worker has no registration to carry a per\-worker option.
 
 bridge/stranded\_check.go Defense\-in\-depth counterpart to the engine's primary stranded\-subject check \(Orchestrator.checkStrandedGroupSubjects, internal/engine\): \#704 moved the grouped subject/durable encoding behind the group sentinel \(consumername.GroupSentinel\) with no compatibility consumer, so a message published to a legacy grouped subject before every process upgrades is never reclaimed by any other mechanism \-\- see the pinned design on issue \#704. This narrows the check to the one \(task, group\) pair the bridge is about to serve, checked right before adopting or creating that pair's consumer.
 
@@ -52,6 +59,7 @@ bridge/stranded\_check.go Defense\-in\-depth counterpart to the engine's primary
 - [type Bridge](<#Bridge>)
   - [func NewBridge\(pub \*natsutil.TracingPublisher\) \*Bridge](<#NewBridge>)
   - [func \(b \*Bridge\) Handler\(\) http.Handler](<#Bridge.Handler>)
+  - [func \(b \*Bridge\) SetRestartLimit\(n int\)](<#Bridge.SetRestartLimit>)
   - [func \(b \*Bridge\) SetTokenStore\(store \*workertoken.Store\)](<#Bridge.SetTokenStore>)
 
 
@@ -241,7 +249,7 @@ func (am *AckMap) WithLogState(taskID string, fn func(seq uint64, totalBytes int
 WithLogState atomically reads and updates the log\-ingest counters for taskID under AckMap's own mutex \(\#624\). fn receives the current \(seq, totalBytes, truncated\) and returns the updated values, which are written back before the lock releases — so concurrent POST /v1/tasks/\{id\}/logs calls for the same task never race each other's seq assignment or truncation decision. Returns false \(fn not called\) if taskID has no entry — same does\-not\-reap contract as LoadWithTokenID: a resolve racing the reaper must not surface as an ambiguous "not found" to the caller.
 
 <a name="Bridge"></a>
-## type [Bridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L45-L73>)
+## type [Bridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L45-L75>)
 
 Bridge is an HTTP\-to\-NATS gateway that lets non\-Go workers interact with DagNats over HTTP. Three deep endpoints expose the full worker lifecycle: connect, poll, and resolve.
 
@@ -256,7 +264,7 @@ type Bridge struct {
 ```
 
 <a name="NewBridge"></a>
-### func [NewBridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L96>)
+### func [NewBridge](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L98>)
 
 ```go
 func NewBridge(pub *natsutil.TracingPublisher) *Bridge
@@ -267,7 +275,7 @@ NewBridge creates a Bridge. Panics on nil pub — a programmer error at startup.
 Binds optional KV buckets for checkpoints and signals \(nil if not present\).
 
 <a name="Bridge.Handler"></a>
-### func \(\*Bridge\) [Handler](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L162>)
+### func \(\*Bridge\) [Handler](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L165>)
 
 ```go
 func (b *Bridge) Handler() http.Handler
@@ -279,8 +287,17 @@ Handler returns an http.Handler with the three bridge routes. The mux routes are
 - POST /v1/tasks/poll
 - POST /v1/tasks/ \(resolve, path includes task ID\)
 
+<a name="Bridge.SetRestartLimit"></a>
+### func \(\*Bridge\) [SetRestartLimit](<https://github.com/danmestas/dagnats/blob/main/bridge/restart_limit.go#L38>)
+
+```go
+func (b *Bridge) SetRestartLimit(n int)
+```
+
+SetRestartLimit sets how many deliveries may claim one iteration of a journal step without progress before the step fails with reason restart\_limit, as worker.WithRestartLimit does for Go workers. It must be called before the bridge serves requests. Panics unless 1 \<= n \<= worker.RestartLimitMax.
+
 <a name="Bridge.SetTokenStore"></a>
-### func \(\*Bridge\) [SetTokenStore](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L189>)
+### func \(\*Bridge\) [SetTokenStore](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L192>)
 
 ```go
 func (b *Bridge) SetTokenStore(store *workertoken.Store)

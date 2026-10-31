@@ -242,6 +242,7 @@ Resolves a polled task. Only the token that claimed the task (or the admin token
 | `409` | `fenced` | Another claim follows this worker's. The task is the successor's | Nothing is published or acknowledged; every later action on the task answers `409 fenced` |
 | `410` | `stale` | A later iteration holds the step, so this is a late redelivery | Acknowledged and removed; nothing written |
 | `410` | `committed` | This attempt already committed (the previous holder crashed before publishing) | The commit's lifecycle event is republished, the task acknowledged and removed |
+| `410` | `restart_limit` | The claim found the restart limit (default 5) of earlier claims on this iteration with no progress between them | `step.failed` (`restart_limit: ...`, retriable) is published, the task acknowledged and removed; the step's retry policy applies |
 | `503` | `not_provisioned` | The `AGENT_JOURNAL` stream is missing | None |
 
 A `409` with a plain-text body `run cancelled` is the unrelated cancellation signal described below.

@@ -17,6 +17,11 @@
 //	410 {"code":"committed"}  this attempt already committed. The bridge
 //	                          republished its lifecycle event and
 //	                          acknowledged the task; stop.
+//	410 {"code":"restart_limit"}  the claim found the restart limit's
+//	                          worth of claims on this iteration with no
+//	                          progress between them (ADR-028). The bridge
+//	                          failed the step and acknowledged the task;
+//	                          stop.
 //	503 {"code":"not_provisioned"}  the AGENT_JOURNAL stream is missing.
 package bridge
 
@@ -51,6 +56,8 @@ func journalHTTPStatus(err error) (status int, code string, ok bool) {
 		return http.StatusGone, "stale", true
 	case errors.Is(err, journal.ErrCommitted):
 		return http.StatusGone, "committed", true
+	case errors.Is(err, journal.ErrRestartLimit):
+		return http.StatusGone, "restart_limit", true
 	case errors.Is(err, journal.ErrNotProvisioned):
 		return http.StatusServiceUnavailable, "not_provisioned", true
 	}
@@ -140,6 +147,9 @@ func (b *Bridge) openJournal(
 	}
 	if _, ok := j.Committed(); ok {
 		return nil, b.finishCommitted(ctx, taskID, tokenID, msg, j)
+	}
+	if err := b.failRestartLimit(ctx, taskID, tokenID, msg, j); err != nil {
+		return nil, err
 	}
 	if !b.ackMap.SetJournal(taskID, j) {
 		return nil, fmt.Errorf("task %q is no longer claimed", taskID)

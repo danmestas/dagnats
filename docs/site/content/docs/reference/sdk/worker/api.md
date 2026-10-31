@@ -163,6 +163,12 @@ const ReasonRestartLimit = "restart_limit"
 const RestartLimitDefault = 5
 ```
 
+<a name="RestartLimitMax"></a>RestartLimitMax bounds the option, and the bridge's setting of it: a limit past it is a configuration error, not a policy.
+
+```go
+const RestartLimitMax = 1000
+```
+
 <a name="SpawnKeyMaxBytes"></a>SpawnKeyMaxBytes is the longest accepted spawn key.
 
 ```go

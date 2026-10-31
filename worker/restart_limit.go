@@ -19,9 +19,9 @@ import (
 // iteration without progress after which a journal step fails.
 const RestartLimitDefault = 5
 
-// restartLimitMax bounds the option: a limit past it is a
-// configuration error, not a policy.
-const restartLimitMax = 1000
+// RestartLimitMax bounds the option, and the bridge's setting of it:
+// a limit past it is a configuration error, not a policy.
+const RestartLimitMax = 1000
 
 // ReasonRestartLimit prefixes the error of a step the guard failed.
 const ReasonRestartLimit = "restart_limit"
@@ -33,7 +33,7 @@ func WithRestartLimit(n int) WorkerOption {
 	if n < 1 {
 		panic("WithRestartLimit: n must be >= 1")
 	}
-	if n > restartLimitMax {
+	if n > RestartLimitMax {
 		panic("WithRestartLimit: n must be <= 1000")
 	}
 	return func(w *Worker) { w.restartLimit = n }

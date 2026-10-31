@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`lake` module: the file layout and Parquet writer of the shared analytics store.** `github.com/danmestas/dagnats/lake` is its own module (pure Go). The writer (internal to the module) buffers events and writes them as `<root>/<program>/<table>/dt=<event date>/part-<sha>.parquet`, then a `part-<sha>.json` commit record after the part, so `lake.ListCommitted` trusts only whole parts; a crash between the two leaves an ignored orphan. Part names are the hash of their bytes. `event_id`, `event_time`, `stream_seq`, `schema_version` and `payload` are reserved columns on every row, and a declared column that is missing or mistyped in an event is NULL. The writer is not exported: only the archive program writes, so it will live in this module. Local roots only.
+- **The bridge enforces the restart limit for bridge workers (#850).** A journal step claimed 5 times with no journal record between the claims now fails with `restart_limit` instead of being redelivered forever, as it already did for Go workers (ADR-028). The worker sees `410 {"code":"restart_limit"}` and the step's retry policy takes over. Set the limit with `Bridge.SetRestartLimit(n)` or `DAGNATS_BRIDGE_RESTART_LIMIT` (default 5). `worker.RestartLimitMax` is now exported.
 
 ## [0.0.35] - 2026-10-30
 
