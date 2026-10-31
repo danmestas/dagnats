@@ -1043,7 +1043,7 @@ Start creates JetStream subscriptions for all registered task types, in task\-ty
 A failure to subscribe \(stream not ready, permission denied\) is returned, after Start stops what it already started: the Worker is then stopped, and retrying takes a new Worker. Programmer errors \(no handlers, colliding task types\) still panic.
 
 <a name="Worker.Stop"></a>
-### func \(\*Worker\) [Stop](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L1140>)
+### func \(\*Worker\) [Stop](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L1177>)
 
 ```go
 func (w *Worker) Stop()

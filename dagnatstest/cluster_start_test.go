@@ -34,8 +34,9 @@ func TestStartClusterWithRetry_RecoversWhenARoutePortIsTaken(t *testing.T) {
 		return ports
 	}
 	start := time.Now()
-	servers := startClusterWithRetry(t, nodeCount, allocate)
-	t.Cleanup(func() { shutdownClusterServers(servers) })
+	cluster := startClusterWithRetry(t, nodeCount, allocate)
+	t.Cleanup(cluster.shutdown)
+	servers := cluster.servers
 	if len(servers) != nodeCount {
 		t.Fatalf("got %d servers, want %d", len(servers), nodeCount)
 	}

@@ -942,20 +942,14 @@ func (w *Worker) createStickyConsumer(
 			"createStickyConsumer: handler must not be nil",
 		)
 	}
-	subject := "sticky." + taskType + "." +
-		w.workerID + ".>"
 	ctx := context.Background()
 	stream, err := w.js.Stream(ctx, "STICKY_TASKS")
 	if err != nil {
 		return nil // Stream not provisioned — skip
 	}
-	cons, err := stream.CreateOrUpdateConsumer(
-		ctx, jetstream.ConsumerConfig{
-			FilterSubject: subject,
-			AckPolicy:     jetstream.AckExplicitPolicy,
-			DeliverPolicy: jetstream.DeliverAllPolicy,
-		},
-	)
+	cfg := stickyConsumerConfig(taskType, w.workerID, stream.CachedInfo())
+	subject := cfg.FilterSubject
+	cons, err := stream.CreateOrUpdateConsumer(ctx, cfg)
 	if err != nil {
 		return nil
 	}
@@ -978,6 +972,49 @@ func (w *Worker) createStickyConsumer(
 	}
 	w.trackLane(cc, l.park)
 	return cc
+}
+
+// stickyInactiveThreshold is how long the server keeps a sticky consumer
+// with no pull outstanding before reaping it. A live Worker always has
+// a pull outstanding, except across a reconnect or a consumer leader
+// election, which take seconds; the server also waits out the AckWait
+// of any delivery still pending before counting. Five minutes, the task
+// AckWait, gives a Worker the same grace the system already gives its
+// claimed tasks, and still reaps a dead Worker's consumer well inside
+// the stream's 30-minute MaxAge.
+const stickyInactiveThreshold = defaultAckWait
+
+// stickyConsumerConfig is the per-Worker sticky consumer: durable and
+// replicated like its stream. An ephemeral on the Limits-retention
+// STICKY_TASKS stream is R1, placed on any node; when that node
+// restarted, the consumer was lost and Consume never recreated it, so
+// sticky routing to this Worker stayed dead until the Worker restarted.
+//
+// The name ends in a random token rather than the worker ID: program
+// credentials may pull from any STICKY_TASKS consumer whose name they
+// know, and worker IDs are not secret, so the name stays unguessable
+// as the ephemeral's generated name was.
+func stickyConsumerConfig(
+	taskType, workerID string, stream *jetstream.StreamInfo,
+) jetstream.ConsumerConfig {
+	if workerID == "" {
+		panic("stickyConsumerConfig: workerID must not be empty")
+	}
+	if stream == nil || stream.Config.Replicas < 1 {
+		panic("stickyConsumerConfig: stream info must carry its replicas")
+	}
+	token := make([]byte, 16)
+	if _, err := rand.Read(token); err != nil {
+		panic("stickyConsumerConfig: crypto/rand failed: " + err.Error())
+	}
+	return jetstream.ConsumerConfig{
+		Durable:           fmt.Sprintf("sticky-%s-%x", sanitizeConsumerName(taskType), token),
+		FilterSubject:     "sticky." + taskType + "." + workerID + ".>",
+		AckPolicy:         jetstream.AckExplicitPolicy,
+		DeliverPolicy:     jetstream.DeliverAllPolicy,
+		Replicas:          stream.Config.Replicas,
+		InactiveThreshold: stickyInactiveThreshold,
+	}
 }
 
 // elasticAckWait is the AckWait of every elastic member consumer. It is
