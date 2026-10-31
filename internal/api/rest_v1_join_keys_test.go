@@ -166,3 +166,43 @@ func TestJoinKeysAdminGate(t *testing.T) {
 	}
 	readBody(t, resp)
 }
+
+// TestJoinKeysCreateBackendFailureIs500 deletes the bucket under a live
+// store, so Create fails in KV rather than in validation: that is the
+// server's fault, not the caller's.
+func TestJoinKeysCreateBackendFailureIs500(t *testing.T) {
+	t.Setenv("DAGNATS_BRIDGE_TOKEN", "admin-secret")
+	_, nc := natstest.StartServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	store, err := joinkey.Open(ctx, js)
+	if err != nil {
+		t.Fatalf("joinkey.Open: %v", err)
+	}
+	t.Cleanup(store.Close)
+	mux := http.NewServeMux()
+	MountJoinKeys(mux, store)
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	url := server.URL + "/v1/programs/join-keys"
+	if err := js.DeleteKeyValue(ctx, joinkey.BucketName); err != nil {
+		t.Fatalf("delete bucket: %v", err)
+	}
+	resp := doJSON(t, http.MethodPost, url, "admin-secret", `{"label":"x"}`)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("backend failure status = %d, want 500", resp.StatusCode)
+	}
+	readBody(t, resp)
+	resp = doJSON(t, http.MethodPost, url, "admin-secret", `{"label":""}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad spec status = %d, want 400 even with KV down", resp.StatusCode)
+	}
+	readBody(t, resp)
+}

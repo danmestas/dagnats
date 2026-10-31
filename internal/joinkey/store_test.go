@@ -360,3 +360,114 @@ func fetch(ctx context.Context, kv jetstream.KeyValue, id string) (JoinKey, erro
 	}
 	return decode(entry)
 }
+
+// TestConsumeUseRefusesRevokedOnStaleCache stops store B's watch, so
+// B's cache still shows the key live after A revokes it. Verify on B
+// passes (stale), and ConsumeUse on B must still refuse, because it
+// reads KV.
+func TestConsumeUseRefusesRevokedOnStaleCache(t *testing.T) {
+	js := newTestJetStream(t)
+	storeA := openTestStore(t, js)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	storeB, err := Open(ctx, js)
+	if err != nil {
+		t.Fatalf("Open B: %v", err)
+	}
+	created, plaintext := mustCreate(t, storeA, Spec{Label: "stale", UsesMax: 3})
+	waitFor(t, func() bool {
+		_, ok := storeB.lookup(created.ID)
+		return ok
+	})
+	storeB.Close() // stops only the watch; B's KV handle still works
+	if err := storeA.Revoke(ctx, created.ID); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if _, err := storeB.Verify(plaintext, "notify"); err != nil {
+		t.Fatalf("precondition: B's cache should be stale, Verify err = %v", err)
+	}
+	if err := storeB.ConsumeUse(ctx, created.ID); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("ConsumeUse on stale store err = %v, want ErrRevoked", err)
+	}
+	stored, err := fetch(ctx, storeA.kv, created.ID)
+	if err != nil || stored.UsesLeft != 3 {
+		t.Fatalf("revoked key spent a use: %+v, %v", stored, err)
+	}
+}
+
+func TestConsumeUseRefusesExpired(t *testing.T) {
+	store := newTestStore(t)
+	expires := time.Now().UTC().Add(time.Hour)
+	created, _ := mustCreate(t, store, Spec{Label: "e", UsesMax: 2, ExpiresAt: &expires})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := store.ConsumeUse(ctx, created.ID); err != nil {
+		t.Fatalf("ConsumeUse before expiry: %v", err)
+	}
+	store.now = func() time.Time { return expires }
+	if err := store.ConsumeUse(ctx, created.ID); !errors.Is(err, ErrExpired) {
+		t.Fatalf("ConsumeUse at expiry err = %v, want ErrExpired", err)
+	}
+}
+
+func TestRefundUse(t *testing.T) {
+	store := newTestStore(t)
+	created, plaintext := mustCreate(t, store, Spec{Label: "refund", UsesMax: 1})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := store.ConsumeUse(ctx, created.ID); err != nil {
+		t.Fatalf("ConsumeUse: %v", err)
+	}
+	if _, err := store.Verify(plaintext, "notify"); !errors.Is(err, ErrExhausted) {
+		t.Fatalf("Verify after use err = %v, want ErrExhausted", err)
+	}
+	if err := store.RefundUse(ctx, created.ID); err != nil {
+		t.Fatalf("RefundUse: %v", err)
+	}
+	if _, err := store.Verify(plaintext, "notify"); err != nil {
+		t.Fatalf("Verify after refund: %v", err)
+	}
+	// A refund with nothing spent must not raise UsesLeft past UsesMax.
+	if err := store.RefundUse(ctx, created.ID); err != nil {
+		t.Fatalf("second RefundUse: %v", err)
+	}
+	stored, err := fetch(ctx, store.kv, created.ID)
+	if err != nil || stored.UsesLeft != 1 {
+		t.Fatalf("UsesLeft after double refund = %+v, %v; want 1", stored, err)
+	}
+}
+
+// alwaysConflictKV loses every compare-and-set, standing in for a
+// writer that keeps winning the revision race.
+type alwaysConflictKV struct {
+	jetstream.KeyValue
+	updates int
+}
+
+func (kv *alwaysConflictKV) Update(
+	_ context.Context, _ string, _ []byte, _ uint64,
+) (uint64, error) {
+	kv.updates++
+	return 0, jetstream.ErrKeyRevisionMismatch
+}
+
+func TestMutateContentionIsTypedAndBounded(t *testing.T) {
+	store := newTestStore(t)
+	created, _ := mustCreate(t, store, Spec{Label: "busy", UsesMax: 3})
+	store.Close() // the watch goroutine reads s.kv; stop it before swapping
+	conflicting := &alwaysConflictKV{KeyValue: store.kv}
+	store.kv = conflicting
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := store.ConsumeUse(ctx, created.ID)
+	if !errors.Is(err, ErrContention) {
+		t.Fatalf("ConsumeUse err = %v, want ErrContention", err)
+	}
+	if conflicting.updates != casAttemptsMax {
+		t.Fatalf("Update attempts = %d, want %d", conflicting.updates, casAttemptsMax)
+	}
+	stored, err := fetch(ctx, conflicting.KeyValue, created.ID)
+	if err != nil || stored.UsesLeft != 3 {
+		t.Fatalf("contended ConsumeUse wrote: %+v, %v", stored, err)
+	}
+}

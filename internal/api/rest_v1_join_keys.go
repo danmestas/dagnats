@@ -87,7 +87,7 @@ func (jr *joinKeyRoutes) handleCreate(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt: req.ExpiresAt,
 	}, tokenAdminCreatedBy)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), createErrorStatus(err))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -96,6 +96,22 @@ func (jr *joinKeyRoutes) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		slog.Error("encode create join key response failed", "error", err)
 	}
+}
+
+// createErrorStatus maps a Create error to its HTTP status: the
+// caller's spec (400), the active-key limit (409), else the backend
+// (500).
+func createErrorStatus(err error) int {
+	if err == nil {
+		panic("createErrorStatus: err must not be nil")
+	}
+	switch {
+	case errors.Is(err, joinkey.ErrInvalidSpec):
+		return http.StatusBadRequest
+	case errors.Is(err, joinkey.ErrLimit):
+		return http.StatusConflict
+	}
+	return http.StatusInternalServerError
 }
 
 func (jr *joinKeyRoutes) handleList(w http.ResponseWriter, r *http.Request) {

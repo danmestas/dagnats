@@ -1076,8 +1076,9 @@ A record is `{"id","label","name_glob","uses_max","uses_left",
 "expires_at","created_by","revoked_at"}`. Only `label` is required; an
 omitted `name_glob` admits any program name, `uses_max` 0 is unbounded,
 and an omitted `expires_at` (RFC 3339, must be in the future) never
-expires. `name_glob` uses `[a-z0-9]` plus `*` and `?`. Unknown fields
-are refused with `400`.
+expires. `name_glob` uses `[a-z0-9]` plus `*` and `?`. A bad spec or
+an unknown field is `400`, the active-key limit is `409`, and a
+backend failure is `500`.
 
 `key` (`djk_{id}_{secret}`) appears in the create response only. The
 server stores a SHA-256 of the secret and never returns either again.

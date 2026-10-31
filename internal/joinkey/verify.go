@@ -35,24 +35,26 @@ func (s *Store) Verify(plaintext, programName string) (JoinKey, error) {
 	if !secret.Matches(secretPart, key.SecretHash) || !found {
 		return JoinKey{}, ErrInvalid
 	}
-	switch {
-	case key.RevokedAt != nil:
-		return JoinKey{}, ErrRevoked
-	case key.ExpiresAt != nil && !s.now().Before(*key.ExpiresAt):
-		return JoinKey{}, ErrExpired
-	case key.UsesMax > 0 && key.UsesLeft <= 0:
-		return JoinKey{}, ErrExhausted
-	case !key.allowsName(programName):
+	if err := s.usable(key); err != nil {
+		return JoinKey{}, err
+	}
+	if !key.allowsName(programName) {
 		return JoinKey{}, ErrNameNotAllowed
 	}
 	return key.redacted(), nil
 }
 
-// ConsumeUse spends one use of key id, for a registration that
-// succeeded. It decrements by KV revision compare-and-set, so across
-// any number of Stores exactly UsesMax calls succeed and UsesLeft never
-// goes below zero; the rest get ErrExhausted. An unbounded key
-// (UsesMax 0) has nothing to spend and returns nil without a write.
+// ConsumeUse spends one use of key id. Registration calls it after
+// Verify and before committing, and refunds with RefundUse if the
+// registration then fails, so concurrent registrations cannot admit
+// more than UsesMax programs. It decrements by KV revision
+// compare-and-set, so across any number of Stores exactly UsesMax calls
+// succeed and UsesLeft never goes below zero; the rest get ErrExhausted.
+//
+// It reads KV, not the cache, so it is the authoritative check: a key
+// revoked or expired since this Store's cache last saw it is refused
+// with ErrRevoked or ErrExpired even though Verify passed. An unbounded
+// key (UsesMax 0) that is live has nothing to spend and is not written.
 func (s *Store) ConsumeUse(ctx context.Context, id string) error {
 	if ctx == nil {
 		panic("joinkey.ConsumeUse: ctx must not be nil")
@@ -61,11 +63,11 @@ func (s *Store) ConsumeUse(ctx context.Context, id string) error {
 		panic("joinkey.ConsumeUse: id must not be empty")
 	}
 	_, err := s.mutate(ctx, id, func(key *JoinKey) error {
+		if err := s.usable(*key); err != nil {
+			return err
+		}
 		if key.UsesMax == 0 {
 			return errUnchanged
-		}
-		if key.UsesLeft <= 0 {
-			return ErrExhausted
 		}
 		key.UsesLeft--
 		return nil
@@ -74,6 +76,47 @@ func (s *Store) ConsumeUse(ctx context.Context, id string) error {
 		return nil
 	}
 	return err
+}
+
+// RefundUse returns one use spent by ConsumeUse, for a registration
+// that failed after reserving it. It never raises UsesLeft past
+// UsesMax, so a duplicate refund is harmless, and it refunds a revoked
+// or expired key too: the record stays truthful for audit.
+func (s *Store) RefundUse(ctx context.Context, id string) error {
+	if ctx == nil {
+		panic("joinkey.RefundUse: ctx must not be nil")
+	}
+	if id == "" {
+		panic("joinkey.RefundUse: id must not be empty")
+	}
+	_, err := s.mutate(ctx, id, func(key *JoinKey) error {
+		if key.UsesMax == 0 || key.UsesLeft >= key.UsesMax {
+			return errUnchanged
+		}
+		key.UsesLeft++
+		return nil
+	})
+	if errors.Is(err, errUnchanged) {
+		return nil
+	}
+	return err
+}
+
+// usable reports why key may not be used now, or nil. Verify applies
+// the same rules to its cached copy.
+func (s *Store) usable(key JoinKey) error {
+	if s.now == nil {
+		panic("joinkey.usable: store has no clock")
+	}
+	switch {
+	case key.RevokedAt != nil:
+		return ErrRevoked
+	case key.ExpiresAt != nil && !s.now().Before(*key.ExpiresAt):
+		return ErrExpired
+	case key.UsesMax > 0 && key.UsesLeft <= 0:
+		return ErrExhausted
+	}
+	return nil
 }
 
 // Revoke marks id revoked, keeping the record for audit. Verify refuses
@@ -148,7 +191,8 @@ func (s *Store) mutate(
 		s.store(id, key, revision)
 		return key, nil
 	}
-	return JoinKey{}, fmt.Errorf("join key %q: %d conflicting updates", id, casAttemptsMax)
+	return JoinKey{}, fmt.Errorf("%w: join key %q: %d conflicting updates",
+		ErrContention, id, casAttemptsMax)
 }
 
 // pruneOldestRevoked deletes the oldest revoked records past

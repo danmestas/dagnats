@@ -10,9 +10,13 @@
 // revoke is visible at once on the revoking node and within the watch's
 // reconnect bound everywhere else.
 //
-// Verify and ConsumeUse are separate on purpose: registration verifies
-// the key, then may still refuse (a taken name, a busted budget), and a
-// refused registration must not spend a use.
+// Registration uses a key in this order: Verify (cache only, cheap,
+// rejects a bad key before any work), then ConsumeUse to reserve a use
+// by compare-and-set BEFORE committing the registration, then RefundUse
+// if anything after that fails (a taken name, an exhausted budget, a
+// failed store or reload). Reserving first is what keeps a key with
+// UsesMax uses from admitting more programs than that under
+// concurrency; refunding keeps a refused registration free.
 package joinkey
 
 import (
@@ -75,10 +79,26 @@ var (
 	ErrExhausted      = errors.New("join key exhausted")
 	ErrNameNotAllowed = errors.New("join key does not cover program name")
 	ErrNotFound       = errors.New("join key not found")
+	// ErrContention: a write lost the revision race casAttemptsMax
+	// times in a row. Nothing was written; the caller may retry.
+	ErrContention = errors.New("join key contended")
+	// ErrInvalidSpec wraps every Create refusal caused by the request;
+	// any other Create error is a backend failure.
+	ErrInvalidSpec = errors.New("invalid join key spec")
+	// ErrLimit: Create refused because KeysCountMax keys are active.
+	ErrLimit = errors.New("join key limit reached")
 )
 
-// validateSpec checks spec against the Create bounds at time now.
+// validateSpec checks spec against the Create bounds at time now,
+// wrapping any refusal in ErrInvalidSpec.
 func validateSpec(spec Spec, now time.Time) error {
+	if err := checkSpec(spec, now); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidSpec, err)
+	}
+	return nil
+}
+
+func checkSpec(spec Spec, now time.Time) error {
 	if spec.Label == "" {
 		return fmt.Errorf("label is required")
 	}

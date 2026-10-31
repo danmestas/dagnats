@@ -173,7 +173,7 @@ func (s *Store) Create(
 	// Check-then-act, so concurrent Creates can overshoot by a few.
 	// Accepted: Create is admin-gated, not an external exhaustion path.
 	if s.activeCount() >= KeysCountMax {
-		return JoinKey{}, "", fmt.Errorf("join key limit reached (%d active)", KeysCountMax)
+		return JoinKey{}, "", fmt.Errorf("%w (%d active)", ErrLimit, KeysCountMax)
 	}
 	plaintext, hash := secret.New()
 	key := JoinKey{
