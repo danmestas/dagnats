@@ -18,8 +18,8 @@
 // re-flush of one stream's messages under different content.
 //
 // LocalStore is the local implementation, used by dagnats' archive. lode
-// (github.com/danmestas/lode) holds the S3-compatible one. Its conditional-PUT path is tested by
-// lode against Garage and SigV4 vectors, not yet live on R2.
+// (github.com/danmestas/lode) holds the S3-compatible one. Its conditional-PUT path is tested
+// live against Cloudflare R2; Garage v2.1.0 ignores If-None-Match and is check-first.
 package writer
 
 import (
