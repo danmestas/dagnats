@@ -60,13 +60,26 @@ func (tr *tokenRoutes) requireAdmin(
 	if tr == nil {
 		panic("requireAdmin: tr must not be nil")
 	}
-	if w == nil {
-		panic("requireAdmin: w must not be nil")
+	return requireAdminBearer(w, r, tr.adminToken, "token management")
+}
+
+// requireAdminBearer is the fail-closed DAGNATS_BRIDGE_TOKEN gate every
+// admin route shares: 503 when no admin token is configured (the
+// feature is unavailable, not open), 401 on a missing or wrong bearer,
+// compared in constant time. Writes the response and returns false
+// when the caller must stop.
+func requireAdminBearer(
+	w http.ResponseWriter, r *http.Request, adminToken, feature string,
+) bool {
+	if w == nil || r == nil {
+		panic("requireAdminBearer: w and r must not be nil")
 	}
-	if tr.adminToken == "" {
+	if feature == "" {
+		panic("requireAdminBearer: feature must not be empty")
+	}
+	if adminToken == "" {
 		http.Error(w,
-			"token management requires DAGNATS_BRIDGE_TOKEN as the "+
-				"admin credential",
+			feature+" requires DAGNATS_BRIDGE_TOKEN as the admin credential",
 			http.StatusServiceUnavailable,
 		)
 		return false
@@ -75,7 +88,7 @@ func (tr *tokenRoutes) requireAdmin(
 		r.Header.Get("Authorization"), "Bearer ",
 	)
 	if !hasBearer || subtle.ConstantTimeCompare(
-		[]byte(bearer), []byte(tr.adminToken),
+		[]byte(bearer), []byte(adminToken),
 	) != 1 {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return false

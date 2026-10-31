@@ -1195,6 +1195,28 @@ dagnats journal check a1b2c3d4
 # OK
 ```
 
+## program
+
+Manage program join keys (#885), the credential a program presents to register itself. Talks to the admin REST routes at `DAGNATS_HTTP_ADDR` (default `localhost:8080`) with `DAGNATS_BRIDGE_TOKEN` as the admin bearer.
+
+```
+dagnats program join-key create --label <text> [--names <glob>] [--uses <n>] [--expires <duration>]
+dagnats program join-key list [--json]
+dagnats program join-key revoke <id>
+```
+
+A key is reusable and unbounded by default. `--names` limits which program names it may register (a glob over `[a-z0-9]` with `*` and `?`, e.g. `notify` or `artifact*`), `--uses` caps the registrations it allows, and `--expires` takes a Go duration or whole days (`24h`, `7d`). `create` prints the key once; it is not recoverable afterward, and `list` never shows it. `revoke` takes effect at once.
+
+**Example:**
+```bash
+dagnats program join-key create --label deploys --names 'artifact*' --uses 5 --expires 7d
+# Join key 6f1c...9a2b created.
+#
+#   djk_6f1c...9a2b_...
+#
+# Store it now: it is not shown again.
+```
+
 ## singleton
 
 List and release singleton locks.

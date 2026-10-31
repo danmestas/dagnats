@@ -2,22 +2,18 @@ package workertoken
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"crypto/subtle"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
-	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/internal/kvmirror"
 	"github.com/danmestas/dagnats/internal/runid"
+	"github.com/danmestas/dagnats/internal/secret"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
@@ -30,15 +26,6 @@ import (
 // still works.
 const bucketName = "worker_tokens"
 
-// reconnectBackoffInitial / reconnectBackoffMax bound the watch
-// reconnect loop's exponential backoff. Capped at 30s so a prolonged
-// NATS outage does not busy-loop the bridge, while a brief blip
-// recovers in well under a second.
-const (
-	reconnectBackoffInitial = 250 * time.Millisecond
-	reconnectBackoffMax     = 30 * time.Second
-)
-
 // Store is a cached, watch-kept-current view of the worker_tokens KV
 // bucket. Authorize reads the cache only — it never round-trips to
 // NATS — so it is safe on the bridge's hot poll/resolve path.
@@ -48,7 +35,7 @@ const (
 // while it reconnects with bounded exponential backoff. This means a
 // Revoke committed by another Store instance during the outage is not
 // visible here until the watch reconnects — revocation latency is
-// bounded by reconnectBackoffMax, not instant. This is a deliberate
+// bounded by kvmirror.BackoffMax, not instant. This is a deliberate
 // availability/consistency tradeoff: a bridge that hard-failed poll/
 // resolve during a brief NATS blip would be worse than admitting stale
 // tokens for at most ~30s.
@@ -81,26 +68,6 @@ type Store struct {
 	watchFailures metric.Int64Counter
 }
 
-// ensureBucket binds to the worker_tokens bucket if it exists and only
-// creates it when absent. natsutil.SetupAll provisions it at the
-// cluster's replication factor; a blind CreateOrUpdate here would reset
-// replicas to 1 on every node start, silently dropping HA for the bucket.
-func ensureBucket(
-	ctx context.Context, js jetstream.JetStream,
-) (jetstream.KeyValue, error) {
-	kv, err := js.KeyValue(ctx, bucketName)
-	if err == nil {
-		return kv, nil
-	}
-	if !errors.Is(err, jetstream.ErrBucketNotFound) {
-		return nil, err
-	}
-	return js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
-		Bucket:  bucketName,
-		History: 1,
-	})
-}
-
 // Open ensures the worker_tokens bucket exists, loads its current
 // contents into the cache, and starts the background watch that keeps
 // the cache current. ctx bounds only the initial ensure-bucket and
@@ -113,13 +80,9 @@ func Open(ctx context.Context, js jetstream.JetStream) (*Store, error) {
 	if js == nil {
 		panic("Open: js must not be nil")
 	}
-	kv, err := ensureBucket(ctx, js)
+	kv, stream, err := kvmirror.Bind(ctx, js, bucketName)
 	if err != nil {
-		return nil, fmt.Errorf("ensure %s bucket: %w", bucketName, err)
-	}
-	stream, err := js.Stream(ctx, "KV_"+bucketName)
-	if err != nil {
-		return nil, fmt.Errorf("resolve %s bucket stream: %w", bucketName, err)
+		return nil, err
 	}
 	watchCtx, cancel := context.WithCancel(context.Background())
 	m := otel.Meter("dagnats/workertoken")
@@ -164,15 +127,8 @@ func (s *Store) Close() {
 // loadAll populates the cache from a full bucket scan. Called once at
 // Open, before the watch starts, so the cache is warm from the first
 // Authorize call rather than waiting on the watch's initial replay.
-//
-// Key enumeration is natsutil.ListKeys (#698), not kv.ListKeys: Revoke
-// Puts over an existing token record, which is exactly the write shape
-// exposed to the watcher-snapshot race #699 fixed for the workers
-// bucket (a Put replacing a key's only history=1 revision inside the
-// listing watcher's setup window can drop the key entirely). Because
-// ListKeys enumerates subject state, a subject whose last message is a
-// delete marker (pruneOldestRevoked) also appears here; the per-key Get
-// below tells the two apart by error, not by swallowing every failure.
+// kvmirror.Load owns the enumeration rules (#698, #699): a pruned
+// token's delete marker is skipped, any other Get failure fails Open.
 func (s *Store) loadAll(ctx context.Context) error {
 	if ctx == nil {
 		panic("loadAll: ctx must not be nil")
@@ -183,36 +139,7 @@ func (s *Store) loadAll(ctx context.Context) error {
 	if s.stream == nil {
 		panic("loadAll: stream must not be nil")
 	}
-	keys, err := natsutil.ListKeys(ctx, s.stream, bucketName)
-	if err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, key := range keys {
-		entry, err := s.kv.Get(ctx, key)
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			// Expected: ListKeys enumerates subjects, and a pruned
-			// token's subject still holds its delete marker.
-			continue
-		}
-		if err != nil {
-			// A transient Get failure is indistinguishable from a
-			// deleted key once swallowed, and swallowing it drops a
-			// LIVE token from the cache -- Authorize would then reject
-			// a still-valid bearer as unknown. Fail Open instead of
-			// silently warming a short cache.
-			return err
-		}
-		var tok Token
-		if err := json.Unmarshal(entry.Value(), &tok); err != nil {
-			slog.Warn("workertoken: skipping unparsable record",
-				"key", key, "error", err)
-			continue
-		}
-		s.storeLocked(key, tok, entry.Revision())
-	}
-	return nil
+	return kvmirror.Load(ctx, s.kv, s.stream, s.applyEntry)
 }
 
 // storeLocked caches tok for key unless the cache already holds a newer
@@ -231,63 +158,11 @@ func (s *Store) storeLocked(key string, tok Token, revision uint64) {
 	s.tokens[key] = tok
 }
 
-// watchLoop keeps the cache current for the life of the Store,
-// reconnecting the underlying KV watch with bounded exponential
-// backoff whenever it drops. Exits only when s.ctx is cancelled
-// (Close).
+// watchLoop keeps the cache current for the life of the Store. Exits
+// only when s.ctx is cancelled (Close).
 func (s *Store) watchLoop() {
 	defer s.wg.Done()
-	backoff := reconnectBackoffInitial
-	for s.ctx.Err() == nil {
-		watcher, err := s.kv.Watch(s.ctx, ">")
-		if err != nil {
-			slog.Warn("workertoken: watch failed, retrying",
-				"error", err, "backoff", backoff)
-			if s.watchFailures != nil {
-				s.watchFailures.Add(context.Background(), 1)
-			}
-			if !s.sleep(backoff) {
-				return
-			}
-			backoff = nextBackoff(backoff)
-			continue
-		}
-		backoff = reconnectBackoffInitial
-		s.consumeWatch(watcher)
-		shuttingDown := s.ctx.Err() != nil
-		if stopErr := watcher.Stop(); stopErr != nil && !shuttingDown {
-			// A Stop failure during Close is expected: the connection
-			// underlying the subscription is already tearing down.
-			slog.Warn("workertoken: watch stop failed", "error", stopErr)
-		}
-		if shuttingDown {
-			return
-		}
-		slog.Warn("workertoken: watch closed, reconnecting")
-	}
-}
-
-// consumeWatch drains watcher's update channel into the cache until it
-// closes or the Store's context is cancelled.
-func (s *Store) consumeWatch(watcher jetstream.KeyWatcher) {
-	if watcher == nil {
-		panic("consumeWatch: watcher must not be nil")
-	}
-	updates := watcher.Updates()
-	for {
-		select {
-		case <-s.ctx.Done():
-			return
-		case entry, ok := <-updates:
-			if !ok {
-				return
-			}
-			if entry == nil {
-				continue // nil marks "initial replay complete"
-			}
-			s.applyEntry(entry)
-		}
-	}
+	kvmirror.Watch(s.ctx, s.kv, s.watchFailures, s.applyEntry)
 }
 
 // applyEntry updates the cache from one watch entry. Delete/purge
@@ -316,34 +191,6 @@ func (s *Store) applyEntry(entry jetstream.KeyValueEntry) {
 		return
 	}
 	s.storeLocked(entry.Key(), tok, entry.Revision())
-}
-
-// sleep blocks for d or until the Store's context is cancelled,
-// reporting false in the latter case so callers can stop retrying.
-func (s *Store) sleep(d time.Duration) bool {
-	if d <= 0 {
-		panic("sleep: d must be positive")
-	}
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-s.ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
-}
-
-// nextBackoff doubles d, capped at reconnectBackoffMax.
-func nextBackoff(d time.Duration) time.Duration {
-	if d <= 0 {
-		panic("nextBackoff: d must be positive")
-	}
-	next := d * 2
-	if next > reconnectBackoffMax || next <= 0 {
-		return reconnectBackoffMax
-	}
-	return next
 }
 
 // Mint creates a new worker token scoped to prefixes and, optionally,
@@ -399,10 +246,7 @@ func (s *Store) Mint(
 		// minted token silently impersonate the admin marker.
 		panic("Mint: minted id collided with AdminTokenID")
 	}
-	secret, secretHash, err := mintSecret()
-	if err != nil {
-		return "", "", err
-	}
+	plaintext, secretHash := secret.New()
 	tok := Token{
 		ID:               id,
 		Label:            label,
@@ -427,29 +271,7 @@ func (s *Store) Mint(
 	s.mu.Lock()
 	s.storeLocked(id, tok, revision)
 	s.mu.Unlock()
-	return id, "dgn_" + id + "_" + secret, nil
-}
-
-// secretByteCount is the number of random bytes in a minted secret (32
-// bytes = 256 bits, base64url-encoded without padding for a clean
-// bearer string with no '_'-colliding characters).
-const secretByteCount = 32
-
-// mintSecret returns a fresh random secret and its SHA-256 hash.
-// Panics only if the OS entropy source is unavailable — a fatal system
-// condition, matching internal/runid's precedent.
-func mintSecret() (secret string, hash []byte, err error) {
-	raw := make([]byte, secretByteCount)
-	n, err := rand.Read(raw)
-	if err != nil {
-		panic("mintSecret: crypto/rand failed: " + err.Error())
-	}
-	if n != secretByteCount {
-		panic("mintSecret: short read from crypto/rand")
-	}
-	secret = base64.RawURLEncoding.EncodeToString(raw)
-	sum := sha256.Sum256([]byte(secret))
-	return secret, sum[:], nil
+	return id, bearerPrefix + "_" + id + "_" + plaintext, nil
 }
 
 // activeTokenCount counts non-revoked tokens in the cache.
@@ -741,32 +563,19 @@ func (s *Store) Authorize(bearer string) (Claims, error) {
 	if bearer == "" {
 		return Claims{}, errInvalidToken
 	}
-	id, secret, err := parseBearer(bearer)
-	if err != nil {
+	id, plaintext, ok := secret.Split(bearer, bearerPrefix)
+	if !ok {
 		return Claims{}, errInvalidToken
 	}
-	// Hash unconditionally, before the lookup branch: an unknown id
-	// must cost the same CPU work as a known id with a wrong secret,
-	// so the two are not timing-distinguishable in addition to already
-	// sharing one error text.
-	sum := sha256.Sum256([]byte(secret))
 	s.mu.RLock()
-	tok, ok := s.tokens[id]
+	tok, found := s.tokens[id]
 	s.mu.RUnlock()
-	// compareAgainst is always sha256.Size bytes so the comparison
-	// below does identical work whether id was found or not --
-	// subtle.ConstantTimeCompare short-circuits on a length mismatch,
-	// so comparing against tok.SecretHash's zero-length nil (unknown
-	// id) would skip the comparison loop and leak a timing signal a
-	// fixed-length dummy avoids. Revoked status is decided AFTER the
-	// compare runs, not before, for the same reason: all three failure
+	// secret.Matches hashes and compares unconditionally, so an unknown
+	// id costs the same work as a wrong secret. Revoked status is
+	// decided AFTER the compare for the same reason: all three failure
 	// paths (unknown id, wrong secret, revoked) must do identical work.
-	compareAgainst := tok.SecretHash
-	if len(compareAgainst) != sha256.Size {
-		compareAgainst = make([]byte, sha256.Size)
-	}
-	match := subtle.ConstantTimeCompare(sum[:], compareAgainst) == 1
-	if !ok || !match || tok.RevokedAt != nil {
+	match := secret.Matches(plaintext, tok.SecretHash)
+	if !found || !match || tok.RevokedAt != nil {
 		return Claims{}, errInvalidToken
 	}
 	return Claims{
@@ -776,24 +585,6 @@ func (s *Store) Authorize(bearer string) (Claims, error) {
 	}, nil
 }
 
-// bearerPrefix is the fixed first segment of every minted bearer.
+// bearerPrefix is the fixed first segment of every minted bearer,
+// "dgn_{id}_{secret}".
 const bearerPrefix = "dgn"
-
-// parseBearer splits "dgn_{id}_{secret}" strictly: exactly three
-// underscore-separated segments, the first literally "dgn", and
-// neither id nor secret empty. SplitN(..., 3) is safe against an id
-// containing '_' in principle, but runid.New() only emits hex, so this
-// never actually splits the id.
-func parseBearer(bearer string) (id, secret string, err error) {
-	parts := strings.SplitN(bearer, "_", 3)
-	if len(parts) != 3 {
-		return "", "", fmt.Errorf("malformed bearer: wrong segment count")
-	}
-	if parts[0] != bearerPrefix {
-		return "", "", fmt.Errorf("malformed bearer: wrong prefix")
-	}
-	if parts[1] == "" || parts[2] == "" {
-		return "", "", fmt.Errorf("malformed bearer: empty id or secret")
-	}
-	return parts[1], parts[2], nil
-}

@@ -66,6 +66,8 @@ func Run(args []string) {
 		runCleanCmd(args[2:])
 	case "journal":
 		runJournalCmd(args[2:])
+	case "program":
+		runProgramCmd(args[2:])
 	case "demo":
 		runDemoCmd(args[2:])
 	case "completion":
@@ -111,6 +113,7 @@ var usageCommands = []usageEntry{
 	{"service", "list registered services"},
 	{"clean", "purge run data (for testing)"},
 	{"journal", "check a run's agent journals"},
+	{"program", "create, list, revoke program join keys"},
 	{"demo", "seed runs and drive them to terminal states"},
 	{"completion", "generate shell completion scripts"},
 }

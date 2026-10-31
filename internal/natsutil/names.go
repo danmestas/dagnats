@@ -25,6 +25,7 @@ var provisionedKVBuckets = []string{
 	"scheduled_runs",
 	"workers",
 	"worker_tokens",
+	"join_keys",
 	"worker_status",
 	"event_waiters",
 	"rate_limits",

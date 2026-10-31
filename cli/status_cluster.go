@@ -17,18 +17,24 @@ import (
 )
 
 // clusterHealthURL returns the URL the CLI should probe for cluster
-// health. Reads DAGNATS_HTTP_ADDR, falling back to localhost:8080 (the
-// server default). Bare ":port" forms are rewritten to localhost so
-// HTTP requests resolve.
+// health.
 func clusterHealthURL() string {
+	return httpBaseURL() + "/health/cluster"
+}
+
+// httpBaseURL returns the dagnats HTTP endpoint the CLI talks to. Reads
+// DAGNATS_HTTP_ADDR, falling back to localhost:8080 (the server
+// default). Bare ":port" forms are rewritten to localhost so HTTP
+// requests resolve.
+func httpBaseURL() string {
 	addr := os.Getenv("DAGNATS_HTTP_ADDR")
 	if addr == "" {
 		addr = "localhost:8080"
 	}
-	if len(addr) > 0 && addr[0] == ':' {
+	if addr[0] == ':' {
 		addr = "localhost" + addr
 	}
-	return "http://" + addr + "/health/cluster"
+	return "http://" + addr
 }
 
 // clusterStreamReport mirrors api.clusterStreamInfo for unmarshaling.
