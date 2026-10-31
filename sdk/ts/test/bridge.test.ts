@@ -313,3 +313,10 @@ test("inputs.place returns a queued steer once, content intact, and nothing unde
   assert.deepEqual(await ctx.inputs.place("steer"), []);
   await ctx.continue({ wait: { input: true } }); // placed, so no longer queued: parks
 });
+
+test("poll naming a worker_id with no open connection is accepted, not refused", async () => {
+  const type = uniqueType();
+  await startOneStepRun(srv, type);
+  const items = await client.poll({ task_types: [type], max: 1, wait_ms: 5000, worker_id: "no-such-connection" });
+  assert.equal(items.length, 1);
+});

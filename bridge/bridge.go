@@ -52,6 +52,7 @@ type Bridge struct {
 	// placeSeam is a test seam run on each new inputs placer.
 	placeSeam    func(*inputplace.Placer)
 	ackMap       *AckMap
+	conns        *workerConns
 	checkpointKV jetstream.KeyValue
 	signalKV     jetstream.KeyValue
 	// workflowRunsKV lets dispatch and resolve see that a task's run was
@@ -65,7 +66,10 @@ type Bridge struct {
 	restartLimit atomic.Int32
 
 	// Pre-allocated metric instruments — created once in constructor.
-	requestCount    metric.Int64Counter
+	requestCount metric.Int64Counter
+	// unboundPolls counts polls that named a worker_id with no open
+	// connection on this bridge and were accepted unbound.
+	unboundPolls    metric.Int64Counter
 	requestDuration metric.Float64Histogram
 	// logChunkFailures counts BUILD_LOGS publish failures from this
 	// package's log-ingest/marker paths (#624 review round 3) — the
@@ -134,17 +138,20 @@ func NewBridge(pub *natsutil.TracingPublisher) *Bridge {
 		"bridge.request.duration_ms",
 	)
 	logChunkFail, _ := m.Int64Counter("bridge.log_chunk.publish_failures")
+	unbound, _ := m.Int64Counter("bridge.poll.unbound_worker_id")
 	b := &Bridge{
 		pub:              pub,
 		nc:               nc,
 		js:               js,
 		ackMap:           NewAckMap(),
+		conns:            newWorkerConns(),
 		checkpointKV:     checkpointKV,
 		signalKV:         signalKV,
 		workflowRunsKV:   workflowRunsKV,
 		token:            token,
 		tracer:           otel.Tracer("dagnats/bridge"),
 		requestCount:     reqCount,
+		unboundPolls:     unbound,
 		requestDuration:  reqDur,
 		logChunkFailures: logChunkFail,
 	}

@@ -135,3 +135,30 @@ test("the connect body and the bearer token are what the bridge expects", async 
   conn.close();
   await assert.rejects(conn.closed);
 });
+
+test("poll names the connection's worker id while its stream is open, and not before or after", async () => {
+  const bodies: unknown[] = [];
+  const server = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", (d: Buffer) => (raw += d.toString()));
+    req.on("end", () => {
+      if (req.url === "/v1/workers/connect") return sse(res);
+      bodies.push(JSON.parse(raw));
+      res.end("[]");
+    });
+  });
+  servers.push(server);
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const client = new BridgeClient(`http://127.0.0.1:${(server.address() as AddressInfo).port}`, "t");
+
+  await client.poll({ task_types: ["x"], wait_ms: 10 });
+  const conn = client.connect({ worker: "w-ts", task_types: ["x"], ...fast });
+  await conn.ready;
+  await client.poll({ task_types: ["x"], wait_ms: 10 });
+  await client.poll({ task_types: ["x"], wait_ms: 10, worker_id: "other" });
+  conn.close();
+  await client.poll({ task_types: ["x"], wait_ms: 10 });
+
+  const ids = bodies.map((b) => (b as { worker_id?: string }).worker_id);
+  assert.deepEqual(ids, [undefined, "w-ts", "other", undefined]);
+});
