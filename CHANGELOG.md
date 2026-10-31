@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Journal replay tests no longer fail with "fenced by another claim".** `startBlockedTool` waited for an absolute record count, which the claim and calls before the stalled tool (or an earlier iteration's records) already met, so it could return before the stalled tool's intent and entry landed. The takeover's claim then raced those appends and was fenced. It now waits for the tool function to signal that it is parked. This hit `TestReplay_NewAttemptRerunsSafeCallsAndModelButKeepsUnsafeOutcomes` and the iteration-1 cases of `TestReplay_Matrix` and `TestReplay_UnsafeSideEffectAtMostOnceAcrossCrashPoints`.
 - **`make build-release` names artifacts after the `v*` release tag.** With the lake module's own `lake/v*` tag on the same commit, `git describe --tags` returned `lake/v0.1.0`, so `VERSION` broke the tarball paths. The Makefile's version lookups now match `v*` only.
 - **`TestWatchTriggers_BoundedCatchUp` no longer times out on a loaded machine.** It wrote 10,001 KV entries and read 10,000 back one round trip at a time, so its wall time grew with CPU starvation until the 30s insert deadline ran out. The catch-up cap is now a per-Worker field defaulting to 10,000, and the test proves the cap with 11 entries and a cap of 10.
 

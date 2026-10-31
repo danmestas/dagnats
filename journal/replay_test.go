@@ -69,6 +69,9 @@ func forEachDispatchSingle(
 type blockedTool struct {
 	release chan struct{}
 	done    chan error
+	// blocked is closed once the intent and the partial entry have
+	// landed and fn is parked on release.
+	blocked chan struct{}
 	// starts counts invocations of the tool function, effects the
 	// side effects it completed.
 	starts, effects *atomic.Int32
@@ -76,16 +79,20 @@ type blockedTool struct {
 
 // startBlockedTool calls Tool for name on j in a goroutine. The tool
 // appends a partial entry, then either blocks before its side effect
-// (effectBeforeBlock false) or after it. It returns once the journal
-// holds recordsAfter records: the intent and the entry have landed.
+// (effectBeforeBlock false) or after it. It returns once fn is parked:
+// the intent and the entry have landed and the stalled claim writes
+// nothing more until resume. Waiting on fn itself, not on a record
+// count, matters: a count also includes the records of earlier calls
+// and iterations, so it can be met before the intent lands, and the
+// takeover's claim would then race the stalled claim's appends.
 func startBlockedTool(
 	t *testing.T, j *Journal, name string, replay Replay, effectBeforeBlock bool,
-	recordsAfter int,
 ) *blockedTool {
 	t.Helper()
 	b := &blockedTool{
 		release: make(chan struct{}), done: make(chan error, 1),
-		starts: &atomic.Int32{}, effects: &atomic.Int32{},
+		blocked: make(chan struct{}),
+		starts:  &atomic.Int32{}, effects: &atomic.Int32{},
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), replayTimeout)
@@ -99,6 +106,7 @@ func startBlockedTool(
 				if effectBeforeBlock {
 					b.effects.Add(1)
 				}
+				close(b.blocked)
 				<-b.release
 				if !effectBeforeBlock {
 					b.effects.Add(1)
@@ -107,27 +115,14 @@ func startBlockedTool(
 			})
 		b.done <- err
 	}()
-	waitRecords(t, j, recordsAfter)
-	return b
-}
-
-// waitRecords polls until the step's journal holds at least n records.
-func waitRecords(t *testing.T, j *Journal, n int) {
-	t.Helper()
-	deadline := time.Now().Add(replayTimeout)
-	for time.Now().Before(deadline) {
-		ctx, cancel := context.WithTimeout(context.Background(), replayTimeout)
-		records, err := Read(ctx, j.js, j.task.RunID, j.task.StepID)
-		cancel()
-		if err != nil {
-			t.Fatalf("Read: %v", err)
-		}
-		if len(records) >= n {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case <-b.blocked:
+	case err := <-b.done:
+		t.Fatalf("stalled Tool %s returned before blocking: %v", name, err)
+	case <-time.After(replayTimeout):
+		t.Fatalf("stalled Tool %s never blocked", name)
 	}
-	t.Fatalf("journal never reached %d records", n)
+	return b
 }
 
 // resume releases the stalled claim and returns Tool's error.
@@ -221,7 +216,7 @@ func testReplayCase(t *testing.T, c client, runID string, d dispatch, m matrixCa
 			t.Fatalf("first Tool = %+v, %v", res, err)
 		}
 	} else {
-		stalled = startBlockedTool(t, first, "send", m.recorded, false, 3)
+		stalled = startBlockedTool(t, first, "send", m.recorded, false)
 		effects = stalled.effects
 	}
 	before := len(readRecords(t, c, runID))
@@ -329,7 +324,7 @@ func testUnsafeCrashPoint(t *testing.T, c client, runID string, d dispatch, p cr
 	switch p {
 	case crashBeforeIntent:
 	case crashAfterIntent, crashAfterToolBeforeResult:
-		stalled = startBlockedTool(t, first, "charge", Unsafe, p == crashAfterToolBeforeResult, 3)
+		stalled = startBlockedTool(t, first, "charge", Unsafe, p == crashAfterToolBeforeResult)
 		counters = unsafeCounters{starts: stalled.starts, effects: stalled.effects}
 	case crashAfterCommitBeforeEvent:
 		if _, err := run(first); err != nil {
@@ -478,7 +473,7 @@ func TestReplay_NewAttemptRerunsSafeCallsAndModelButKeepsUnsafeOutcomes(t *testi
 	if _, err := first.Model(ctx, model.Respond); err != nil {
 		t.Fatalf("Model: %v", err)
 	}
-	stalled := startBlockedTool(t, first, "send", Unsafe, false, 6)
+	stalled := startBlockedTool(t, first, "send", Unsafe, false)
 	retry := open(t, c, task("run-attempts", 1, 2, 2))
 	res, err := retry.Tool(ctx, ToolCall{Name: "read"}, Safe, safe)
 	if err != nil || string(res.Output) != "2" {
@@ -605,7 +600,7 @@ func TestReplay_NewAttemptHonoursPriorUnsafeCallByContentNotPosition(t *testing.
 	if _, err := first.Tool(ctx, charge, Unsafe, tool); err != nil {
 		t.Fatalf("charge: %v", err)
 	}
-	stalled := startBlockedTool(t, first, "send", Unsafe, false, 6)
+	stalled := startBlockedTool(t, first, "send", Unsafe, false)
 	retry := open(t, c, task("run-content", 1, 2, 2))
 	// The retry sends first, then charges another amount (a fresh
 	// call: same name, other input), then the same amount (answered
