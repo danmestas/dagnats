@@ -377,7 +377,14 @@ func TestServerMountsBridgeEndpoints(t *testing.T) {
 // worker can process a task end-to-end: register handler, start
 // server, register workflow via REST, start run, poll until done.
 func TestServer_EmbeddedWorkerCompletesRun(t *testing.T) {
-	cfg := testConfig(t)
+	runEmbeddedWorkflow(t, testConfig(t))
+}
+
+// runEmbeddedWorkflow starts a server from cfg, registers a one-step
+// workflow served by an embedded worker, waits for a run to complete, and
+// stops the server cleanly.
+func runEmbeddedWorkflow(t *testing.T, cfg Config) {
+	t.Helper()
 	srv := New(cfg)
 
 	if srv == nil {

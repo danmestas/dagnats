@@ -28,8 +28,6 @@ func startNATS(cfg Config) (*natsserver.Server, error) {
 		panic(fmt.Sprintf("startNATS: cfg.MaxStoreBytes <= 0: %d", cfg.MaxStoreBytes))
 	}
 
-	host := natsBindHost(cfg)
-
 	// 0 means "unset": keep the nats-server default (1 MiB). Config load
 	// already rejects bad explicit values; this guards a Config built
 	// directly in code (#735).
@@ -38,6 +36,9 @@ func startNATS(cfg Config) (*natsserver.Server, error) {
 			return nil, fmt.Errorf("invalid max_payload: %w", err)
 		}
 	}
+	if err := validateJetStreamDomain(cfg.JetStreamDomain); err != nil {
+		return nil, err
+	}
 
 	// Apply the soft Go memory limit (GOMEMLIMIT equivalent) so the runtime
 	// GCs harder and returns heap to the OS near the ceiling (#441). Skipped
@@ -45,52 +46,9 @@ func startNATS(cfg Config) (*natsserver.Server, error) {
 	_, goMemLimitSet := os.LookupEnv("GOMEMLIMIT")
 	applyGoMemoryLimit(cfg.MaxMemoryBytes, goMemLimitSet)
 
-	// Build server options
-	opts := &natsserver.Options{
-		Host:               host,
-		Port:               cfg.NATSPort,
-		HTTPPort:           cfg.MonitorPort,
-		JetStream:          true,
-		StoreDir:           cfg.DataDir,
-		JetStreamMaxStore:  cfg.MaxStoreBytes,
-		JetStreamMaxMemory: cfg.MaxMemoryBytes,
-		MaxPayload:         cfg.MaxPayload,
-		NoLog:              true,
-		NoSigs:             true,
-	}
-
-	// One user for every client; the WebSocket listener inherits it.
-	if cfg.NATSUser != "" {
-		if cfg.natsPassword == "" {
-			panic("startNATS: nats_user set but its password was not resolved")
-		}
-		opts.Username = cfg.NATSUser
-		opts.Password = cfg.natsPassword
-	}
-
-	// Configure leaf node if remotes specified
-	if len(cfg.LeafRemotes) > 0 {
-		err := configureLeafNode(opts, cfg)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// Configure embedded cluster if cluster routes specified.
-	if len(cfg.NATSClusterRoutes) > 0 {
-		err := configureCluster(opts, cfg)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// Configure the embedded NATS WebSocket listener for browser
-	// clients when an operator opts in via NATSWebsocketPort > 0.
-	if cfg.NATSWebsocketPort > 0 {
-		err := configureWebsocket(opts, cfg, host)
-		if err != nil {
-			return nil, err
-		}
+	opts, err := natsOptions(cfg)
+	if err != nil {
+		return nil, err
 	}
 
 	ns, err := tryStartNATS(opts)
@@ -101,6 +59,54 @@ func startNATS(cfg Config) (*natsserver.Server, error) {
 		return nil, err
 	}
 	return ns, nil
+}
+
+// natsOptions builds the embedded server's options from cfg: the client
+// listener, JetStream, the client login, and the leaf, cluster and
+// WebSocket listeners each when configured.
+func natsOptions(cfg Config) (*natsserver.Options, error) {
+	if cfg.DataDir == "" {
+		panic("natsOptions: cfg.DataDir is empty")
+	}
+	if cfg.NATSUser != "" && cfg.natsPassword == "" {
+		panic("natsOptions: nats_user set but its password was not resolved")
+	}
+	host := natsBindHost(cfg)
+	opts := &natsserver.Options{
+		Host:               host,
+		Port:               cfg.NATSPort,
+		HTTPPort:           cfg.MonitorPort,
+		JetStream:          true,
+		StoreDir:           cfg.DataDir,
+		JetStreamMaxStore:  cfg.MaxStoreBytes,
+		JetStreamMaxMemory: cfg.MaxMemoryBytes,
+		MaxPayload:         cfg.MaxPayload,
+		JetStreamDomain:    cfg.JetStreamDomain,
+		NoLog:              true,
+		NoSigs:             true,
+	}
+	// One user for every client; the WebSocket listener inherits it.
+	if cfg.NATSUser != "" {
+		opts.Username = cfg.NATSUser
+		opts.Password = cfg.natsPassword
+	}
+	if len(cfg.LeafRemotes) > 0 {
+		if err := configureLeafNode(opts, cfg); err != nil {
+			return nil, err
+		}
+	}
+	if len(cfg.NATSClusterRoutes) > 0 {
+		if err := configureCluster(opts, cfg); err != nil {
+			return nil, err
+		}
+	}
+	// The WebSocket listener for browser clients is opt-in.
+	if cfg.NATSWebsocketPort > 0 {
+		if err := configureWebsocket(opts, cfg, host); err != nil {
+			return nil, err
+		}
+	}
+	return opts, nil
 }
 
 // startNATSWithPortFallback handles the default-port conflict branch of
