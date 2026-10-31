@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.37] - 2026-10-31
+
+### Upgrade notes
+
+- **The bridge now caps request sizes.** A resolve body over 8 MiB answers `413 body_too_large`, a journal record over the server's `max_payload` answers `413 record_too_large` (it used to be an untyped `500`), and a `continue` on a journal step is now checked against `loop_state_max_bytes` like a plain step. A bridge worker that sent larger state or bodies than these limits needs to shrink them or raise `loop_state_max_bytes`.
+- **`@dagnats/bridge` ships as a release asset,** `dagnats-bridge-0.0.37.tgz`, not on npm.
+
 ### Added
 
 - **The bridge refuses oversize loop state and request bodies with a typed `413`.** A `checkpoint` over the task's `loop_state_max_bytes` (256 KiB by default) was accepted and only failed at `continue`, with an untyped error. Both now answer `413 {"code":"state_too_large","max_bytes":N,"bytes":M}`, and the `continue` check applies to journal steps too. A journal append (or other resolve) whose record exceeds the server's `max_payload` answers `413 {"code":"record_too_large","max_bytes":N}` instead of an untyped 500. A resolve body over 8 MiB, the largest `max_payload`, answers `413 {"code":"body_too_large"}` instead of being buffered whole. The HTTP bridge reference now says a checkpoint is durable only once a later `continue` commits it.
