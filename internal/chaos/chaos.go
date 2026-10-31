@@ -129,6 +129,27 @@ func Installed() bool {
 	return installed.Load() != nil
 }
 
+// Freezer is what a holder suspends while a hook holds it at a point. A
+// stall stands for a frozen process, and a frozen process sends no
+// heartbeat, so the worker hands in its task's automatic heartbeat.
+type Freezer interface {
+	Freeze()
+	Thaw()
+}
+
+type freezerKey struct{}
+
+// WithFreezer returns ctx carrying f, which At freezes around the hook.
+func WithFreezer(ctx context.Context, f Freezer) context.Context {
+	if ctx == nil {
+		panic("chaos.WithFreezer: ctx must not be nil")
+	}
+	if f == nil {
+		panic("chaos.WithFreezer: f must not be nil")
+	}
+	return context.WithValue(ctx, freezerKey{}, f)
+}
+
 // At runs the installed hook, when there is one, at p.
 func At(ctx context.Context, p Point, site Site) error {
 	if p <= 0 || p >= pointMax {
@@ -140,6 +161,10 @@ func At(ctx context.Context, p Point, site Site) error {
 	h := installed.Load()
 	if h == nil {
 		return nil
+	}
+	if f, ok := ctx.Value(freezerKey{}).(Freezer); ok {
+		f.Freeze()
+		defer f.Thaw()
 	}
 	return (*h)(ctx, p, site)
 }

@@ -90,7 +90,10 @@ func main() {
 	)
 
 	fmt.Println("Worker ready. Waiting for tasks...")
-	w.Start()
+	if err := w.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "start worker: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Block until Ctrl-C, then gracefully shut down.
 	sig := make(chan os.Signal, 1)

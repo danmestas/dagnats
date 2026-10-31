@@ -87,11 +87,13 @@ func startLoopEngineDef(
 
 // startFencingWorker starts a Worker for taskType with the short AckWait
 // and a drain timeout short enough to stop it while a handler blocks.
+// Its handlers send no automatic heartbeat: a blocked one stands in for
+// a stalled process, whose message must redeliver after AckWait.
 func startFencingWorker(
 	t *testing.T, nc *nats.Conn, taskType string, handler HandlerFunc,
 ) *Worker {
 	t.Helper()
-	w := NewWorker(nc)
+	w := NewWorker(nc, withoutAutoHeartbeat())
 	w.drainTimeout = 100 * time.Millisecond
 	w.Handle(taskType, handler, WithAckWait(fencingAckWait))
 	w.Start()

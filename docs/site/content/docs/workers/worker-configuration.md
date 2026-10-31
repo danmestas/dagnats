@@ -20,7 +20,9 @@ w := worker.NewWorker(nc,
 )
 w.Handle("resize-image", resizeHandler)
 w.HandleSingleton("billing-sync", billingHandler)
-w.Start()
+if err := w.Start(); err != nil {
+	log.Fatal(err)
+}
 defer w.Stop()
 ```
 
@@ -41,7 +43,9 @@ Groups route tasks to a subset of workers. When a step definition sets `WorkerGr
 ```go
 w := worker.NewWorker(nc, worker.WithGroups("gpu"))
 w.Handle("inference", inferenceHandler)
-w.Start()
+if err := w.Start(); err != nil {
+	log.Fatal(err)
+}
 ```
 
 Panics if called with zero groups or any empty group name -- both are programmer errors that should fail at startup.
@@ -53,7 +57,9 @@ Partitions enable the [pcgroups](https://github.com/synadia-io/orbit.go) elastic
 ```go
 w := worker.NewWorker(nc, worker.WithPartitions(16))
 w.Handle("process", handler)
-w.Start()
+if err := w.Start(); err != nil {
+	log.Fatal(err)
+}
 ```
 
 The partition count must be between 0 and 256. A larger value panics at construction time.
@@ -131,7 +137,7 @@ Call exactly one of `Complete`, `Fail`, `FailPermanent`, `FailRetryAfter`, or `C
 3. **Start** -- creates JetStream consumers, binds optional KV buckets, registers in the worker directory
 4. **Stop** -- stops the consumers, deregisters from the directory, then waits up to 30 seconds for handlers that are still running
 
-Start panics if no handlers are registered. Stop is safe to call after Start and cleans up all resources including the directory heartbeat goroutine. A handler that outlives the 30-second wait is logged and abandoned, so Stop always returns.
+Start panics if no handlers are registered. It returns an error when a consumer cannot be set up (stream missing, permission denied), after stopping the consumers it already started; build a new worker to retry. Stop is safe to call after Start and cleans up all resources including the directory heartbeat goroutine. A handler that outlives the 30-second wait is logged and abandoned, so Stop always returns.
 
 ## Optional KV Buckets
 

@@ -1,6 +1,8 @@
 package worker
 
 import (
+	"time"
+
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -50,28 +52,27 @@ func singletonConcurrencyPanic(taskType string) string {
 	return "singleton " + taskType + " cannot take WithConcurrency above 1"
 }
 
-// messageHandler returns the consume callback for one consumer lane of
-// taskType. At the default of 1 the callback runs the task inline,
-// exactly as before #842. Above 1 the lane gets its own n-slot semaphore:
-// each call makes a fresh one, and each consumer calls this once.
-func (w *Worker) messageHandler(
-	taskType string, handler HandlerFunc,
-) func(jetstream.Msg) {
-	if taskType == "" {
+// messageHandler returns the consume callback for one consumer lane. At
+// the default of 1 the callback runs the task inline, exactly as before
+// #842. Above 1 the lane gets its own n-slot semaphore: each call makes a
+// fresh one, and each consumer calls this once.
+func (w *Worker) messageHandler(l lane) func(jetstream.Msg) {
+	if l.taskType == "" {
 		panic("messageHandler: taskType must not be empty")
 	}
-	if handler == nil {
+	if l.handler == nil {
 		panic("messageHandler: handler must not be nil")
 	}
-	n := w.handlerConcurrency[taskType]
-	if n <= 1 {
+	n := max(w.handlerConcurrency[l.taskType], 1)
+	w.running.addLane(n)
+	if n == 1 {
 		return func(msg jetstream.Msg) {
-			w.handleMessage(taskType, handler, msg)
+			w.handleMessage(l, msg)
 		}
 	}
 	slots := make(chan struct{}, n)
 	return func(msg jetstream.Msg) {
-		w.dispatchConcurrent(taskType, handler, msg, slots)
+		w.dispatchConcurrent(l, msg, slots)
 	}
 }
 
@@ -79,10 +80,12 @@ func (w *Worker) messageHandler(
 // goroutine. Blocking while every slot is busy is the back-pressure: the
 // consumer takes no further message, as at n = 1, and nats.go pauses its
 // heartbeat monitor while a callback runs. The handlerWG Add happens here,
-// before the goroutine exists, so Stop's drain covers it.
+// before the goroutine exists, so Stop's drain covers it. The running
+// claim comes before the slot wait, so a redelivery that arrives while
+// every slot is busy is skipped at once instead of running after the
+// first delivery's ack.
 func (w *Worker) dispatchConcurrent(
-	taskType string, handler HandlerFunc, msg jetstream.Msg,
-	slots chan struct{},
+	l lane, msg jetstream.Msg, slots chan struct{},
 ) {
 	if msg == nil {
 		panic("dispatchConcurrent: msg must not be nil")
@@ -93,13 +96,21 @@ func (w *Worker) dispatchConcurrent(
 	if w.stopping == nil {
 		panic("dispatchConcurrent: worker not built by NewWorker")
 	}
+	c, v := w.running.claim(msg, time.Now())
+	if v != verdictRun {
+		skipDelivery(l.taskType, msg, c, v)
+		return
+	}
+	tracked := &ackTracker{Msg: msg}
 	select {
 	case slots <- struct{}{}:
 	case <-w.stopping:
+		w.releaseClaim(l, tracked, c)
 		_ = msg.Nak()
 		return
 	}
 	if !w.beginHandler() {
+		w.releaseClaim(l, tracked, c)
 		<-slots
 		_ = msg.Nak()
 		return
@@ -107,6 +118,7 @@ func (w *Worker) dispatchConcurrent(
 	go func() {
 		defer func() { <-slots }()
 		defer w.handlerWG.Done()
-		w.runMessage(taskType, handler, msg)
+		defer w.releaseClaim(l, tracked, c)
+		w.runMessage(l, tracked, c)
 	}()
 }

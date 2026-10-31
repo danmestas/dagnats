@@ -40,9 +40,12 @@ import (
 //
 // Cost: one ListConsumers iteration per call. Bounded at typical N (≤50
 // consumers); revisit if N grows. See ADR-010 "Consolidation path."
+//
+// Returns the infrastructure failures (stream missing, listing failed);
+// a collision itself is a configuration error and panics.
 func assertNoCrossProcessCollision(
 	ctx context.Context, js jetstream.JetStream, filter, durable string,
-) {
+) error {
 	if filter == "" {
 		panic("assertNoCrossProcessCollision: filter must not be empty")
 	}
@@ -52,7 +55,7 @@ func assertNoCrossProcessCollision(
 
 	stream, err := js.Stream(ctx, "TASK_QUEUES")
 	if err != nil {
-		panic("assertNoCrossProcessCollision: Stream: " + err.Error())
+		return fmt.Errorf("collision check: open TASK_QUEUES: %w", err)
 	}
 
 	iter := stream.ListConsumers(ctx)
@@ -65,7 +68,9 @@ func assertNoCrossProcessCollision(
 			continue
 		}
 		if consumername.FilterIsLegacyUpgrade(filter, info.Config.FilterSubject) {
-			upgradeLegacyDurable(ctx, stream, durable, filter)
+			if err := upgradeLegacyDurable(ctx, stream, durable, filter); err != nil {
+				return err
+			}
 			continue
 		}
 		panic(fmt.Sprintf(
@@ -77,8 +82,9 @@ func assertNoCrossProcessCollision(
 		))
 	}
 	if err := iter.Err(); err != nil {
-		panic("assertNoCrossProcessCollision: iterator: " + err.Error())
+		return fmt.Errorf("collision check: list TASK_QUEUES consumers: %w", err)
 	}
+	return nil
 }
 
 // upgradeLegacyDurable deletes durable so the caller's subsequent
@@ -98,7 +104,7 @@ func assertNoCrossProcessCollision(
 // filter at the moment of the re-check gets deleted.
 func upgradeLegacyDurable(
 	ctx context.Context, stream jetstream.Stream, durable, filter string,
-) {
+) error {
 	if durable == "" {
 		panic("upgradeLegacyDurable: durable must not be empty")
 	}
@@ -110,12 +116,9 @@ func upgradeLegacyDurable(
 	if err != nil {
 		if errors.Is(err, jetstream.ErrConsumerNotFound) {
 			// A sibling already deleted it; nothing left for us to do.
-			return
+			return nil
 		}
-		panic(
-			"upgradeLegacyDurable: Consumer lookup for " + durable +
-				": " + err.Error(),
-		)
+		return fmt.Errorf("legacy upgrade: look up %s: %w", durable, err)
 	}
 	info := cons.CachedInfo()
 	if info == nil {
@@ -127,7 +130,7 @@ func upgradeLegacyDurable(
 	current := info.Config.FilterSubject
 	if current == filter {
 		// A sibling already completed the upgrade. Idempotent no-op.
-		return
+		return nil
 	}
 	if !consumername.FilterIsLegacyUpgrade(filter, current) {
 		// The durable no longer matches the legacy shape we
@@ -135,7 +138,7 @@ func upgradeLegacyDurable(
 		// now. Don't delete state we no longer understand; leave it for
 		// the caller's CreateOrUpdateConsumer (or the next
 		// assertNoCrossProcessCollision pass) to react to.
-		return
+		return nil
 	}
 
 	slog.Warn(
@@ -146,9 +149,7 @@ func upgradeLegacyDurable(
 	)
 	if err := stream.DeleteConsumer(ctx, durable); err != nil &&
 		!errors.Is(err, jetstream.ErrConsumerNotFound) {
-		panic(
-			"upgradeLegacyDurable: DeleteConsumer for legacy upgrade " +
-				"of " + durable + ": " + err.Error(),
-		)
+		return fmt.Errorf("legacy upgrade: delete %s: %w", durable, err)
 	}
+	return nil
 }

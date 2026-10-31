@@ -339,6 +339,43 @@ func (s *Server) startComponents() error {
 	printStep(os.Stderr, "trigger service started")
 
 	// Materialize embedded workers (after streams & KV exist)
+	if err := s.startEmbeddedWorkers(); err != nil {
+		s.trig.Stop()
+		s.orch.Stop()
+		s.natsAPI.Stop()
+		s.telShutdown(context.Background())
+		s.nc.Close()
+		s.ns.Shutdown()
+		return err
+	}
+	if len(s.workers) > 0 {
+		printStep(os.Stderr, "embedded workers started")
+	}
+	s.workerShims = nil // no ambiguous stale state
+
+	// Phase 4 / ADR-018: start the dagnats.yaml hot-reload watcher
+	// after all components are up. A failure here is logged and
+	// swallowed — the rest of the server is healthy without the
+	// declarative config layer, and refusing to start over a
+	// watcher problem would be worse than running without reload.
+	if err := s.startConfigWatcher(); err != nil {
+		slog.Warn("configfile watcher disabled",
+			"path", s.cfg.ConfigFilePath, "err", err)
+	}
+
+	return nil
+}
+
+// startEmbeddedWorkers builds and starts one Worker per WorkerShim.
+// On a Start failure it stops the workers already started, so the
+// caller only has to unwind the components it started itself.
+func (s *Server) startEmbeddedWorkers() error {
+	if s.nc == nil {
+		panic("startEmbeddedWorkers: nc must not be nil")
+	}
+	if len(s.workers) != 0 {
+		panic("startEmbeddedWorkers: workers already started")
+	}
 	for _, shim := range s.workerShims {
 		var opts []worker.WorkerOption
 		if len(shim.groups) > 0 {
@@ -356,26 +393,17 @@ func (s *Server) startComponents() error {
 			}
 		}
 		if len(shim.registrations) > 0 {
-			w.Start()
+			if err := w.Start(); err != nil {
+				for _, started := range s.workers {
+					started.Stop()
+				}
+				s.workers = nil
+				return fmt.Errorf("start embedded worker: %w", err)
+			}
 			s.workers = append(s.workers, w)
 		}
 		shim.started = true
 	}
-	if len(s.workers) > 0 {
-		printStep(os.Stderr, "embedded workers started")
-	}
-	s.workerShims = nil // no ambiguous stale state
-
-	// Phase 4 / ADR-018: start the dagnats.yaml hot-reload watcher
-	// after all components are up. A failure here is logged and
-	// swallowed — the rest of the server is healthy without the
-	// declarative config layer, and refusing to start over a
-	// watcher problem would be worse than running without reload.
-	if err := s.startConfigWatcher(); err != nil {
-		slog.Warn("configfile watcher disabled",
-			"path", s.cfg.ConfigFilePath, "err", err)
-	}
-
 	return nil
 }
 

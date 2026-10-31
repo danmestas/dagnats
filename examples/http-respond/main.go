@@ -62,7 +62,10 @@ func main() {
 	)
 
 	fmt.Println("Worker ready. Waiting for /api/echo requests...")
-	w.Start()
+	if err := w.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "start worker: %v\n", err)
+		os.Exit(1)
+	}
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)

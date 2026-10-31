@@ -73,7 +73,10 @@ func main() {
 	w.Handle("finalize", handleFinalize)
 
 	fmt.Println("Worker ready. Waiting for tasks...")
-	w.Start()
+	if err := w.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "start worker: %v\n", err)
+		os.Exit(1)
+	}
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)

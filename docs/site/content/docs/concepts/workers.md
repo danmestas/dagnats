@@ -140,7 +140,9 @@ Every terminal method flushes buffered log bytes and writes an attempt-ending ma
 `Stop()` unsubscribes all JetStream consumers, stops the heartbeat goroutine, and deregisters from the worker directory KV bucket. In-flight tasks that have not yet called a terminal method are redelivered by JetStream after `AckWait` expires. A redelivery continues the attempt's step timeout; it does not restart it.
 
 ```go
-w.Start()
+if err := w.Start(); err != nil {
+	log.Fatal(err)
+}
 defer w.Stop()
 
 // Block until shutdown signal

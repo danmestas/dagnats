@@ -78,7 +78,7 @@ func TestCrossProcessCollision_DifferentFilter_Panics(t *testing.T) {
 	}()
 
 	w := NewWorker(nc)
-	w.subscribePullConsumer("foo", "",
+	mustSubscribePull(w, "foo", "",
 		func(ctx TaskContext) error { return nil })
 }
 
@@ -111,7 +111,7 @@ func TestCrossProcessCollision_SameFilter_NoPanic(t *testing.T) {
 	}
 
 	w := NewWorker(nc)
-	cc := w.subscribePullConsumer("foo", "",
+	cc := mustSubscribePull(w, "foo", "",
 		func(ctx TaskContext) error { return nil })
 	t.Cleanup(cc.Stop)
 
@@ -145,7 +145,7 @@ func TestCrossProcessCollision_EmptyStream_NoPanic(t *testing.T) {
 	}
 
 	w := NewWorker(nc)
-	cc := w.subscribePullConsumer("foo", "",
+	cc := mustSubscribePull(w, "foo", "",
 		func(ctx TaskContext) error { return nil })
 	t.Cleanup(cc.Stop)
 
@@ -208,7 +208,7 @@ func TestCrossProcessCollision_LegacyFilter_AutoUpgrades(t *testing.T) {
 
 	logs := captureLogs(t, func() {
 		w := NewWorker(nc)
-		cc := w.subscribePullConsumer("foo", "",
+		cc := mustSubscribePull(w, "foo", "",
 			func(ctx TaskContext) error { return nil })
 		t.Cleanup(cc.Stop)
 	})
@@ -290,6 +290,7 @@ func TestUpgradeLegacyDurable_ConcurrentCallsDeleteAtMostOnce(t *testing.T) {
 	}
 
 	var panicked [2]any
+	var upgradeErrs [2]error
 	var wg sync.WaitGroup
 	start := make(chan struct{})
 	for i := 0; i < 2; i++ {
@@ -298,7 +299,9 @@ func TestUpgradeLegacyDurable_ConcurrentCallsDeleteAtMostOnce(t *testing.T) {
 			defer wg.Done()
 			defer func() { panicked[idx] = recover() }()
 			<-start
-			upgradeLegacyDurable(ctx, stream, "workers-race", "task.race.*")
+			upgradeErrs[idx] = upgradeLegacyDurable(
+				ctx, stream, "workers-race", "task.race.*",
+			)
 		}(i)
 	}
 	close(start)
@@ -306,6 +309,9 @@ func TestUpgradeLegacyDurable_ConcurrentCallsDeleteAtMostOnce(t *testing.T) {
 	for i, p := range panicked {
 		if p != nil {
 			t.Fatalf("goroutine %d panicked: %v", i, p)
+		}
+		if upgradeErrs[i] != nil {
+			t.Fatalf("goroutine %d upgrade failed: %v", i, upgradeErrs[i])
 		}
 	}
 
@@ -357,7 +363,7 @@ func TestCrossProcessCollision_UpgradedDurable_MultipleWorkersConsume(t *testing
 
 	var counts [2]atomic.Int32
 	w1 := NewWorker(nc)
-	cc1 := w1.subscribePullConsumer("race", "",
+	cc1 := mustSubscribePull(w1, "race", "",
 		func(tc TaskContext) error {
 			counts[0].Add(1)
 			return tc.Complete([]byte(`"done"`))
@@ -368,7 +374,7 @@ func TestCrossProcessCollision_UpgradedDurable_MultipleWorkersConsume(t *testing
 	// idempotent same-filter path (TestCrossProcessCollision_
 	// SameFilter_NoPanic), no delete involved.
 	w2 := NewWorker(nc)
-	cc2 := w2.subscribePullConsumer("race", "",
+	cc2 := mustSubscribePull(w2, "race", "",
 		func(tc TaskContext) error {
 			counts[1].Add(1)
 			return tc.Complete([]byte(`"done"`))

@@ -105,7 +105,9 @@ func (h *Harness) Start(t *testing.T) {
 	if h.Worker == nil {
 		panic("Start: worker must not be nil")
 	}
-	h.Worker.Start()
+	if err := h.Worker.Start(); err != nil {
+		t.Fatalf("Start: start worker: %v", err)
+	}
 	t.Cleanup(func() { h.Worker.Stop() })
 }
 

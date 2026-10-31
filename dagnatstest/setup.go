@@ -75,7 +75,9 @@ func Worker[I, O any](
 
 	w := worker.NewWorker(nc)
 	worker.HandleTyped(w, taskType, fn)
-	w.Start()
+	if err := w.Start(); err != nil {
+		t.Fatalf("dagnatstest.Worker: start: %v", err)
+	}
 	t.Cleanup(func() { w.Stop() })
 	return w
 }

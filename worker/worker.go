@@ -8,12 +8,15 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/danmestas/dagnats/inputs"
+	"github.com/danmestas/dagnats/internal/chaos"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/runstate"
 	"github.com/danmestas/dagnats/journal"
@@ -83,7 +86,10 @@ type TaskContext interface {
 
 	// Streaming and heartbeat. PutStream is a non-durable preview
 	// (ADR-026): a journal step that crashes mid-stream re-sends the
-	// request; Journal().Model holds the durable response.
+	// request; Journal().Model holds the durable response. The
+	// worker heartbeats on its own while the handler runs, so
+	// Heartbeat is never needed against redelivery; it returns
+	// ErrRunCancelled once the run is cancelled.
 	PutStream(data []byte) error
 	Heartbeat() error
 
@@ -195,6 +201,10 @@ type Worker struct {
 	cancels   cancelRegistry
 	cancelSub *nats.Subscription
 
+	// running holds the messages in flight here, so a redelivery of one
+	// is skipped rather than run twice (see skipRunning).
+	running runningSet
+
 	// handlerWG tracks in-flight handleMessage calls so Stop() can drain
 	// them before returning (#498). Every Add happens through
 	// beginHandler(), which is guarded by drainMu — that closes the race
@@ -210,6 +220,17 @@ type Worker struct {
 	// stopping closes once the consumers stop, so a consume callback
 	// waiting for a WithConcurrency slot gives up instead of outliving Stop.
 	stopping chan struct{}
+	// abandoned closes when Stop's drain times out. The automatic
+	// heartbeat of a handler still running then stops, so its message
+	// redelivers to a live worker instead of staying held by this one.
+	abandoned chan struct{}
+	// heartbeatMax caps one task's automatic heartbeat (WithHeartbeatMax);
+	// handlerMaxRunTime holds per-task WithMaxRunTime overrides.
+	heartbeatMax      time.Duration
+	handlerMaxRunTime map[string]time.Duration
+	// autoHeartbeatOff is a test seam (withoutAutoHeartbeat) that models
+	// a frozen process: a handler that blocks then sends no heartbeat.
+	autoHeartbeatOff bool
 
 	// Pre-allocated metric instruments — created once in constructor.
 	stepDuration          metric.Float64Histogram
@@ -400,7 +421,9 @@ func NewWorker(
 		cancelledTasksSkipped: skipped,
 		logChunkFailures:      logChunkFail,
 		drainTimeout:          defaultDrainTimeout,
+		heartbeatMax:          DefaultHeartbeatMax,
 		stopping:              make(chan struct{}),
+		abandoned:             make(chan struct{}),
 	}
 	for _, opt := range opts {
 		if opt == nil {
@@ -533,11 +556,15 @@ func newDirectoryOptional(
 }
 
 // Start creates JetStream subscriptions for all registered task
-// types. Panics if any subscription fails — stream
-// misconfiguration is a startup error. Binds optional KV buckets
-// for checkpoints and signals (nil if not present). When groups
-// are configured, subscribes to group-specific subjects.
-func (w *Worker) Start() {
+// types, in task-type order. Binds optional KV buckets for
+// checkpoints and signals (nil if not present). When groups are
+// configured, subscribes to group-specific subjects.
+//
+// A failure to subscribe (stream not ready, permission denied) is
+// returned, after Start stops what it already started: the Worker
+// is then stopped, and retrying takes a new Worker. Programmer
+// errors (no handlers, colliding task types) still panic.
+func (w *Worker) Start() error {
 	if len(w.handlers) == 0 {
 		panic("Worker.Start: no handlers registered")
 	}
@@ -551,9 +578,14 @@ func (w *Worker) Start() {
 	w.registerDirectory()
 	w.subscribeCancel()
 
-	for taskType, handler := range w.handlers {
-		w.subscribeTask(taskType, handler)
+	for _, taskType := range slices.Sorted(maps.Keys(w.handlers)) {
+		err := w.subscribeTask(taskType, w.handlers[taskType])
+		if err != nil {
+			w.Stop()
+			return fmt.Errorf("worker start: %w", err)
+		}
 	}
+	return nil
 }
 
 // bindOptionalKV binds checkpoint and signal KV buckets if they
@@ -640,87 +672,97 @@ func (w *Worker) registerDirectory() {
 // subscribeTask creates JetStream subscriptions for a single task
 // type. When groups are configured, subscribes per-group. Also
 // subscribes to the sticky subject for worker-affinity routing.
+// Each consumer joins w.stoppers as soon as it exists, so a later
+// failure's Stop ends it.
 func (w *Worker) subscribeTask(
 	taskType string, handler HandlerFunc,
-) {
+) error {
 	if taskType == "" {
 		panic("subscribeTask: taskType must not be empty")
 	}
 	if handler == nil {
 		panic("subscribeTask: handler must not be nil")
 	}
-
-	h := handler
-	tt := taskType
-
 	if w.partitions > 0 {
-		partCount := w.partitions
-		if w.singletons[tt] {
-			partCount = 1
-		}
-		// Routed through consumerFilterFor/consumerNameFor (not built
-		// inline) so a partitioned worker's filter carries the same
-		// one-trailing-token anchor and sanitization a non-partitioned
-		// worker's subscribePullConsumer uses — otherwise a partitioned
-		// "build" worker would (a) still wildcard-leak "build.linux"
-		// dispatches and (b) collide on TASK_QUEUES with a
-		// non-partitioned worker of the same task type, whose filter is
-		// now "*"-anchored (#674).
-		filter := consumerFilterFor(tt, "")
-		groupName := consumerNameFor(tt, "")
-		if len(w.groups) > 0 {
-			for _, group := range w.groups {
-				gFilter := consumerFilterFor(tt, group)
-				gName := consumerNameFor(tt, group)
-				cc := w.createElasticConsumer(
-					tt, gName, gFilter,
-					partCount, h,
-				)
-				w.stoppers = append(
-					w.stoppers, cc,
-				)
-			}
-		} else {
-			cc := w.createElasticConsumer(
-				tt, groupName, filter,
-				partCount, h,
-			)
-			w.stoppers = append(
-				w.stoppers, cc,
-			)
-		}
-	} else {
-		if len(w.groups) == 0 {
-			cc := w.subscribePullConsumer(tt, "", h)
-			w.stoppers = append(w.stoppers, cc)
-			// Sticky subscription on STICKY_TASKS stream
-			// (separate from TASK_QUEUES to avoid work queue
-			// filter conflict). Missing stream is fine.
-			stickyCC := w.createStickyConsumer(tt, h)
-			if stickyCC != nil {
-				w.stoppers = append(w.stoppers, stickyCC)
-			}
-		} else {
-			for _, group := range w.groups {
-				cc := w.subscribePullConsumer(tt, group, h)
-				w.stoppers = append(w.stoppers, cc)
-			}
-		}
+		return w.subscribeElastic(taskType, handler)
 	}
+	if len(w.groups) > 0 {
+		for _, group := range w.groups {
+			cc, err := w.subscribePullConsumer(taskType, group, handler)
+			if err != nil {
+				return err
+			}
+			w.stoppers = append(w.stoppers, cc)
+		}
+		return nil
+	}
+	cc, err := w.subscribePullConsumer(taskType, "", handler)
+	if err != nil {
+		return err
+	}
+	w.stoppers = append(w.stoppers, cc)
+	// Sticky subscription on STICKY_TASKS stream (separate from
+	// TASK_QUEUES to avoid work queue filter conflict). Missing
+	// stream is fine.
+	if stickyCC := w.createStickyConsumer(taskType, handler); stickyCC != nil {
+		w.stoppers = append(w.stoppers, stickyCC)
+	}
+	return nil
+}
+
+// subscribeElastic joins taskType's pcgroups elastic consumer group,
+// one per worker group when groups are configured.
+//
+// Routed through consumerFilterFor/consumerNameFor (not built inline)
+// so a partitioned worker's filter carries the same one-trailing-token
+// anchor and sanitization a non-partitioned worker's
+// subscribePullConsumer uses — otherwise a partitioned "build" worker
+// would (a) still wildcard-leak "build.linux" dispatches and (b)
+// collide on TASK_QUEUES with a non-partitioned worker of the same task
+// type, whose filter is now "*"-anchored (#674).
+func (w *Worker) subscribeElastic(
+	taskType string, handler HandlerFunc,
+) error {
+	if w.partitions <= 0 {
+		panic("subscribeElastic: partitions must be positive")
+	}
+	if handler == nil {
+		panic("subscribeElastic: handler must not be nil")
+	}
+	partCount := w.partitions
+	if w.singletons[taskType] {
+		partCount = 1
+	}
+	groups := w.groups
+	if len(groups) == 0 {
+		groups = []string{""}
+	}
+	for _, group := range groups {
+		cc, err := w.createElasticConsumer(
+			taskType, consumerNameFor(taskType, group),
+			consumerFilterFor(taskType, group), partCount, handler,
+		)
+		if err != nil {
+			return err
+		}
+		w.stoppers = append(w.stoppers, cc)
+	}
+	return nil
 }
 
 // subscribePullConsumer attaches a worker to a durable JetStream pull
 // consumer on TASK_QUEUES, creating it if absent. Idempotent across
 // worker restarts. Cleans up orphan ephemeral consumers with the same
 // filter subject before creation (see ADR-006 §3, added in Task 7).
-// Panics on setup failure; stream/consumer setup errors are startup-fatal.
+// Returns setup failures (stream missing, permission denied) for Start to
+// report; panics only on programmer errors.
 //
 // The durable name and filter subject are derived from (taskType, group)
 // via consumerNameFor and consumerFilterFor. AckWait derives from per-task
 // override (see WithAckWait) or defaultAckWait.
 func (w *Worker) subscribePullConsumer(
 	taskType, group string, handler HandlerFunc,
-) jetstream.ConsumeContext {
+) (jetstream.ConsumeContext, error) {
 	if taskType == "" {
 		panic("subscribePullConsumer: taskType must not be empty")
 	}
@@ -747,8 +789,12 @@ func (w *Worker) subscribePullConsumer(
 	// catches the steady-state collision after one worker creates the
 	// durable, even though a TOCTOU window at CreateOrUpdateConsumer
 	// remains; running it after cleanup does not change that property.
-	w.cleanupOrphanEphemerals(ctx, filter, durable)
-	assertNoCrossProcessCollision(ctx, w.js, filter, durable)
+	if err := w.cleanupOrphanEphemerals(ctx, filter, durable); err != nil {
+		return nil, err
+	}
+	if err := assertNoCrossProcessCollision(ctx, w.js, filter, durable); err != nil {
+		return nil, err
+	}
 	if group != "" {
 		checkStrandedGroupSubject(ctx, w.js, taskType, group)
 	}
@@ -767,19 +813,20 @@ func (w *Worker) subscribePullConsumer(
 	}
 	cons, err := w.js.CreateOrUpdateConsumer(ctx, "TASK_QUEUES", cfg)
 	if err != nil {
-		panic("subscribePullConsumer: CreateOrUpdateConsumer for " +
-			durable + ": " + err.Error())
+		return nil, fmt.Errorf(
+			"create consumer %s on TASK_QUEUES: %w", durable, err,
+		)
 	}
 
+	l := lane{taskType: taskType, handler: handler, ackWait: ackWait}
 	cc, err := cons.Consume(
-		w.messageHandler(taskType, handler),
+		w.messageHandler(l),
 		jetstream.ConsumeErrHandler(consumeErrHandler(durable)),
 	)
 	if err != nil {
-		panic("subscribePullConsumer: Consume for " + durable + ": " +
-			err.Error())
+		return nil, fmt.Errorf("consume %s: %w", durable, err)
 	}
-	return cc
+	return cc, nil
 }
 
 // consumeErrHandler logs Consume() background-loop errors instead of
@@ -810,7 +857,7 @@ func consumeErrHandler(label string) jetstream.ConsumeErrHandlerFunc {
 // 1 a stale orphan would re-trigger #136 in deployments with enough state.
 func (w *Worker) cleanupOrphanEphemerals(
 	ctx context.Context, filter, durable string,
-) {
+) error {
 	if filter == "" {
 		panic("cleanupOrphanEphemerals: filter must not be empty")
 	}
@@ -820,7 +867,7 @@ func (w *Worker) cleanupOrphanEphemerals(
 
 	stream, err := w.js.Stream(ctx, "TASK_QUEUES")
 	if err != nil {
-		panic("cleanupOrphanEphemerals: Stream: " + err.Error())
+		return fmt.Errorf("orphan cleanup: open TASK_QUEUES: %w", err)
 	}
 
 	iter := stream.ListConsumers(ctx)
@@ -846,16 +893,18 @@ func (w *Worker) cleanupOrphanEphemerals(
 			if errors.Is(err, jetstream.ErrConsumerNotFound) {
 				continue // sibling worker beat us; nothing to log
 			}
-			panic("cleanupOrphanEphemerals: Consumer lookup for " +
-				info.Name + ": " + err.Error())
+			return fmt.Errorf(
+				"orphan cleanup: look up %s: %w", info.Name, err,
+			)
 		}
 		err := stream.DeleteConsumer(ctx, info.Name)
 		if err != nil {
 			if errors.Is(err, jetstream.ErrConsumerNotFound) {
 				continue
 			}
-			panic("cleanupOrphanEphemerals: DeleteConsumer for " +
-				info.Name + ": " + err.Error())
+			return fmt.Errorf(
+				"orphan cleanup: delete %s: %w", info.Name, err,
+			)
 		}
 		slog.Info("removing orphan ephemeral consumer for migration to durable",
 			"consumer_name", info.Name,
@@ -866,8 +915,9 @@ func (w *Worker) cleanupOrphanEphemerals(
 		)
 	}
 	if err := iter.Err(); err != nil {
-		panic("cleanupOrphanEphemerals: iterator: " + err.Error())
+		return fmt.Errorf("orphan cleanup: list TASK_QUEUES consumers: %w", err)
 	}
+	return nil
 }
 
 // createStickyConsumer sets up a pull consumer on the STICKY_TASKS
@@ -903,8 +953,17 @@ func (w *Worker) createStickyConsumer(
 	if err != nil {
 		return nil
 	}
+	// The config leaves AckWait to the server default; the created
+	// consumer's info carries the value the server chose.
+	info := cons.CachedInfo()
+	if info == nil || info.Config.AckWait <= 0 {
+		return nil
+	}
+	l := lane{
+		taskType: taskType, handler: handler, ackWait: info.Config.AckWait,
+	}
 	cc, err := cons.Consume(
-		w.messageHandler(taskType, handler),
+		w.messageHandler(l),
 		jetstream.ConsumeErrHandler(consumeErrHandler(subject)),
 	)
 	if err != nil {
@@ -912,6 +971,13 @@ func (w *Worker) createStickyConsumer(
 	}
 	return cc
 }
+
+// elasticAckWait is the AckWait of every elastic member consumer. It is
+// pcgroups' own default, set explicitly so the automatic heartbeat
+// knows the deadline it has to beat. pcgroups also derives the member
+// consumer's InactiveThreshold from it, so changing it changes how fast
+// a departed member's consumer is reaped.
+const elasticAckWait = 5 * time.Second
 
 // createElasticConsumer sets up a pcgroups elastic consumer
 // group for the given task type. Creates the group (idempotent)
@@ -922,16 +988,12 @@ func (w *Worker) createElasticConsumer(
 	filter string,
 	partitions int,
 	handler HandlerFunc,
-) pcgroups.ConsumerGroupConsumeContext {
+) (pcgroups.ConsumerGroupConsumeContext, error) {
 	if taskType == "" {
-		panic(
-			"createElasticConsumer: taskType must not be empty",
-		)
+		panic("createElasticConsumer: taskType must not be empty")
 	}
 	if partitions <= 0 {
-		panic(
-			"createElasticConsumer: partitions must be positive",
-		)
+		panic("createElasticConsumer: partitions must be positive")
 	}
 
 	ctx := context.Background()
@@ -946,8 +1008,9 @@ func (w *Worker) createElasticConsumer(
 		0,    // maxBufferedBytes (unlimited)
 	)
 	if err != nil {
-		panic("createElasticConsumer: CreateElastic: " +
-			groupName + ": " + err.Error())
+		return nil, fmt.Errorf(
+			"create elastic group %s on TASK_QUEUES: %w", groupName, err,
+		)
 	}
 
 	// Register this worker as a member so the group
@@ -957,21 +1020,23 @@ func (w *Worker) createElasticConsumer(
 		[]string{w.workerID},
 	)
 	if err != nil {
-		panic("createElasticConsumer: AddMembers: " +
-			groupName + ": " + err.Error())
+		return nil, fmt.Errorf(
+			"join elastic group %s: %w", groupName, err,
+		)
 	}
 
+	l := lane{taskType: taskType, handler: handler, ackWait: elasticAckWait}
 	cc, err := pcgroups.ElasticConsume(
 		ctx, w.js, "TASK_QUEUES", groupName,
 		w.workerID,
-		w.messageHandler(taskType, handler),
+		w.messageHandler(l),
 		jetstream.ConsumerConfig{
 			AckPolicy: jetstream.AckExplicitPolicy,
+			AckWait:   elasticAckWait,
 		},
 	)
 	if err != nil {
-		panic("createElasticConsumer: ElasticConsume: " +
-			groupName + ": " + err.Error())
+		return nil, w.leaveElasticGroup(ctx, groupName, err)
 	}
 
 	slog.Info("elastic consumer group joined",
@@ -980,7 +1045,28 @@ func (w *Worker) createElasticConsumer(
 		"partitions", partitions,
 	)
 
-	return cc
+	return cc, nil
+}
+
+// leaveElasticGroup removes this worker from groupName after consuming
+// failed: still a member, it would hold partitions nothing consumes.
+// Returns consumeErr joined with any failure to leave.
+func (w *Worker) leaveElasticGroup(
+	ctx context.Context, groupName string, consumeErr error,
+) error {
+	if groupName == "" {
+		panic("leaveElasticGroup: groupName must not be empty")
+	}
+	if consumeErr == nil {
+		panic("leaveElasticGroup: consumeErr must not be nil")
+	}
+	_, leaveErr := pcgroups.DeleteMembers(
+		ctx, w.js, "TASK_QUEUES", groupName, []string{w.workerID},
+	)
+	return errors.Join(
+		fmt.Errorf("consume elastic group %s: %w", groupName, consumeErr),
+		leaveErr,
+	)
 }
 
 // heartbeatLoop re-registers the worker every 30s to refresh the
@@ -1139,6 +1225,7 @@ func (w *Worker) awaitHandlers() {
 	select {
 	case <-done:
 	case <-time.After(timeout):
+		close(w.abandoned)
 		slog.Warn(
 			"worker.Stop: drain timeout — in-flight handlers did not finish",
 			"worker_id", w.workerID,
@@ -1275,15 +1362,20 @@ func (w *Worker) publishWorkerStatus(skipped uint64) {
 
 // handleMessage unmarshals the task payload, creates a traced
 // context, executes the handler, and records metrics.
-func (w *Worker) handleMessage(
-	taskType string, handler HandlerFunc, msg jetstream.Msg,
-) {
+func (w *Worker) handleMessage(l lane, msg jetstream.Msg) {
 	if msg == nil {
 		panic("handleMessage: msg must not be nil")
 	}
-	if handler == nil {
+	if l.handler == nil {
 		panic("handleMessage: handler must not be nil")
 	}
+	c, v := w.running.claim(msg, time.Now())
+	if v != verdictRun {
+		skipDelivery(l.taskType, msg, c, v)
+		return
+	}
+	tracked := &ackTracker{Msg: msg}
+	defer w.releaseClaim(l, tracked, c)
 	// Register this call with handlerWG before doing any work so Stop()
 	// can drain it (#498). If the worker is already draining, bail out
 	// without Add-ing — NAK (not Ack) so the message redelivers to a
@@ -1294,7 +1386,20 @@ func (w *Worker) handleMessage(
 		return
 	}
 	defer w.handlerWG.Done()
-	w.runMessage(taskType, handler, msg)
+	w.runMessage(l, tracked, c)
+}
+
+// releaseClaim ends c once its delivery is settled. An acked message is
+// remembered for two AckWaits: long enough to catch a delivery queued
+// behind the run and a redelivery after a lost ack.
+func (w *Worker) releaseClaim(l lane, tracked *ackTracker, c claim) {
+	if tracked == nil {
+		panic("releaseClaim: tracked must not be nil")
+	}
+	if l.ackWait <= 0 {
+		panic("releaseClaim: ackWait must be positive")
+	}
+	w.running.release(c, tracked.acked.Load(), 2*l.ackWait, time.Now())
 }
 
 // decodeTask unmarshals msg's payload and screens out tasks of cancelled
@@ -1337,26 +1442,24 @@ func (w *Worker) decodeTask(
 // runMessage executes one task whose handlerWG slot the caller holds:
 // inline from handleMessage, or on its own goroutine from
 // dispatchConcurrent.
-func (w *Worker) runMessage(
-	taskType string, handler HandlerFunc, msg jetstream.Msg,
-) {
+func (w *Worker) runMessage(l lane, msg jetstream.Msg, c claim) {
 	if msg == nil {
 		panic("runMessage: msg must not be nil")
 	}
-	if handler == nil {
+	if l.handler == nil {
 		panic("runMessage: handler must not be nil")
 	}
-	payload, ok := w.decodeTask(taskType, msg)
+	payload, ok := w.decodeTask(l.taskType, msg)
 	if !ok {
 		return
 	}
-	ctx, span, tc := w.startTaskSpan(payload, taskType, msg)
+	ctx, span, tc := w.startTaskSpan(payload, l.taskType, msg)
 	defer tc.releaseCancel()
 	defer span.End()
 	w.tasksActive.Add(ctx, 1)
 	start := time.Now()
 	slog.InfoContext(ctx, "executing task",
-		"task_type", taskType,
+		"task_type", l.taskType,
 		"run_id", payload.RunID,
 		"step_id", payload.StepID,
 	)
@@ -1364,7 +1467,7 @@ func (w *Worker) runMessage(
 	if err := tc.publishStarted(msg); err != nil {
 		slog.ErrorContext(ctx, "failed to begin attempt — NAK and retry",
 			"error", err,
-			"task_type", taskType,
+			"task_type", l.taskType,
 			"run_id", payload.RunID,
 			"step_id", payload.StepID,
 		)
@@ -1372,10 +1475,35 @@ func (w *Worker) runMessage(
 		return
 	}
 
-	err := handler(tc)
+	progress := w.startProgress(msg, l, tc, c)
+	// The deferred stop covers a panicking handler; Pause stops the
+	// ticker itself before its NAK, and the explicit stop below precedes
+	// every Ack and NAK settleMessage sends.
+	defer progress.stop()
+	tc.progress = progress
+	if chaos.Installed() {
+		tc.ctx = chaos.WithFreezer(tc.ctx, progress)
+	}
+	err := l.handler(tc)
+	progress.stop()
 	elapsed := float64(time.Since(start).Milliseconds())
 	w.stepDuration.Record(ctx, elapsed)
 	w.tasksActive.Add(ctx, -1)
+	w.settleMessage(err, tc, span, msg, l.taskType)
+}
+
+// settleMessage sends the one Ack or NAK that ends a delivery once its
+// handler has returned with err.
+func (w *Worker) settleMessage(
+	err error, tc *taskContext, span trace.Span, msg jetstream.Msg,
+	taskType string,
+) {
+	if tc == nil {
+		panic("settleMessage: tc must not be nil")
+	}
+	if msg == nil {
+		panic("settleMessage: msg must not be nil")
+	}
 	// A journal step the journal stopped (stale, fenced or already
 	// committed) is settled here: never a step.failed for it.
 	if done, ack := tc.journalOutcome(err); done {
@@ -1387,7 +1515,7 @@ func (w *Worker) runMessage(
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		w.handleTaskError(err, tc, msg, taskType, payload.RunID)
+		w.handleTaskError(err, tc, msg, taskType, tc.runID)
 		return
 	}
 	// #624 review round 2: a handler that returns nil WITHOUT ever

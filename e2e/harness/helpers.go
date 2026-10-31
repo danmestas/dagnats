@@ -229,7 +229,9 @@ func SubscribeWorker(
 	}
 	w := worker.NewWorker(nc)
 	w.Handle(taskName, handler)
-	w.Start()
+	if err := w.Start(); err != nil {
+		t.Fatalf("start worker: %v", err)
+	}
 	t.Cleanup(func() { w.Stop() })
 	return w
 }
