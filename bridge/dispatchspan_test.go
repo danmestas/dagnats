@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -109,7 +110,7 @@ func postPoll(
 // poll must cost zero spans, and a poll that hands out N tasks must
 // cost exactly N bridge.dispatch spans — never a per-request span.
 func TestPollSpanVolumeIsWorkProportional(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	// Bounded store budget: these tests need a few KB, and the default
 	// 10 GiB budget makes stream creation fail on a host with less
 	// free disk than that.
@@ -191,7 +192,7 @@ func TestDispatchSpanJoinsInboundTaskTrace(t *testing.T) {
 		),
 	)
 
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	// Bounded store budget: these tests need a few KB, and the default
 	// 10 GiB budget makes stream creation fail on a host with less
 	// free disk than that.

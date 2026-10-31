@@ -12,11 +12,12 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
 func TestRunStart_JSONFlag_StdoutIsParseableJSON(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

@@ -19,6 +19,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	enginepkg "github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -26,7 +27,7 @@ import (
 )
 
 func TestEndToEnd_LifecycleEventsFire(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -152,7 +153,7 @@ func TestEndToEnd_AttemptsVisibleDuringRun(t *testing.T) {
 	// Methodology: this is the original #137 bug repro. Start a long
 	// task (handler blocks on a channel), then sample run state during
 	// the block. Assert Status=Running, Attempts=1 — proving the fix.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -228,7 +229,7 @@ func TestEndToEnd_RetryViaNakIncrementsAttempts(t *testing.T) {
 	// the second. Assert run final state has Attempts=2 and the
 	// history stream contains both step.started events with distinct
 	// AttemptNumber values.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

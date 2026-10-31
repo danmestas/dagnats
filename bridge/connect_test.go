@@ -12,13 +12,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestConnectRegistersWorker(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -90,7 +91,7 @@ func TestConnectRegistersWorker(t *testing.T) {
 }
 
 func TestConnectBadRequest(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)

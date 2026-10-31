@@ -10,12 +10,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
 )
 
 func TestTriggerCreateStoresCronInKV(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -85,7 +86,7 @@ func TestTriggerCreateStoresCronInKV(t *testing.T) {
 }
 
 func TestTriggerCreateSubjectStoresInKV(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -141,7 +142,7 @@ func TestTriggerCreateSubjectStoresInKV(t *testing.T) {
 }
 
 func TestTriggerListPrintsTriggers(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -197,7 +198,7 @@ func TestTriggerListPrintsTriggers(t *testing.T) {
 }
 
 func TestTriggerEnableDisableFlipsKV(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -257,7 +258,7 @@ func TestTriggerEnableDisableFlipsKV(t *testing.T) {
 }
 
 func TestTriggerDeleteRemovesFromKV(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -304,7 +305,7 @@ func TestTriggerDeleteRemovesFromKV(t *testing.T) {
 }
 
 func TestTriggerCreateJSON(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -341,7 +342,7 @@ func TestTriggerCreateJSON(t *testing.T) {
 }
 
 func TestTriggerListJSON(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -386,7 +387,7 @@ func TestTriggerListJSON(t *testing.T) {
 }
 
 func TestTriggerDeleteJSON(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -432,7 +433,7 @@ func TestTriggerDeleteJSON(t *testing.T) {
 }
 
 func TestTriggerEnableJSON(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -513,7 +514,7 @@ func TestTriggerCreateWebhookSecretFromEnv(t *testing.T) {
 }
 
 func TestTriggerDisableJSON(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -634,7 +635,7 @@ func TestTriggerTypeConfig(t *testing.T) {
 // fire <id>`, assert (1) stdout reports the fired trigger + run id
 // (2) the TRIGGER_HISTORY stream caught the fire row.
 func TestTriggerFireCmd_succeedsForCron(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -672,7 +673,7 @@ func TestTriggerFireCmd_succeedsForCron(t *testing.T) {
 // TestTriggerFireCmd_jsonShape asserts the JSON mode emits the
 // expected wire shape (trigger_id, action, run_id).
 func TestTriggerFireCmd_jsonShape(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},

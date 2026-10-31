@@ -17,12 +17,13 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestRESTRegisterWorkflow(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 	handler := NewRESTHandler(svc)
@@ -51,7 +52,7 @@ func TestRESTRegisterWorkflow(t *testing.T) {
 // re-registers on every trigger can compare hashes and skip the
 // round-trip when the definition is unchanged.
 func TestRESTRegisterWorkflowResponseHasDefHash(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 	handler := NewRESTHandler(svc)
@@ -90,7 +91,7 @@ func TestRESTRegisterWorkflowResponseHasDefHash(t *testing.T) {
 }
 
 func TestRESTStartRun(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 	handler := NewRESTHandler(svc)
@@ -123,7 +124,7 @@ func TestRESTStartRun(t *testing.T) {
 }
 
 func TestRESTGetRun(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	orch := engine.NewOrchestrator(nc)
 	orch.Start()
@@ -168,7 +169,7 @@ func TestRESTGetRun(t *testing.T) {
 }
 
 func TestRESTGetRunNotFound(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 	handler := NewRESTHandler(svc)
@@ -185,7 +186,7 @@ func TestRESTGetRunNotFound(t *testing.T) {
 }
 
 func TestRESTHealthBasic(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 	handler := NewRESTHandler(svc)
@@ -231,7 +232,7 @@ func TestRESTHealthBasic(t *testing.T) {
 func TestHealthDegradedWithoutStream(t *testing.T) {
 	// Start NATS and create KV buckets + streams but skip
 	// the TELEMETRY stream so health reports degraded.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	js, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
@@ -280,7 +281,7 @@ func TestHealthDegradedWithoutStream(t *testing.T) {
 }
 
 func TestHealthOTLPConfigured(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 
@@ -318,7 +319,7 @@ func TestHealthOTLPConfigured(t *testing.T) {
 }
 
 func TestHealthOTLPNotConfigured(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 
@@ -364,7 +365,7 @@ func TestNewRESTHandlerPanicsNilSvc(t *testing.T) {
 }
 
 func TestRESTRegisterWorkflowBadJSON(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 
@@ -394,7 +395,7 @@ func TestRESTRegisterWorkflowBadJSON(t *testing.T) {
 }
 
 func TestRESTStartRunBadJSON(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 
@@ -424,7 +425,7 @@ func TestRESTStartRunBadJSON(t *testing.T) {
 }
 
 func TestRESTGetRunMissingID(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 
@@ -452,7 +453,7 @@ func TestRESTGetRunMissingID(t *testing.T) {
 }
 
 func TestRESTRegisterWorkflowInvalidDef(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 	handler := NewRESTHandler(svc)
@@ -499,7 +500,7 @@ func TestRESTRegisterWorkflowInvalidDef(t *testing.T) {
 // dag.Validate only checked Task was non-empty, so this def would have
 // registered and then silently never dispatched.
 func TestRESTRegisterWorkflowUnsafeTaskTypeRejected(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 	handler := NewRESTHandler(svc)
@@ -561,7 +562,7 @@ func TestRESTRegisterWorkflowUnsafeTaskTypeRejected(t *testing.T) {
 // token ("task.{Task}.={WorkerGroup}.{runID}", #704's group sentinel),
 // so it is exactly as dangerous as an unsafe Task (issue #674 review).
 func TestRESTRegisterWorkflowUnsafeWorkerGroupRejected(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 	handler := NewRESTHandler(svc)
@@ -622,7 +623,7 @@ func TestRESTRegisterWorkflowUnsafeWorkerGroupRejected(t *testing.T) {
 }
 
 func TestRESTStartRunUnknownWorkflow(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 	handler := NewRESTHandler(svc)
@@ -664,7 +665,7 @@ func TestRESTStartRunUnknownWorkflow(t *testing.T) {
 }
 
 func TestRouteWorkflowsRejectsPUT(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 
@@ -689,7 +690,7 @@ func TestRouteWorkflowsRejectsPUT(t *testing.T) {
 }
 
 func TestRESTListWorkflows(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 	handler := NewRESTHandler(svc)
@@ -736,7 +737,7 @@ func TestRESTListWorkflows(t *testing.T) {
 // entry (#630) carries a def_hash matching dag.DefHash of that entry's
 // own fields, additive to the existing response shape.
 func TestRESTListWorkflowsIncludesDefHash(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 	handler := NewRESTHandler(svc)
@@ -780,7 +781,7 @@ func TestRESTListWorkflowsIncludesDefHash(t *testing.T) {
 }
 
 func TestRouteRunsRejectsPUT(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 
@@ -805,7 +806,7 @@ func TestRouteRunsRejectsPUT(t *testing.T) {
 }
 
 func TestRESTListRuns(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	orch := engine.NewOrchestrator(nc)
 	orch.Start()
@@ -873,7 +874,7 @@ func listRunsContains(t *testing.T, baseURL, runID string) bool {
 }
 
 func TestRouteRunByIDRejectsPUT(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 
@@ -900,7 +901,7 @@ func TestRouteRunByIDRejectsPUT(t *testing.T) {
 }
 
 func TestRESTCancelRun(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	orch := engine.NewOrchestrator(nc)
 	orch.Start()
@@ -946,7 +947,7 @@ func TestRESTCancelRun(t *testing.T) {
 }
 
 func TestRESTSendSignal(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "signals"},
@@ -986,7 +987,7 @@ func TestRESTSendSignal(t *testing.T) {
 }
 
 func TestRouteHealthRejectsPOST(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 
@@ -1013,7 +1014,7 @@ func TestRouteHealthRejectsPOST(t *testing.T) {
 }
 
 func TestRESTStartScheduledRun(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll: %v", err)
@@ -1060,7 +1061,7 @@ func TestRESTStartScheduledRun(t *testing.T) {
 }
 
 func TestRESTGetScheduledRun(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll: %v", err)
@@ -1104,7 +1105,7 @@ func TestRESTGetScheduledRun(t *testing.T) {
 }
 
 func TestRESTCancelScheduledRun(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll: %v", err)
@@ -1150,7 +1151,7 @@ func TestRESTCancelScheduledRun(t *testing.T) {
 }
 
 func TestRESTBulkCancel(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -1210,7 +1211,7 @@ func TestRESTBulkCancel(t *testing.T) {
 }
 
 func TestRESTBulkRun(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -1259,7 +1260,7 @@ func TestRESTBulkRun(t *testing.T) {
 }
 
 func TestRESTBulkRetry(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

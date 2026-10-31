@@ -14,11 +14,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
 func TestHTTPRouterLoadsHTTPTriggerFromKV(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -100,7 +101,7 @@ func TestHTTPRouterLoadsHTTPTriggerFromKV(t *testing.T) {
 }
 
 func TestHTTPRouterReregisterReplacesPriorRoute(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},

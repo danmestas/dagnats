@@ -9,11 +9,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
 func TestAuthRejectsWithoutToken(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -41,7 +42,7 @@ func TestAuthRejectsWithoutToken(t *testing.T) {
 }
 
 func TestAuthAcceptsCorrectToken(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -76,7 +77,7 @@ func TestAuthAcceptsCorrectToken(t *testing.T) {
 }
 
 func TestAuthAllowsWhenNoTokenConfigured(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)

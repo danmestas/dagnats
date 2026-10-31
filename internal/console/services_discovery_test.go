@@ -6,7 +6,7 @@
 //   - discoverMicroServices is an integration surface: it broadcasts
 //     $SRV.PING / $SRV.STATS over a REAL embedded NATS server and folds
 //     the replies. Tests stand up a fresh server per test via
-//     natsutil.StartTestServer (no shared state) and register a REAL
+//     natstest.StartServer (no shared state) and register a REAL
 //     micro.AddService responder — no mocks, per the repo's
 //     integration-test convention. The responder's own PING/STATS
 //     handlers answer the broadcast, so the assertions exercise the
@@ -25,7 +25,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/nats-io/nats.go/micro"
 )
 
@@ -34,7 +34,7 @@ import (
 // (the inputs to an "online" Status). A roster name with no responder is
 // NOT in the discovery map (mergeDiscovery later marks it "stale").
 func TestDiscoverMicroServices_liveColumns(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	svc, err := micro.AddService(nc, micro.Config{
 		Name:    "dagnats-test",
 		Version: "1.2.3",
@@ -76,7 +76,7 @@ func TestDiscoverMicroServices_liveColumns(t *testing.T) {
 // TestDiscoverMicroServices_twoInstances asserts two responders sharing a
 // Name fold into Instances == 2.
 func TestDiscoverMicroServices_twoInstances(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	for i := 0; i < 2; i++ {
 		svc, err := micro.AddService(nc, micro.Config{
 			Name:    "twin",
@@ -120,7 +120,7 @@ func TestDiscoverMicroServices_twoInstances(t *testing.T) {
 // completes within the discovery window plus a small slack — the drain
 // deadline is the bound, not an open-ended wait.
 func TestDiscoverMicroServices_timeoutDegrades(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 
 	start := time.Now()
 	got, err := discoverMicroServices(nc, discoverWindow)

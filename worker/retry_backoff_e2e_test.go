@@ -20,6 +20,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	enginepkg "github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -27,7 +28,7 @@ import (
 )
 
 func TestRetryBackoff_ExponentialRetriesUntilSuccess(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -109,7 +110,7 @@ func TestRetryBackoff_ExponentialRetriesUntilSuccess(t *testing.T) {
 }
 
 func TestRetryBackoff_ExhaustsAndFails(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -191,7 +192,7 @@ func TestRetryBackoff_ExhaustsAndFails(t *testing.T) {
 }
 
 func TestRetryBackoff_NoPolicyFailsImmediately(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

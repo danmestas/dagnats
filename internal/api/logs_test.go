@@ -25,6 +25,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/worker"
@@ -45,7 +46,7 @@ func newLogsRestFixture(
 	handler worker.HandlerFunc, deferWorker bool,
 ) (svc *Service, server *httptest.Server, nc *nats.Conn, startWorker func()) {
 	t.Helper()
-	_, nc = natsutil.StartTestServer(t)
+	_, nc = natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -994,7 +995,7 @@ func TestGetRunLogs_CursorPastEndIsEmptyAndEOF(t *testing.T) {
 // present, none dropped, with iteration 2's "continued" marker as the
 // true last message on ITS OWN subject.
 func TestAgentLoop_ContinueTwiceKeepsEachIterationOnItsOwnSubject(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -1097,7 +1098,7 @@ func TestAgentLoop_ContinueTwiceKeepsEachIterationOnItsOwnSubject(t *testing.T) 
 // iteration=0): the default read landed on an empty page, eof never
 // tripped, and follow hung to its 1h cap.
 func TestAgentLoop_RetryAfterIterationsKeepsIterationOnDefaultRead(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -68,7 +69,7 @@ func publishEvent(
 }
 
 func TestSubWorkflow_ChildCompletesParentCompletes(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -201,7 +202,7 @@ func TestSubWorkflow_ChildCompletesParentCompletes(t *testing.T) {
 }
 
 func TestSubWorkflow_ChildFailsParentFails(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -308,7 +309,7 @@ func TestSubWorkflow_ChildFailsParentFails(t *testing.T) {
 }
 
 func TestSubWorkflow_DetachedCompletesImmediately(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -398,7 +399,7 @@ func TestSubWorkflow_DetachedCompletesImmediately(t *testing.T) {
 }
 
 func TestSubWorkflow_CancellationCascades(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -507,7 +508,7 @@ func TestSubWorkflow_CancellationCascades(t *testing.T) {
 }
 
 func TestSubWorkflow_DetachedChildSurvivesCancel(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -624,7 +625,7 @@ func TestSubWorkflow_DetachedChildSurvivesCancel(t *testing.T) {
 }
 
 func TestSubWorkflow_ChildReceivesResolvedInput(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -734,7 +735,7 @@ func TestSubWorkflow_ChildReceivesResolvedInput(t *testing.T) {
 }
 
 func TestSubWorkflow_MaxNestingDepthRejected(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

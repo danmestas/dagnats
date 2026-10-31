@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -64,7 +65,7 @@ func publishModernDLQ(
 }
 
 func TestDLQListShowsMessages(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -107,7 +108,7 @@ func TestDLQListShowsMessages(t *testing.T) {
 }
 
 func TestDLQReplayRepublishes(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -152,7 +153,7 @@ func TestDLQReplayRepublishes(t *testing.T) {
 }
 
 func TestDLQListRespectsLimit(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -196,7 +197,7 @@ func TestDLQListRespectsLimit(t *testing.T) {
 }
 
 func TestDLQReplayByRun(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -248,7 +249,7 @@ func TestDLQReplayByRun(t *testing.T) {
 }
 
 func TestDLQListJSONOutput(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -302,7 +303,7 @@ func TestDLQListJSONOutput(t *testing.T) {
 // for post-fix DLQ entries so operators can tell at a glance which
 // entries are replayable.
 func TestDLQListBodyPreservedField(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -331,7 +332,7 @@ func TestDLQListBodyPreservedField(t *testing.T) {
 }
 
 func TestDLQReplayJSONSingleOutput(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -363,7 +364,7 @@ func TestDLQReplayJSONSingleOutput(t *testing.T) {
 }
 
 func TestDLQReplayJSONBatchOutput(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}

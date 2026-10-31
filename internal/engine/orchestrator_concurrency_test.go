@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -18,7 +19,7 @@ import (
 
 func TestOrchestratorConcurrencySecondRunPends(t *testing.T) {
 	// Methodology: MaxRuns=1. Start two runs. Second Pends.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "concurrency_runs"},
@@ -58,7 +59,7 @@ func TestOrchestratorConcurrencySecondRunPends(t *testing.T) {
 
 func TestOrchestratorConcurrencyAutoStart(t *testing.T) {
 	// Methodology: MaxRuns=1. Complete run-1, run-2 auto-starts.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "concurrency_runs"},
@@ -139,7 +140,7 @@ func publishEvt(
 func TestOrchestratorCancelReleasesConcurrencySlot(t *testing.T) {
 	// Methodology: with MaxRuns=1, start run-1, queue run-2 as
 	// Pending. Cancel run-1. Verify run-2 auto-starts.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "concurrency_runs"},
@@ -221,7 +222,7 @@ func TestOrchestratorStepFailReleasesConcurrency(t *testing.T) {
 	// Methodology: with MaxRuns=1, start run-1 with a step that
 	// fails permanently (no retries). Verify the slot is released
 	// and a queued run-2 auto-starts.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "concurrency_runs"},
@@ -303,7 +304,7 @@ func TestOrchestratorCompletionReleasesConcurrency(
 	// Methodology: with MaxRuns=1, start two runs. Complete
 	// run-1. Verify the completion code releases concurrency
 	// and auto-starts run-2.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "concurrency_runs"},
@@ -387,7 +388,7 @@ func TestOrchestratorConcurrencyNoPendingRuns(t *testing.T) {
 	// Methodology: with MaxRuns=1, start one run and complete it.
 	// No second run queued. Verify startNextPendingRun returns
 	// without error when no pending runs exist.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "concurrency_runs"},
@@ -452,7 +453,7 @@ func TestOrchestratorConcurrencyNoPendingRuns(t *testing.T) {
 func TestOrchestratorConcurrencyWithTimeout(t *testing.T) {
 	// Methodology: with concurrency+timeout, verify pending run
 	// gets timeout set when transitioning to Running.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "concurrency_runs"},
@@ -535,7 +536,7 @@ func TestOrchestratorFailedLoopReleasesConcurrency(t *testing.T) {
 	// Methodology: with MaxRuns=1, start an agent-loop run that
 	// exceeds MaxIterations. Verify concurrency slot is released
 	// and a queued run auto-starts.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "concurrency_runs"},

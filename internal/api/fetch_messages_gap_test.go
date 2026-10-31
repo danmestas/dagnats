@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -169,7 +170,7 @@ func TestFetchMessagesGivesUpWhenConsumerInfoFails(t *testing.T) {
 // backlog smaller than limit, with no more messages ever coming, must return
 // quickly rather than block for the full deadline.
 func TestFetchMessagesReturnsPromptlyForShortStream(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -204,7 +205,7 @@ func TestFetchMessagesReturnsPromptlyForShortStream(t *testing.T) {
 // with a static backlog, the public ListDeadLetters must surface every entry
 // up to limit through the fixed primitive.
 func TestListDeadLettersReturnsAllSeeded(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -229,7 +230,7 @@ func TestListDeadLettersReturnsAllSeeded(t *testing.T) {
 // guard: with a static history backlog, ListRunEvents must return every
 // event, not a truncated prefix.
 func TestListRunEventsReturnsAllSeeded(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

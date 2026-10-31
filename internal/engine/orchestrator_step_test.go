@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -23,7 +24,7 @@ import (
 )
 
 func TestOrchestratorRoutesAgentStepsToCustomStream(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 
 	err := natsutil.SetupAll(nc,
 		natsutil.WithStreams(natsutil.StreamConfig{
@@ -96,7 +97,7 @@ func TestOrchestratorRoutesAgentStepsToCustomStream(t *testing.T) {
 }
 
 func TestOrchestratorWorkerGroupRouting(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -163,7 +164,7 @@ func TestOrchestratorWorkerGroupRouting(t *testing.T) {
 func TestOrchestratorStepContinuePublishesTask(t *testing.T) {
 	// Methodology: agent-loop step with MaxIterations=3. After
 	// step.continue, verify new task and iteration count.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -265,7 +266,7 @@ func skipIfWorkflow() dag.WorkflowDef {
 func TestOrchestratorSkipIfSkipsStep(t *testing.T) {
 	// Methodology: complete "a" with output triggering SkipIf.
 	// Verify "b" is skipped and "c" proceeds.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -336,7 +337,7 @@ func TestOrchestratorSkipIfSkipsStep(t *testing.T) {
 }
 
 func TestOrchestratorInputSchemaValidation(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -461,7 +462,7 @@ func TestOrchestratorInputSchemaValidation(t *testing.T) {
 func TestOrchestratorStepContinueWithLoopDelay(t *testing.T) {
 	// Methodology: verify the LoopDelay path in handleStepContinue.
 	// A short delay (50ms) should still produce a task message.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -532,7 +533,7 @@ func TestOrchestratorStepContinueWithLoopDelay(t *testing.T) {
 
 func TestOrchestratorSkipIfCompletesWorkflow(t *testing.T) {
 	// Methodology: a -> b (SkipIf). Skip all -> workflow complete.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}

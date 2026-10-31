@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dagnatsext"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
 )
@@ -323,7 +324,7 @@ func TestWatchTriggers_LiveDeactivate(t *testing.T) {
 func TestWorkerStop_UnsubscribesTriggerSubs(t *testing.T) {
 	// Goroutine-leak guard. After Stop(), the worker must have no
 	// trigger subscriptions still bound to the connection.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},

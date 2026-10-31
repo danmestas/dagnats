@@ -21,6 +21,7 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/nats-io/nats.go/jetstream"
@@ -28,7 +29,7 @@ import (
 
 func newDeleteTestService(t *testing.T) (*api.Service, string) {
 	t.Helper()
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "triggers"}),
 	); err != nil {
@@ -135,7 +136,7 @@ func newDeleteTestServiceWithStore(
 	t *testing.T,
 ) (*api.Service, *engine.SnapshotStore) {
 	t.Helper()
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "triggers"}),
 	); err != nil {

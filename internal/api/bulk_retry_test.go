@@ -12,11 +12,12 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
 func TestBulkRetryRerunMode(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -105,7 +106,7 @@ func TestBulkRetryRerunMode(t *testing.T) {
 }
 
 func TestBulkRetryDryRun(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -174,7 +175,7 @@ func TestBulkRetryDryRun(t *testing.T) {
 }
 
 func TestBulkRetryRequiresMode(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -203,7 +204,7 @@ func TestBulkRetryRequiresMode(t *testing.T) {
 }
 
 func TestBulkRetrySkipsNonFailed(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -262,7 +263,7 @@ func TestBulkRetrySkipsNonFailed(t *testing.T) {
 // unrelated workflow, must still be found -- the unrelated population
 // must not crowd it out of an order-agnostic bounded sample.
 func TestBulkRetryFindsNewFailedRunAmongManyOldRuns(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -319,7 +320,7 @@ func TestBulkRetryFindsNewFailedRunAmongManyOldRuns(t *testing.T) {
 // so genuinely zero runs match the target workflow -- but the scan
 // still can't prove that within its fetch cap.
 func TestBulkRetrySurfacesTruncatedScan(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

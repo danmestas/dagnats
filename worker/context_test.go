@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -27,7 +28,7 @@ func containsSubstring(s, substr string) bool {
 }
 
 func TestTaskContextComplete(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -82,7 +83,7 @@ func TestTaskContextComplete(t *testing.T) {
 }
 
 func TestTaskContextFail(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -127,7 +128,7 @@ func TestTaskContextFail(t *testing.T) {
 }
 
 func TestTaskContextContinue(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -225,7 +226,7 @@ func TestTaskContextHeartbeat(t *testing.T) {
 }
 
 func TestTaskContextCheckpoint(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "checkpoints"},
@@ -274,7 +275,7 @@ func TestTaskContextCheckpoint(t *testing.T) {
 }
 
 func TestTaskContextSignal(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "checkpoints"},
@@ -366,7 +367,7 @@ func TestTaskContextRetryCount(t *testing.T) {
 }
 
 func TestTaskContextPutStream(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	tr := tracenoop.NewTracerProvider().Tracer("test")
 	bgCtx := context.Background()
 	_, span := tr.Start(bgCtx, "test")
@@ -551,7 +552,7 @@ func TestTaskContextPause(t *testing.T) {
 	// Methodology: create a worker with a handler that pauses on first call,
 	// then completes on resume. Verify handler is called twice with correct
 	// checkpoint data and that completion happens after the delay.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "checkpoints"},
@@ -746,7 +747,7 @@ func TestTaskContextPausePanicsOnNegativeDuration(t *testing.T) {
 }
 
 func TestFailPermanentPublishesNonRetriable(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -810,7 +811,7 @@ func TestFailPermanentPublishesNonRetriable(t *testing.T) {
 }
 
 func TestFailRetryAfterPublishesDelay(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -864,7 +865,7 @@ func TestFailRetryAfterPublishesDelay(t *testing.T) {
 }
 
 func TestFailRetryAfterClampsBounds(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

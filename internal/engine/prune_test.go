@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -25,7 +26,7 @@ import (
 // workflow_runs bucket and returns a bound SnapshotStore.
 func newPruneStore(t *testing.T) *SnapshotStore {
 	t.Helper()
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	js, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatalf("jetstream.New failed: %v", err)
@@ -41,7 +42,7 @@ func newPruneStore(t *testing.T) *SnapshotStore {
 // would never write.
 func newPruneStoreWithKV(t *testing.T) (*SnapshotStore, jetstream.KeyValue) {
 	t.Helper()
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	js, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatalf("jetstream.New failed: %v", err)

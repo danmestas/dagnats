@@ -4,7 +4,7 @@
 // SAME owner (a concurrent heartbeat re-register, or this
 // connection's own deregister on disconnect) is not an ownership
 // decision and must not surface as ErrWorkerIDOwned. Methodology:
-// real embedded NATS server via natsutil.StartTestServer; the
+// real embedded NATS server via natstest.StartServer; the
 // package-private *TestHook func vars let a test inject a write
 // between RegisterOwned/DeregisterOwned's Get and its guarded write,
 // deterministically reproducing the race instead of relying on
@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -58,7 +59,7 @@ func rawReregister(
 // RegisterOwned must re-Get, see the fresh entry is still owned by
 // the same caller, and retry the write to success.
 func TestRegisterOwnedSameOwnerRaceRetries(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -107,7 +108,7 @@ func TestRegisterOwnedSameOwnerRaceRetries(t *testing.T) {
 // takeover landing in the window) must still be rejected with
 // ErrWorkerIDOwned once the retry re-Gets and sees the fresh owner.
 func TestRegisterOwnedDifferentOwnerRaceRejects(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -164,7 +165,7 @@ func TestRegisterOwnedDifferentOwnerRaceRejects(t *testing.T) {
 // and the retry's fresh Get must see that owner and reject with
 // ErrWorkerIDOwned -- not silently succeed or misreport contention.
 func TestRegisterOwnedCreateConflictDifferentOwnerRejects(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -211,7 +212,7 @@ func TestRegisterOwnedCreateConflictDifferentOwnerRejects(t *testing.T) {
 // attempts and returns the distinct ErrWorkerIDContended rather than
 // looping forever or misreporting ErrWorkerIDOwned.
 func TestRegisterOwnedExhaustsToContended(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -259,7 +260,7 @@ func TestRegisterOwnedExhaustsToContended(t *testing.T) {
 // re-register (e.g. a heartbeat firing right as we disconnect) must
 // not skip a legitimate deregister.
 func TestDeregisterOwnedSameOwnerRaceRetries(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

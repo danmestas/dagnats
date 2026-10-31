@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/observe/spanread"
 	"github.com/nats-io/nats.go/jetstream"
@@ -35,7 +36,7 @@ func telemetryConsumers(t *testing.T, js jetstream.JetStream) int {
 }
 
 func TestTelemetryReaders_ReleaseTheirConsumer(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

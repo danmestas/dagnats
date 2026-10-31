@@ -12,12 +12,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestCheckStrandedSubjects_ReportsLegacyGroupedMessages(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -69,7 +70,7 @@ func TestCheckStrandedSubjects_ReportsLegacyGroupedMessages(t *testing.T) {
 // case) must report zero stranded subjects and no error — a check that
 // only ever finds problems is not trustworthy as a detector.
 func TestCheckStrandedSubjects_SilentOnCleanStream(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -99,7 +100,7 @@ func TestCheckStrandedSubjects_SilentOnCleanStream(t *testing.T) {
 // (Group == "") are never queried — #704 left ungrouped subjects
 // byte-identical, so there is nothing legacy about them.
 func TestCheckStrandedSubjects_SkipsUngroupedPairs(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

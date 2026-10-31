@@ -11,12 +11,13 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestDebounceAbsorbsEvents(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -69,7 +70,7 @@ func TestDebounceAbsorbsEvents(t *testing.T) {
 }
 
 func TestDebounceFiresOnHardTimeout(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -120,7 +121,7 @@ func TestDebounceFiresOnHardTimeout(t *testing.T) {
 }
 
 func TestDebounceNoConfig(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -172,7 +173,7 @@ func TestDebounceKeyExtraction(t *testing.T) {
 }
 
 func TestHandleTimerFireStaleRejection(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -233,7 +234,7 @@ func TestHandleTimerFireStaleRejection(t *testing.T) {
 // TestHandleTimerFireSkipsDisabledTrigger: a trigger disabled while its
 // window was open starts no run, and the window is still closed.
 func TestHandleTimerFireSkipsDisabledTrigger(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

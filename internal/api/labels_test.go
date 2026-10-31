@@ -20,6 +20,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/worker"
 )
@@ -33,7 +34,7 @@ func newLabelsRestFixture(t *testing.T, wfName string) (*Service, *httptest.Serv
 	if wfName == "" {
 		panic("newLabelsRestFixture: wfName must not be empty")
 	}
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -198,7 +199,7 @@ func TestPostRunsInvalidLabelsReturns400AndCreatesNoRun(t *testing.T) {
 // is never handled, so runs stay Pending/Running (non-terminal) and
 // bulk cancel has something to act on instead of racing completion.
 func TestBulkCancelByLabel(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

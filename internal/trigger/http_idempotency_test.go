@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
 )
@@ -36,7 +37,7 @@ func startCountingFakeEngine(
 }
 
 func TestHTTPHandlerIdempotencyReplayReturnsSameResponseBody(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -94,7 +95,7 @@ func TestHTTPHandlerIdempotencyReplayReturnsSameResponseBody(t *testing.T) {
 }
 
 func TestHTTPHandlerIdempotencyDifferentKeysDifferentRuns(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -147,7 +148,7 @@ func TestHTTPHandlerIdempotencyDifferentKeysDifferentRuns(t *testing.T) {
 }
 
 func TestHTTPHandlerIdempotencyNoHeaderProvidedNoDedup(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

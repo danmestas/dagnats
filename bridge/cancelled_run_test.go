@@ -28,6 +28,7 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/sdk/httpclient"
@@ -49,7 +50,7 @@ func newCancelFixture(t *testing.T, workflow string) cancelFixture {
 	if workflow == "" {
 		t.Fatal("newCancelFixture: workflow must not be empty")
 	}
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

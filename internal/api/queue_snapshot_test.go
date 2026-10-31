@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
@@ -93,7 +94,7 @@ func drainQueueSnapshots(
 }
 
 func TestQueueSnapshotPublisherSuppressesUnchangedState(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -144,7 +145,7 @@ func TestQueueSnapshotPublisherSuppressesUnchangedState(t *testing.T) {
 }
 
 func TestQueueSnapshotPublisherHeartbeat(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -182,7 +183,7 @@ func TestQueueSnapshotPublisherHeartbeat(t *testing.T) {
 }
 
 func TestStartQueueSnapshotPublisherPanicsOnNilArgs(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	js, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)

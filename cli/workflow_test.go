@@ -15,11 +15,12 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
 func TestWorkflowRegisterShowsCreatedVsUpdated(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -96,7 +97,7 @@ func TestWorkflowRegisterShowsCreatedVsUpdated(t *testing.T) {
 }
 
 func TestWorkflowRegisterJSON(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -158,7 +159,7 @@ func TestWorkflowRegisterJSON(t *testing.T) {
 }
 
 func TestWorkflowListJSON(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}

@@ -126,7 +126,7 @@ func startClusterNodes(
 			Port:       clientPorts[i],
 			ServerName: fmt.Sprintf("dagnats-test-%d", i),
 			JetStream:  true,
-			// Same reason as natsutil's StartTestServer: an unset
+			// Same reason as natstest.StartServer: an unset
 			// budget is sized from the host's free disk, so a nearly
 			// full disk starves peer selection and R3 stream
 			// placement fails with "no suitable peers". The nodes

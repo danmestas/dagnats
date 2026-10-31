@@ -8,12 +8,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestConcurrencyAcquireAndRelease(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "concurrency_runs"},
@@ -82,7 +83,7 @@ func TestConcurrencyAcquireAndRelease(t *testing.T) {
 }
 
 func TestConcurrencyReleaseWhenZero(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "concurrency_runs"},
@@ -129,7 +130,7 @@ func TestConcurrencyReleaseWhenZero(t *testing.T) {
 // already-successful release); run3 must still be refused while run2
 // holds the only slot.
 func TestConcurrencyReleaseDoesNotStealADifferentRunsSlot(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "concurrency_runs"},
@@ -179,7 +180,7 @@ func TestConcurrencyReleaseDoesNotStealADifferentRunsSlot(t *testing.T) {
 }
 
 func TestConcurrencyManagerSafeNoBucket(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -210,7 +211,7 @@ func TestConcurrencyReadMembersNonJSON(t *testing.T) {
 	// KV, then acquire. readMembers should treat the unmarshal error
 	// gracefully -- same code path the legacy plain-integer counter
 	// format falls into (see TestConcurrencyLegacyCounterMigrates).
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "concurrency_runs"},
@@ -265,7 +266,7 @@ func TestConcurrencyReadMembersNonJSON(t *testing.T) {
 // occupies the set the legacy "1" never named). See readMembers's doc
 // comment for the full reasoning.
 func TestConcurrencyLegacyCounterMigrates(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "concurrency_runs"},
@@ -326,7 +327,7 @@ func TestConcurrencyLegacyCounterMigrates(t *testing.T) {
 // (bounded per-key dedup) even though the counter increments on every
 // occurrence.
 func TestConcurrencyLegacyValueWarnsOnceAndCounts(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "concurrency_runs"},
@@ -376,7 +377,7 @@ func TestConcurrencyLegacyValueWarnsOnceAndCounts(t *testing.T) {
 }
 
 func TestConcurrencyUnlimitedWhenZero(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "concurrency_runs"},
@@ -402,7 +403,7 @@ func TestConcurrencyUnlimitedWhenZero(t *testing.T) {
 }
 
 func TestTaskConcurrencyAcquireAndRelease(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "concurrency_runs"},
@@ -465,7 +466,7 @@ func TestTaskConcurrencyAcquireAndRelease(t *testing.T) {
 // retry, a redelivery), and a retried step is published again. Each
 // repeat must not take or free a second slot, or the limit drifts.
 func TestTaskConcurrencyRepeatedAcquireReleaseIsIdempotent(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "concurrency_runs"},
@@ -501,7 +502,7 @@ func TestTaskConcurrencyRepeatedAcquireReleaseIsIdempotent(t *testing.T) {
 }
 
 func TestTaskConcurrencyReleaseAtZero(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "concurrency_runs"},
@@ -538,7 +539,7 @@ func TestTaskConcurrencyReleaseAtZero(t *testing.T) {
 }
 
 func TestTaskConcurrencyUnlimitedWhenZero(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "concurrency_runs"},
@@ -565,7 +566,7 @@ func TestTaskConcurrencyUnlimitedWhenZero(t *testing.T) {
 }
 
 func TestTaskConcurrencyNoTaskBucket(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "concurrency_runs"},

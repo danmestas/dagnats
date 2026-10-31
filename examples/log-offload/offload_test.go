@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
@@ -57,7 +58,7 @@ func publishChunk(
 }
 
 func TestOffloadRunLogs_WritesOneFileInOrder(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	js, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
@@ -130,7 +131,7 @@ func TestOffloadRunLogs_WritesOneFileInOrder(t *testing.T) {
 }
 
 func TestOffloadRunLogs_SeparatesStepsAttemptsAndIterations(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	js, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
@@ -183,7 +184,7 @@ func TestOffloadRunLogs_RetryDoesNotDuplicateLines(t *testing.T) {
 	// backlog again. #634 review nit 9: a naive append-mode writer
 	// would duplicate every line on the second call; the
 	// temp-file-then-rename writer must not.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	js, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)

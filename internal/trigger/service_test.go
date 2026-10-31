@@ -10,13 +10,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 )
 
 func TestServiceLoadsCronFromKV(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -75,7 +76,7 @@ func TestServiceLoadsCronFromKV(t *testing.T) {
 }
 
 func TestServiceLiveReloadFromKV(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -130,7 +131,7 @@ func TestServiceLiveReloadFromKV(t *testing.T) {
 }
 
 func TestServiceWebhookHandlerReturnsNonNil(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -165,7 +166,7 @@ func TestServiceWebhookHandlerReturnsNonNil(t *testing.T) {
 }
 
 func TestServiceTickNowFiresTrigger(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -215,7 +216,7 @@ func TestServiceTickNowFiresTrigger(t *testing.T) {
 }
 
 func TestServiceLoadsWebhookFromKV(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -261,7 +262,7 @@ func TestServiceLoadsWebhookFromKV(t *testing.T) {
 }
 
 func TestServiceStopIdempotent(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -290,7 +291,7 @@ func TestServiceStopIdempotent(t *testing.T) {
 }
 
 func TestServiceDisabledTriggerNotLoaded(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -330,7 +331,7 @@ func TestServiceDisabledTriggerNotLoaded(t *testing.T) {
 }
 
 func TestServiceRespectsMaxTriggers(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -389,7 +390,7 @@ func TestServiceRespectsMaxTriggers(t *testing.T) {
 // pointer must be the same instance loadAllTriggers installed.
 // Without the fix, handleKVUpdate creates a new SubjectTrigger.
 func TestServiceWatcherReplayPreservesSubjectSubscription(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},

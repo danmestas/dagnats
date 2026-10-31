@@ -20,6 +20,7 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/auditkv"
 	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
@@ -79,7 +80,7 @@ func newCPHarnessFull(
 	t *testing.T, gated bool, limits RuntimeLimits, policy *engine.GrantPolicy,
 ) *cpHarness {
 	t.Helper()
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	// Size the per-stream MaxBytes ceilings off a small budget so the sum
 	// fits a disk-constrained sandbox; the default 10 GiB budget can make
 	// JetStream refuse stream creation (err_code=10047) when free disk is

@@ -29,6 +29,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	enginepkg "github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -89,7 +90,7 @@ func publishStartAndWaitTerminal(
 // still blocked when the assertion fires — proving the engine drove
 // the failure rather than the worker exiting first.
 func TestStepTimeout_HandlerHangAndFailNoPolicy(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -167,7 +168,7 @@ func TestStepTimeout_HandlerHangAndFailNoPolicy(t *testing.T) {
 // Attempts and re-dispatches via the SLEEP_TIMERS retry-backoff
 // path, until MaxAttempts is exhausted and the run lands Failed.
 func TestStepTimeout_TimeoutPlusRetryRetriesAttempts(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -257,7 +258,7 @@ func TestStepTimeout_TimeoutPlusRetryRetriesAttempts(t *testing.T) {
 // Negative space: no spurious step.failed in the history stream
 // and the run remains Completed past the timeout window.
 func TestStepTimeout_NoFireOnSuccess(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -346,7 +347,7 @@ func TestStepTimeout_NoFireOnSuccess(t *testing.T) {
 // the step is no longer Running on attempt 1; it has either moved
 // to attempt 2 or is already Completed.
 func TestStepTimeout_NoFireAfterRetry(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

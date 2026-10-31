@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -55,7 +56,7 @@ func TestTimerMessageDispatchSubject(t *testing.T) {
 // rather than staying running forever.
 func TestGroupedStepRetriesOnGroupedSubjectUntilRunFails(t *testing.T) {
 	const runID = "grp-retry-1"
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("setup: %v", err)
 	}

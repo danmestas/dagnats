@@ -9,11 +9,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
 func TestStatusCommandShowsConnected(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -44,7 +45,7 @@ func TestStatusCommandShowsConnected(t *testing.T) {
 }
 
 func TestStatusCommandJSONOutput(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -83,7 +84,7 @@ func TestStatusCommandJSONOutput(t *testing.T) {
 }
 
 func TestStatusCommandJSONHasStreams(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}

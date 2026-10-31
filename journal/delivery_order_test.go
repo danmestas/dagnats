@@ -19,11 +19,12 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
 func TestOpen_NewerDeliveryOfSameMessageFencesOlder(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -45,7 +46,7 @@ func TestOpen_NewerDeliveryOfSameMessageFencesOlder(t *testing.T) {
 }
 
 func TestOpen_ResendAndUnknownSequenceClaimInJournalOrder(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -81,7 +82,7 @@ func TestOpen_ResendAndUnknownSequenceClaimInJournalOrder(t *testing.T) {
 // behind the older claim, not be fenced by it: it then wins by order
 // and the older delivery is the one fenced.
 func TestOpen_RacingClaimsOfSameMessageNewerWins(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

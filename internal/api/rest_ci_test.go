@@ -17,6 +17,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -63,7 +64,7 @@ func newCIRequestBody(t *testing.T, name, spec string, register bool) []byte {
 // an httptest.Server, returning both for the caller to drive.
 func newCITestServer(t *testing.T) (*Service, *httptest.Server) {
 	t.Helper()
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

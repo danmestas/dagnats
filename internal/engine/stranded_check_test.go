@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -28,7 +29,7 @@ const defKVBucket = "workflow_defs"
 // Start() and asserts: (1) Start returns nil -- a stranded subject must
 // never fail startup, (2) the log names the subject and the count.
 func TestCheckStrandedGroupSubjects_ReportsAndDoesNotFailStartup(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -88,7 +89,7 @@ func TestCheckStrandedGroupSubjects_ReportsAndDoesNotFailStartup(t *testing.T) {
 // legacy messages -- a check that always fires on ANY grouped def would
 // be useless noise.
 func TestCheckStrandedGroupSubjects_SilentWhenClean(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

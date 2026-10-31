@@ -9,11 +9,12 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
 func TestScheduleRun(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll: %v", err)
@@ -64,7 +65,7 @@ func TestScheduleRun(t *testing.T) {
 }
 
 func TestCancelScheduledRun(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll: %v", err)
@@ -110,7 +111,7 @@ func TestCancelScheduledRun(t *testing.T) {
 }
 
 func TestListScheduledRuns(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll: %v", err)
@@ -166,7 +167,7 @@ func TestListScheduledRuns(t *testing.T) {
 }
 
 func TestScheduleRunValidation(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll: %v", err)

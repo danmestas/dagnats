@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
@@ -23,7 +24,7 @@ import (
 
 func TestInspectShowsInlineFailuresAndDLQ(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -231,7 +232,7 @@ func TestInspectResultOmitsEmptySections(t *testing.T) {
 
 func TestInspectCleanRunShowsNoFailures(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -328,7 +329,7 @@ func TestHasFlagAndStripFlag(t *testing.T) {
 
 func TestInspectNoTraceWithoutFlag(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}

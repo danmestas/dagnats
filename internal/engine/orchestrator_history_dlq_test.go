@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -82,7 +83,7 @@ func waitForDeadLetterCount(
 // a subsequent valid workflow.started for a different run afterward
 // (liveness — mirrors orchestrator_resilience_test.go).
 func TestOrchestrator_UnmarshalFailurePoisonEventExhaustsToDeadLetter(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -164,7 +165,7 @@ func TestOrchestrator_UnmarshalFailurePoisonEventExhaustsToDeadLetter(t *testing
 // Asserts exactly one entry, correct headers, and no redelivery beyond
 // exhaustion.
 func TestOrchestrator_DispatchErrorPoisonEventExhaustsToDeadLetter(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -248,7 +249,7 @@ func TestOrchestrator_DispatchErrorPoisonEventExhaustsToDeadLetter(t *testing.T)
 // NAK's redelivery fires. The retry must then succeed (run exists), well
 // under MaxDeliver, and DEAD_LETTERS must stay untouched.
 func TestOrchestrator_TransientFailureThenSuccessDoesNotDeadLetter(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -353,7 +354,7 @@ func TestOrchestrator_TransientFailureThenSuccessDoesNotDeadLetter(t *testing.T)
 // MaxDeliver assertion catches a "last entry" implementation instead of
 // a true max.
 func TestOrchestrator_HistoryConsumerHasMaxDeliverAndBackOff(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -448,7 +449,7 @@ const maxDeliveriesAdvisorySubject = "$JS.EVENT.ADVISORY.CONSUMER." +
 // test deletes DEAD_LETTERS so every dead-letter publish in it fails, then
 // asserts the terminal delivery is NAK'd (preserved), not Ack'd (dropped).
 func TestOrchestrator_HistoryDeadLetterPublishFailureNaksNotAck(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -511,7 +512,7 @@ func TestOrchestrator_HistoryDeadLetterPublishFailureNaksNotAck(t *testing.T) {
 // message from pending before the advisory path ever runs) and exactly
 // one DLQ record must land.
 func TestOrchestrator_HistoryDeadLetterPublishSuccessAcksNoAdvisory(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}

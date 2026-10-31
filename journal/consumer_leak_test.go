@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
@@ -41,7 +42,7 @@ func consumerCount(t *testing.T, c client, stream string) int {
 }
 
 func TestConsumerLeak_OpenAndReadReleaseTheirConsumer(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -61,7 +62,7 @@ func TestConsumerLeak_OpenAndReadReleaseTheirConsumer(t *testing.T) {
 }
 
 func TestConsumerLeak_FailedReadReleasesItsConsumer(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -84,7 +85,7 @@ func TestConsumerLeak_FailedReadReleasesItsConsumer(t *testing.T) {
 }
 
 func TestConsumerLeak_HistoryReadReleasesItsConsumer(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

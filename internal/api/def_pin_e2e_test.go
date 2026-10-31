@@ -20,6 +20,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/worker"
 )
@@ -67,7 +68,7 @@ func twoStepDef(name, secondID, secondTask string) dag.WorkflowDef {
 // to v2 (which renamed the second step). A run started AFTER the
 // re-register must use v2.
 func TestRunPinnedToStartDefSurvivesReRegister(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

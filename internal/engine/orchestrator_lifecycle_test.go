@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -22,7 +23,7 @@ import (
 )
 
 func TestOrchestratorStartsFirstStep(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -74,7 +75,7 @@ func TestOrchestratorStartsFirstStep(t *testing.T) {
 }
 
 func TestOrchestratorAdvancesAfterStepCompleted(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -129,7 +130,7 @@ func TestOrchestratorEnforcesMaxIterations(t *testing.T) {
 	// Methodology: red-green TDD. Workflow has a single agent-loop step with
 	// MaxIterations=2. After the 2nd step.continue event the orchestrator must
 	// mark the run Failed and must NOT publish a 3rd task message.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -225,7 +226,7 @@ func TestOrchestratorEnforcesMaxDuration(t *testing.T) {
 	// Methodology: red-green TDD. Workflow has a single agent-loop step with
 	// MaxDuration=1ms. After starting the loop and sleeping, the next
 	// step.continue must fail the run instead of re-enqueuing.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -315,7 +316,7 @@ func TestOrchestratorEnforcesMaxDuration(t *testing.T) {
 }
 
 func TestOrchestratorCompletesWorkflow(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -367,7 +368,7 @@ func TestOrchestratorCompletesWorkflow(t *testing.T) {
 }
 
 func TestOrchestratorPersistsTraceParentOnStart(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -413,7 +414,7 @@ func TestOrchestratorPersistsTraceParentOnStart(t *testing.T) {
 }
 
 func TestOrchestratorEmptyTraceParentStaysEmpty(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -457,7 +458,7 @@ func TestOrchestratorEmptyTraceParentStaysEmpty(t *testing.T) {
 }
 
 func TestOrchestratorSetsCompletedAtOnCompletion(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -515,7 +516,7 @@ func TestOrchestratorSetsCompletedAtOnCompletion(t *testing.T) {
 }
 
 func TestOrchestratorSetsCompletedAtOnFailure(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -585,7 +586,7 @@ func TestOrchestratorSetsCompletedAtOnFailure(t *testing.T) {
 }
 
 func TestOrchestratorCancelsRunningWorkflow(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -662,7 +663,7 @@ func TestOrchestratorCancelsRunningWorkflow(t *testing.T) {
 }
 
 func TestOrchestratorSetsCompletedAtOnCancellation(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -732,7 +733,7 @@ func TestOrchestratorSetsCompletedAtOnCancellation(t *testing.T) {
 }
 
 func TestOrchestratorWorkflowTimeout(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -805,7 +806,7 @@ func TestOrchestratorWorkflowTimeout(t *testing.T) {
 func TestOrchestratorSnapshotAfterCompletion(t *testing.T) {
 	// Methodology: after step completion, read KV directly and
 	// verify snapshot state matches expectations.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -888,7 +889,7 @@ func TestOrchestratorSnapshotAfterCompletion(t *testing.T) {
 func TestOrchestratorSnapshotRestore(t *testing.T) {
 	// Methodology: write a snapshot to KV manually, verify
 	// loadRunAndDef restores it correctly.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -950,7 +951,7 @@ func TestOrchestratorSnapshotRestore(t *testing.T) {
 func TestOrchestratorTraceparentPropagation(t *testing.T) {
 	// Methodology: verify traceparent from a published event
 	// flows through the orchestrator without breaking processing.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -1006,7 +1007,7 @@ func TestOrchestratorTraceparentPropagation(t *testing.T) {
 func TestOrchestratorCancelNonRunningIsNoop(t *testing.T) {
 	// Methodology: cancel an already-completed run. The handler
 	// should return nil without modifying the run.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -1091,7 +1092,7 @@ func TestOrchestratorCancelNonRunningIsNoop(t *testing.T) {
 func TestOrchestratorStartWithInput(t *testing.T) {
 	// Methodology: start a workflow with input payload (structured
 	// format with workflow_def + input). Verify the workflow starts.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -1157,7 +1158,7 @@ func TestOrchestratorStartWithInput(t *testing.T) {
 func TestOrchestratorHandlesMalformedEvent(t *testing.T) {
 	// Methodology: verify that malformed event data does not
 	// crash the orchestrator and the system recovers.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -1215,7 +1216,7 @@ func TestOrchestratorHandlesMalformedEvent(t *testing.T) {
 func TestOrchestratorStopIdempotent(t *testing.T) {
 	// Methodology: verify Stop can be called multiple times
 	// and on a never-started orchestrator without panic.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -1234,7 +1235,7 @@ func TestOrchestratorStopIdempotent(t *testing.T) {
 
 func TestOrchestratorHandlesUnknownEventType(t *testing.T) {
 	// Methodology: verify unknown event types are acked silently.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -1344,7 +1345,7 @@ func TestOrchestratorLoopStepFailureStampsCompletedAt(t *testing.T) {
 	// workflow on the first step.continue (iterations 1 >= max). This
 	// drives the failLoopStep terminal path. Verify the failed run
 	// stamps CompletedAt so the Traces "Duration" is honest.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}

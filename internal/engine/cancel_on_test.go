@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -22,7 +23,7 @@ import (
 func TestCancelOnEventCancelsWorkflow(t *testing.T) {
 	// Methodology: start a workflow with CancelOn configured.
 	// Publish a matching event. Verify run status becomes cancelled.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -125,7 +126,7 @@ func TestCancelOnEventCancelsWorkflow(t *testing.T) {
 func TestCancelOnNoMatchDoesNotCancel(t *testing.T) {
 	// Methodology: start a workflow with CancelOn configured.
 	// Publish a non-matching event. Verify run stays running.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

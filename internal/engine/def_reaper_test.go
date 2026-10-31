@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -79,7 +80,7 @@ type reaperHarness struct {
 // and returns the orchestrator (NOT started) plus raw KV handles.
 func newReaperOrch(t *testing.T, grace time.Duration) reaperHarness {
 	t.Helper()
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(
 		nc, natsutil.WithStoreBudget(256<<20),
 	); err != nil {
@@ -296,7 +297,7 @@ func TestDefReaper_OrphanSwept(t *testing.T) {
 // Test 9: the fix-1 Start-time invariant — runsMaxAge>0 && < defReaperGrace
 // panics, guaranteeing the run snapshot outlives the def-grace window.
 func TestDefReaper_StartInvariantPanics(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(
 		nc, natsutil.WithStoreBudget(256<<20),
 	); err != nil {
@@ -318,7 +319,7 @@ func TestDefReaper_StartInvariantPanics(t *testing.T) {
 // Test 9b (positive space): runsMaxAge == 0 (pruner off) or >= grace starts
 // cleanly — the invariant permits the safe configurations.
 func TestDefReaper_StartInvariantAllowsSafe(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(
 		nc, natsutil.WithStoreBudget(256<<20),
 	); err != nil {

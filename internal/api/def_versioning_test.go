@@ -26,6 +26,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
@@ -70,7 +71,7 @@ func saveLiveRun(
 }
 
 func TestDefVersionRetentionEvictsOldestWhenNoLiveRuns(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -117,7 +118,7 @@ func TestDefVersionRetentionEvictsOldestWhenNoLiveRuns(t *testing.T) {
 }
 
 func TestDefVersionRetentionSurvivesLiveOldestAndEvictsOther(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -162,7 +163,7 @@ func TestDefVersionRetentionSurvivesLiveOldestAndEvictsOther(t *testing.T) {
 }
 
 func TestPostWorkflowsRefuses409WhenAllRetainedVersionsAreLive(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -218,7 +219,7 @@ func TestPostWorkflowsRefuses409WhenAllRetainedVersionsAreLive(t *testing.T) {
 }
 
 func TestRegisterWorkflowRejectsVersionKeyShapedName(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -241,7 +242,7 @@ func TestRegisterWorkflowRejectsVersionKeyShapedName(t *testing.T) {
 }
 
 func TestListWorkflowsExcludesVersionKeys(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -286,7 +287,7 @@ func TestListWorkflowsExcludesVersionKeys(t *testing.T) {
 // errors.As can unwrap -- the REST layer depends on this to map to
 // 409 instead of a generic 400.
 func TestReserveDefVersionSlotErrorType(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -327,7 +328,7 @@ func TestReserveDefVersionSlotErrorType(t *testing.T) {
 // register -- deleting the pointer's own target. oldestEvictableVersion
 // must exclude whatever version the pointer currently references.
 func TestReserveDefVersionSlotNeverEvictsCurrentPointerVersion(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

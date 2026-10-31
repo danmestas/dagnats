@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -22,7 +23,7 @@ import (
 )
 
 func TestOrchestrator_PublishesStepQueuedOnDispatch(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -113,7 +114,7 @@ func TestOrchestrator_StepQueuedMsgIdIsDeterministic(t *testing.T) {
 // would need a publish-seam injection — currently unimplemented; see
 // the related fail_fast_e2e tests for the worker-side failure path).
 func TestOrchestrator_DispatchPublishesTaskOnWorkflowStarted(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -161,7 +162,7 @@ var _ context.Context = context.Background()
 var _ jetstream.JetStream = nil
 
 func TestOnEvent_StepStarted_TransitionsQueuedToRunning(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -231,7 +232,7 @@ func TestOnEvent_StepStarted_TransitionsQueuedToRunning(t *testing.T) {
 }
 
 func TestOnEvent_StepStarted_IncrementsAttempts(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -292,7 +293,7 @@ func TestOnEvent_StepStarted_IncrementsAttempts(t *testing.T) {
 }
 
 func TestOnEvent_StepStarted_IsIdempotentOnSameAttempt(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -355,7 +356,7 @@ func TestOnEvent_StepStarted_IsIdempotentOnSameAttempt(t *testing.T) {
 func TestOnEvent_StepStarted_IgnoredAfterCompleted(t *testing.T) {
 	// Methodology: seed the store with a Completed step, then fire
 	// a stale step.started. The engine must not regress the state.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -414,7 +415,7 @@ func TestOnEvent_StepStarted_IgnoredAfterCompleted(t *testing.T) {
 }
 
 func TestOnEvent_StepStarted_IgnoredAfterFailed(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -476,7 +477,7 @@ func TestOnEvent_StepStarted_IgnoredAfterFailed(t *testing.T) {
 func TestOnEvent_StepStarted_AttemptsMonotonic_NeverDecreases(t *testing.T) {
 	// Methodology: seed a step with Attempts=5, fire step.started
 	// with AttemptNumber=2. Engine's max() rule must keep Attempts=5.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -602,7 +603,7 @@ func TestOnEvent_StepQueued_DuringReplay_ReconstructsState(t *testing.T) {
 	// to a fresh history stream and verifying final state. The
 	// step.queued event during replay must set Status=Queued without
 	// rolling back any later transitions.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -679,7 +680,7 @@ func TestOnEvent_StepQueued_DuringReplay_ReconstructsState(t *testing.T) {
 func TestOnEvent_StepQueued_NoRollback_FromRunning(t *testing.T) {
 	// Methodology: seed a step with Status=Running, then fire
 	// step.queued. Engine's monotonic guard must keep state at Running.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}

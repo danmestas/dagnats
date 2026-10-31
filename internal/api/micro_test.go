@@ -10,12 +10,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/micro"
 )
 
 func TestMicroPingRespondsAfterStartTimesOutAfterStop(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 	natsAPI := NewNATSAPI(svc, nc, "1.0.0")
@@ -51,7 +52,7 @@ func TestMicroPingRespondsAfterStartTimesOutAfterStop(t *testing.T) {
 }
 
 func TestMicroInfoListsExactlyFourteenEndpointSubjects(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 	natsAPI := NewNATSAPI(svc, nc, "1.0.0")
@@ -109,7 +110,7 @@ func TestMicroInfoListsExactlyFourteenEndpointSubjects(t *testing.T) {
 }
 
 func TestMicroStatsCountsPerEndpointRequests(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 	natsAPI := NewNATSAPI(svc, nc, "1.0.0")
@@ -198,7 +199,7 @@ func TestMicroVersion(t *testing.T) {
 // microVersion is actually accepted by micro.AddService (F5 integration
 // assertion) -- an un-stamped "dev" build must not crash Start.
 func TestStartWithDevBuildDoesNotPanic(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 	natsAPI := NewNATSAPI(svc, nc, "dev")

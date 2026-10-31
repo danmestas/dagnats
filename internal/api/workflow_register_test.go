@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
 )
@@ -52,7 +53,7 @@ func registerHTTPTrigger(
 }
 
 func TestRegisterWorkflowHTTPTriggerWithRespondNoWarnings(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -89,7 +90,7 @@ func TestRegisterWorkflowHTTPTriggerWithRespondNoWarnings(t *testing.T) {
 }
 
 func TestRegisterWorkflowHTTPTriggerWithoutRespondWarns(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -139,7 +140,7 @@ func apiHasWarning(ws []dag.Warning, kind string) bool {
 func TestRegisterWorkflowNoHTTPTriggerNoWarning(t *testing.T) {
 	// A workflow without an HTTP trigger may legitimately omit
 	// respond. Validator must NOT warn in that case.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -170,7 +171,7 @@ func TestRegisterWorkflowNoHTTPTriggerNoWarning(t *testing.T) {
 }
 
 func TestRESTHandleRegisterWorkflowSurfacesWarnings(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -223,7 +224,7 @@ func TestRESTHandleRegisterWorkflowSurfacesWarnings(t *testing.T) {
 func TestRESTHandleRegisterWorkflowFieldValidationFails(t *testing.T) {
 	// Field validation (dag.Validate) returns an error, so the REST
 	// handler must return 400 and NOT persist the workflow.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -256,7 +257,7 @@ func TestRegisterWorkflowHTTPTriggerMissingSchemas(t *testing.T) {
 	// when an HTTP-triggered workflow registers without input_schema /
 	// output_schema. The workflow IS persisted; the operator just sees
 	// the warning in the response body.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},

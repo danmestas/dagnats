@@ -22,6 +22,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/danmestas/dagnats/internal/consumername"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 )
@@ -78,7 +79,7 @@ func blockingHandler(
 
 func startConcurrencyServer(t *testing.T) (*nats.Conn, jetstream.JetStream) {
 	t.Helper()
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

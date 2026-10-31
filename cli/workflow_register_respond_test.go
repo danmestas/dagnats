@@ -2,7 +2,7 @@
 // Tests that `workflow register` surfaces the same
 // dag.ValidateRespondReachability warnings as `workflow validate`
 // (issue #613), computed offline from the file's embedded HTTP trigger.
-// Methodology: real embedded NATS via natsutil.StartTestServer; register
+// Methodology: real embedded NATS via natstest.StartServer; register
 // an HTTP-triggered workflow through the CLI command in --json mode and
 // assert the respond warnings appear in the JSON, that the workflow is
 // still persisted, and that a clean workflow produces none.
@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/danmestas/dagnats/internal/api"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
@@ -34,7 +35,7 @@ type registerJSONResult struct {
 
 func registerJSON(t *testing.T, body string) registerJSONResult {
 	t.Helper()
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "triggers"}),
 	); err != nil {
@@ -108,7 +109,7 @@ func TestRegisterJSONNoRespondWarningsCleanHTTP(t *testing.T) {
 // TestRegisterMissingRespondStillPersists confirms a missing_respond
 // warning does not block registration — the workflow lands in KV.
 func TestRegisterMissingRespondStillPersists(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "triggers"}),
 	); err != nil {

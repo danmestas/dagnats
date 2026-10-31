@@ -12,12 +12,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestPruneTicker_EnabledDropsOldTerminalKeepsLive(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -57,7 +58,7 @@ func TestPruneTicker_EnabledDropsOldTerminalKeepsLive(t *testing.T) {
 
 // Invariant 3: disabled by default — the ticker never runs, nothing is pruned.
 func TestPruneTicker_DisabledByDefaultPrunesNothing(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}

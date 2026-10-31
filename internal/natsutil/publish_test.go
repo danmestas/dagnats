@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
@@ -48,7 +49,7 @@ func ctxWithTraceparent(t *testing.T, tp string) context.Context {
 }
 
 func TestTracingPublisher_JSRoundtrip(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -124,7 +125,7 @@ func TestTracingPublisher_JSRoundtrip(t *testing.T) {
 }
 
 func TestTracingPublisher_JSPublishMsgEvent_Dualwrite(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -169,7 +170,7 @@ func TestTracingPublisher_JSPublishMsgEvent_Dualwrite(t *testing.T) {
 }
 
 func TestJSPublishMsgEvent_PanicsOnPresetData(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -216,7 +217,7 @@ func TestJSPublishMsgEvent_PanicsOnPresetData(t *testing.T) {
 }
 
 func TestWrapHandler_NoTraceparent_BackgroundCtx(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

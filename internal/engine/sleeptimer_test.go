@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -19,7 +20,7 @@ import (
 )
 
 func TestSleepTimerFiresCompletion(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -97,7 +98,7 @@ func TestSleepTimerFiresCompletion(t *testing.T) {
 }
 
 func TestSleepTimerDedupDuplicateSchedule(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -163,7 +164,7 @@ func TestSleepTimerDedupDuplicateSchedule(t *testing.T) {
 }
 
 func TestSleepTimerFiresRateRetry(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -240,7 +241,7 @@ func TestSleepTimerFiresRateRetry(t *testing.T) {
 }
 
 func TestSleepTimerStartsLazilyOnSchedule(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -316,7 +317,7 @@ func TestSleepTimerStartsLazilyOnSchedule(t *testing.T) {
 // — colliding with a genuine attempt 1's BUILD_LOGS subject and never
 // matching the default `?attempt=` a consumer would look at.
 func TestSleepTimerRateRetryDerivesAttemptFromSnapshot(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}

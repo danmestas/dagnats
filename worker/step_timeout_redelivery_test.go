@@ -25,6 +25,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	enginepkg "github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -37,7 +38,7 @@ func startTimeoutEngine(
 	t *testing.T, wfDef dag.WorkflowDef,
 ) (nats.JetStreamContext, jetstream.JetStream, []byte) {
 	t.Helper()
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

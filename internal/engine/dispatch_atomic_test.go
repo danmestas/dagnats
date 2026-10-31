@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
@@ -68,7 +69,7 @@ func fanOutDef() dag.WorkflowDef {
 }
 
 func TestFanOutDispatch_LaterSaveConflictStillDispatchesEveryStep(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -121,7 +122,7 @@ func TestFanOutDispatch_LaterSaveConflictStillDispatchesEveryStep(t *testing.T) 
 // workflow.started again must dispatch the entry step, not skip the
 // run as an already-started redelivery.
 func TestWorkflowStarted_RedeliveryAfterLostDispatchSaveDispatches(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -172,7 +173,7 @@ func TestWorkflowStarted_RedeliveryAfterLostDispatchSaveDispatches(t *testing.T)
 // the loop strands every sibling after it. All effects and the task
 // batch must run, and the failure must still be reported.
 func TestRunDispatchPlan_OneFailedEffectStillRunsTheRest(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -217,7 +218,7 @@ func TestRunDispatchPlan_OneFailedEffectStillRunsTheRest(t *testing.T) {
 // with ready steps still pending, and workflow.started handled again
 // must dispatch them rather than skip a run that is not all-pending.
 func TestWorkflowStarted_RedeliveryWithReadyPendingStepsHeals(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

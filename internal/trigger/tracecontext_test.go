@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
@@ -90,7 +91,7 @@ func startServiceWithCapturingKV(
 	t *testing.T,
 ) (*nats.Conn, *TriggerService, *ctxCapturingKV) {
 	t.Helper()
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	setupWithTriggerTypes(t, nc)
 	svc, err := NewTriggerService(nc, "1.2.3")
 	if err != nil {
@@ -254,7 +255,7 @@ func TestLoadTriggerTypeDerivesFromCallerContext(t *testing.T) {
 // the type's doc comment claiming auto-flow (#334).
 func TestSubjectTriggerPropagatesInboundTraceContext(t *testing.T) {
 	installSpanRecorder(t)
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

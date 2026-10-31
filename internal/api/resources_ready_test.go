@@ -9,6 +9,7 @@ package api
 import (
 	"testing"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
@@ -16,7 +17,7 @@ func TestResourcesReadyMissingBucketsReturnsError(t *testing.T) {
 	// Connect to a real NATS but skip SetupAll: the workflow_defs bucket
 	// does not exist. This is the operationally-expected "not provisioned
 	// yet" case and must return an error instead of panicking.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	defer nc.Close()
 
 	err := ResourcesReady(nc)
@@ -34,7 +35,7 @@ func TestResourcesReadyMissingBucketsReturnsError(t *testing.T) {
 func TestResourcesReadyProvisionedReturnsNil(t *testing.T) {
 	// After SetupAll the workflow_defs bucket exists, so the probe reports
 	// ready with a nil error and NewService would succeed.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	defer nc.Close()
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)

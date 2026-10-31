@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -23,7 +24,7 @@ import (
 
 func newTestStore(t *testing.T) (*Store, *nats.Conn) {
 	t.Helper()
-	s, nc := natsutil.StartTestServer(t)
+	s, nc := natstest.StartServer(t)
 	t.Cleanup(func() {
 		nc.Close()
 		s.Shutdown()

@@ -15,12 +15,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
 func TestRegistrarsAreIdempotent(t *testing.T) {
 	t.Run("cron", func(t *testing.T) {
-		_, nc := natsutil.StartTestServer(t)
+		_, nc := natstest.StartServer(t)
 		if err := natsutil.SetupAll(nc,
 			natsutil.WithKVBuckets(
 				natsutil.KVConfig{Bucket: "triggers"},
@@ -67,7 +68,7 @@ func TestRegistrarsAreIdempotent(t *testing.T) {
 	})
 
 	t.Run("subject", func(t *testing.T) {
-		_, nc := natsutil.StartTestServer(t)
+		_, nc := natstest.StartServer(t)
 		if err := natsutil.SetupAll(nc,
 			natsutil.WithKVBuckets(
 				natsutil.KVConfig{Bucket: "triggers"},
@@ -115,7 +116,7 @@ func TestRegistrarsAreIdempotent(t *testing.T) {
 	})
 
 	t.Run("webhook", func(t *testing.T) {
-		_, nc := natsutil.StartTestServer(t)
+		_, nc := natstest.StartServer(t)
 		if err := natsutil.SetupAll(nc,
 			natsutil.WithKVBuckets(
 				natsutil.KVConfig{Bucket: "triggers"},
@@ -161,7 +162,7 @@ func TestRegistrarsAreIdempotent(t *testing.T) {
 	})
 
 	t.Run("http", func(t *testing.T) {
-		_, nc := natsutil.StartTestServer(t)
+		_, nc := natstest.StartServer(t)
 		if err := natsutil.SetupAll(nc,
 			natsutil.WithKVBuckets(
 				natsutil.KVConfig{Bucket: "triggers"},
@@ -227,7 +228,7 @@ func TestRegistrarsAreIdempotent(t *testing.T) {
 // reader surface — the refactor is a pass-through layer over the
 // registrars and may not regress any of them.
 func TestServiceReaderSurfaceUnchanged(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},

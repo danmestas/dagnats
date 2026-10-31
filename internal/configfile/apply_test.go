@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/nats-io/nats.go/jetstream"
@@ -27,10 +28,10 @@ func openForTest(path string) (io.ReadCloser, error) {
 
 // kvHandles boots an embedded NATS, sets up the buckets we need,
 // and returns ready-to-use handles. Callers cleanup via t.Cleanup
-// inside natsutil.StartTestServer.
+// inside natstest.StartServer.
 func kvHandles(t *testing.T) KVHandles {
 	t.Helper()
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},

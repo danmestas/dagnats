@@ -9,13 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 )
 
 func TestSubjectTriggerPublishesWorkflowStarted(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
@@ -107,7 +108,7 @@ func verifySubjectTriggerEvent(
 }
 
 func TestSubjectTriggerDisabled(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
@@ -152,7 +153,7 @@ func TestSubjectTriggerDisabled(t *testing.T) {
 }
 
 func TestSubjectTriggerWildcardSubject(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
@@ -226,7 +227,7 @@ func publishAndVerifyWildcard(
 }
 
 func TestSubjectTriggerRejectsNilSubjectConfig(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
@@ -255,7 +256,7 @@ func TestSubjectTriggerRejectsNilSubjectConfig(t *testing.T) {
 }
 
 func TestSubjectTriggerRejectsEmptySubject(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
@@ -284,7 +285,7 @@ func TestSubjectTriggerRejectsEmptySubject(t *testing.T) {
 }
 
 func TestSubjectTriggerEmptyPayload(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)

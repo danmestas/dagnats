@@ -15,13 +15,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 )
 
 func TestWebhookHandlerPublishesWorkflowStarted(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
@@ -121,7 +122,7 @@ func verifyWebhookEvent(
 }
 
 func TestWebhookHandlerHMACValidation(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
@@ -180,7 +181,7 @@ func TestWebhookHandlerHMACValidation(t *testing.T) {
 }
 
 func TestWebhookHandlerBodyLimit(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
@@ -210,7 +211,7 @@ func TestWebhookHandlerBodyLimit(t *testing.T) {
 }
 
 func TestWebhookHandlerDisabled(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
@@ -256,7 +257,7 @@ func TestWebhookHandlerDisabled(t *testing.T) {
 }
 
 func TestWebhookHandlerEmptyBody(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
@@ -316,7 +317,7 @@ func TestWebhookHandlerEmptyBody(t *testing.T) {
 }
 
 func TestWebhookHandlerSignatureWithoutPrefix(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)
@@ -364,7 +365,7 @@ func TestWebhookHandlerSignatureWithoutPrefix(t *testing.T) {
 }
 
 func TestWebhookHandlerMethodNotAllowed(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("setup failed: %v", err)

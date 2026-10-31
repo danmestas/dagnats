@@ -15,11 +15,12 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
 func TestBulkCancelByWorkflow(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -61,7 +62,7 @@ func TestBulkCancelByWorkflow(t *testing.T) {
 }
 
 func TestBulkCancelDryRun(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -102,7 +103,7 @@ func TestBulkCancelDryRun(t *testing.T) {
 }
 
 func TestBulkCancelRequiresWorkflowID(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -122,7 +123,7 @@ func TestBulkCancelRequiresWorkflowID(t *testing.T) {
 }
 
 func TestBulkCancelStatusFilter(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -161,7 +162,7 @@ func TestBulkCancelStatusFilter(t *testing.T) {
 }
 
 func TestBulkCancelEmptyResult(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -194,7 +195,7 @@ func TestBulkCancelEmptyResult(t *testing.T) {
 // still can't prove that within its fetch cap, so Truncated must be
 // true regardless of the (correct) zero-match result.
 func TestBulkCancelSurfacesTruncatedScan(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

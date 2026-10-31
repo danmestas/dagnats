@@ -22,13 +22,14 @@ import (
 	"testing"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 func TestLoadRunAndDefPinnedVersionOverridesLatestPointer(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -91,7 +92,7 @@ func TestLoadRunAndDefPinnedVersionOverridesLatestPointer(t *testing.T) {
 }
 
 func TestLoadRunAndDefLegacyRunFallsBackToLatestPointer(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -146,7 +147,7 @@ func TestLoadRunAndDefLegacyRunFallsBackToLatestPointer(t *testing.T) {
 // engine.def_pin.missing_version counter is the operator signal to
 // go fix retention, not the run's problem to paper over.
 func TestLoadRunAndDefMissingPinnedVersionFailsLoudly(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -257,7 +258,7 @@ func sumInt64Counter(
 }
 
 func TestLoadRunAndDefCorruptPinnedVersionErrors(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -319,7 +320,7 @@ func TestLoadRunAndDefCorruptPinnedVersionErrors(t *testing.T) {
 // TestLoadRunAndDefMissingPinnedVersionFailsLoudly, which pins to a
 // hash that does NOT match the pointer's content.
 func TestLoadRunAndDefSelfHealsPointerOnlyPreExistingDef(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

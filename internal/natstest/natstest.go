@@ -1,4 +1,7 @@
-package natsutil
+// Package natstest starts embedded NATS servers for tests. It lives apart
+// from natsutil so that runtime packages (worker, and the programs built
+// on it) do not link nats-server.
+package natstest
 
 import (
 	"os"
@@ -20,7 +23,7 @@ const storeDirRemoveAttemptsMax = 20
 // in-flight filestore write land before the next RemoveAll walk.
 const storeDirRemoveRetryDelay = 25 * time.Millisecond
 
-// testServerMaxStoreBytes pins the embedded server's JetStream store
+// MaxStoreBytes pins the embedded server's JetStream store
 // budget. Without an explicit value nats-server sizes the budget from the
 // host's AVAILABLE DISK at startup, which makes every JetStream test's
 // outcome depend on ambient host state: on a host with less free disk than
@@ -30,18 +33,18 @@ const storeDirRemoveRetryDelay = 25 * time.Millisecond
 // 1 GiB is ample — the proportional ceilings are reservations against the
 // budget, not preallocated files, and no test writes anywhere near this —
 // while staying small enough to fit on a nearly-full disk.
-const testServerMaxStoreBytes int64 = 1 << 30
+const MaxStoreBytes int64 = 1 << 30
 
-// testServerMaxStoreHeadroomBytes is the slack the server's store budget
+// MaxStoreHeadroomBytes is the slack the server's store budget
 // carries above the account's. The server must hold strictly MORE than the
 // account limit: UpdateJetStreamLimits validates the DELTA from the
 // account's current limit, and an unconfigured account starts at the -1
 // (unlimited) sentinel, so raising it to N is checked as a request for N+1
 // bytes. Headroom keeps that arithmetic clear of the server bound without
 // making the account budget the tests observe anything but a round number.
-const testServerMaxStoreHeadroomBytes int64 = 64 << 20
+const MaxStoreHeadroomBytes int64 = 64 << 20
 
-// StartTestServer starts an embedded NATS server with JetStream enabled
+// StartServer starts an embedded NATS server with JetStream enabled
 // and returns both the server and a connected client. The server and
 // connection are shut down via t.Cleanup when the test ends, and the
 // JetStream store directory is removed by removeDirWithRetry AFTER the
@@ -57,7 +60,7 @@ const testServerMaxStoreHeadroomBytes int64 = 64 << 20
 // tests with "TempDir RemoveAll cleanup: unlinkat ... directory not
 // empty". Owning the removal lets a late write be absorbed by a bounded
 // retry instead of reddening the suite.
-func StartTestServer(t testing.TB) (*natsserver.Server, *nats.Conn) {
+func StartServer(t testing.TB) (*natsserver.Server, *nats.Conn) {
 	t.Helper()
 	storeDir, err := os.MkdirTemp("", "dagnats-nats-store-*")
 	if err != nil {
@@ -67,8 +70,8 @@ func StartTestServer(t testing.TB) (*natsserver.Server, *nats.Conn) {
 		Host:      "127.0.0.1",
 		Port:      -1,
 		JetStream: true,
-		JetStreamMaxStore: testServerMaxStoreBytes +
-			testServerMaxStoreHeadroomBytes,
+		JetStreamMaxStore: MaxStoreBytes +
+			MaxStoreHeadroomBytes,
 		StoreDir: storeDir,
 	}
 	ns, err := natsserver.NewServer(opts)
@@ -90,7 +93,7 @@ func StartTestServer(t testing.TB) (*natsserver.Server, *nats.Conn) {
 	limits := map[string]natsserver.JetStreamAccountLimits{
 		"": {
 			MaxMemory:            -1,
-			MaxStore:             testServerMaxStoreBytes,
+			MaxStore:             MaxStoreBytes,
 			MaxStreams:           -1,
 			MaxConsumers:         -1,
 			MaxAckPending:        -1,

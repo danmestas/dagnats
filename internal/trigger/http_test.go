@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/httpenvelope"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -37,7 +38,7 @@ type httpRespondWire struct {
 }
 
 func TestHTTPHandlerHappyPath(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -84,7 +85,7 @@ func TestHTTPHandlerHappyPath(t *testing.T) {
 }
 
 func TestHTTPHandlerRejectsBodyTooLarge(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -119,7 +120,7 @@ func TestHTTPHandlerRejectsBodyTooLarge(t *testing.T) {
 }
 
 func TestHTTPHandlerRejectsBadMethod(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -149,7 +150,7 @@ func TestHTTPHandlerRejectsBadMethod(t *testing.T) {
 }
 
 func TestHTTPHandlerAcceptsValidHMACAndRejectsInvalid(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -214,7 +215,7 @@ func TestHTTPHandlerIdempotencyHeaderDeduplicates(t *testing.T) {
 	// handler still subscribes on its own per-run subject; PR 3 wires
 	// idempotency replay (lookup prior runID, reuse response). This
 	// test pins the wire-level dedup behavior for now.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -281,7 +282,7 @@ func TestHTTPHandlerIdempotencyHeaderDeduplicates(t *testing.T) {
 }
 
 func TestHTTPHandlerPublishesTriggerEnvelope(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

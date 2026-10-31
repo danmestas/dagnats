@@ -14,13 +14,14 @@ import (
 	"testing"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
 )
 
 func newTriggerGuardTestService(t *testing.T) *Service {
 	t.Helper()
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "triggers"}),
 	); err != nil {

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -132,7 +133,7 @@ func consumeHistoryEvent(
 }
 
 func TestResolveComplete(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -180,7 +181,7 @@ func TestResolveComplete(t *testing.T) {
 }
 
 func TestResolveFail(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -225,7 +226,7 @@ func TestResolveFail(t *testing.T) {
 }
 
 func TestResolvePause(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "checkpoints"},
@@ -291,7 +292,7 @@ func TestResolvePause(t *testing.T) {
 }
 
 func TestResolveNotFound(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -318,7 +319,7 @@ func TestResolveNotFound(t *testing.T) {
 }
 
 func TestResolveBadAction(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -355,7 +356,7 @@ func TestResolveBadAction(t *testing.T) {
 }
 
 func TestResolveCheckpoint(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "checkpoints"},
@@ -432,7 +433,7 @@ func TestResolveCheckpoint(t *testing.T) {
 }
 
 func TestResolveSendSignal(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "signals"},
@@ -502,7 +503,7 @@ func TestResolveSendSignal(t *testing.T) {
 }
 
 func TestResolveWaitSignalImmediate(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "signals"},
@@ -567,7 +568,7 @@ func TestResolveWaitSignalImmediate(t *testing.T) {
 }
 
 func TestResolveWaitSignalTimeout(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "signals"},
@@ -607,7 +608,7 @@ func TestResolveWaitSignalTimeout(t *testing.T) {
 }
 
 func TestResolveFailWithFailureType(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -653,7 +654,7 @@ func TestResolveFailWithFailureType(t *testing.T) {
 }
 
 func TestResolveFailDefaultsToRetriable(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -689,7 +690,7 @@ func TestResolveFailDefaultsToRetriable(t *testing.T) {
 }
 
 func TestResolvePauseInvalidDuration(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -735,7 +736,7 @@ func TestResolvePauseInvalidDuration(t *testing.T) {
 }
 
 func TestResolveSendSignalMissingFields(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "signals"},
@@ -792,7 +793,7 @@ func TestResolveSendSignalMissingFields(t *testing.T) {
 }
 
 func TestResolveWaitSignalInvalidTimeout(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "signals"},
@@ -829,7 +830,7 @@ func TestResolveWaitSignalInvalidTimeout(t *testing.T) {
 }
 
 func TestResolveInvalidJSON(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -862,7 +863,7 @@ func TestResolveInvalidJSON(t *testing.T) {
 }
 
 func TestResolveContinuePublishesEvent(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -906,7 +907,7 @@ func TestResolveContinuePublishesEvent(t *testing.T) {
 }
 
 func TestResolveHeartbeatExtendsDeadline(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -958,7 +959,7 @@ func TestResolveAfterLongExtendedClaim(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, nc := natsutil.StartTestServer(t)
+			_, nc := natstest.StartServer(t)
 			err := natsutil.SetupAll(nc, natsutil.WithKVBuckets(
 				natsutil.KVConfig{Bucket: "checkpoints"},
 				natsutil.KVConfig{Bucket: "signals"},
@@ -1010,7 +1011,7 @@ func postResolve(t *testing.T, ts *httptest.Server, taskID, body string) int {
 }
 
 func TestResolveStreamPublishesData(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -1062,7 +1063,7 @@ func TestResolveStreamPublishesData(t *testing.T) {
 }
 
 func TestResolveInvalidActionRejected(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -76,7 +77,7 @@ func startSleepFlavorRun(
 }
 
 func TestSleepStepCronResolvesNextOccurrence(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -114,7 +115,7 @@ func TestSleepStepCronResolvesNextOccurrence(t *testing.T) {
 }
 
 func TestSleepStepUntilInputPathResolvesRFC3339(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -152,7 +153,7 @@ func TestSleepStepUntilInputPathResolvesRFC3339(t *testing.T) {
 }
 
 func TestSleepStepUntilInputPathResolvesMilliseconds(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -185,7 +186,7 @@ func TestSleepStepUntilInputPathResolvesMilliseconds(t *testing.T) {
 }
 
 func TestSleepStepUntilInputPathPastInstantCompletes(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -245,7 +246,7 @@ func TestSleepStepUntilInputPathPastInstantCompletes(t *testing.T) {
 func TestSleepStepPastInstantSchedulesMinimumTimer(t *testing.T) {
 	// Pins the durationMs <= 0 -> 1 clamp in sleepHandler.enqueue, which the
 	// past-instant path made newly reachable with an exact zero.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -298,7 +299,7 @@ func TestSleepStepResolutionFailureFailsStep(t *testing.T) {
 	// until_input_path resolves against immutable run input, so a missing
 	// path fails identically on every redelivery. The step must reach
 	// Failed rather than sitting Queued forever.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -350,7 +351,7 @@ func TestSleepStepResolutionFailureFailsStep(t *testing.T) {
 }
 
 func TestSleepStepUntilInputPathReadsRunInputNotStepInput(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

@@ -15,12 +15,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestEnforceRunCeiling_PurgesOversizedBucket(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -77,7 +78,7 @@ func TestEnforceRunCeiling_PurgesOversizedBucket(t *testing.T) {
 // purged under the cap, every live in-flight run would be at risk on every
 // routine cleanup run, not just the retry-storm recovery case.
 func TestEnforceRunCeiling_NoOpUnderCeiling(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -127,7 +128,7 @@ func TestEnforceRunCeiling_NoOpUnderCeiling(t *testing.T) {
 // un-acked tasks, not history, so an automatic ceiling purge must never drain
 // it even when it is the target that most exceeds --max-keep.
 func TestEnforceRunCeiling_SkipsWorkQueueStream(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -175,7 +176,7 @@ func TestEnforceRunCeiling_SkipsWorkQueueStream(t *testing.T) {
 // TestEnforceRunCeiling_DisabledWhenMaxKeepZero proves --max-keep=0 is a real
 // off switch, not just a very high default.
 func TestEnforceRunCeiling_DisabledWhenMaxKeepZero(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -218,7 +219,7 @@ func TestEnforceRunCeiling_DisabledWhenMaxKeepZero(t *testing.T) {
 // be reachable for "defs" (workflow definitions), which no automatic
 // count-based purge should ever touch.
 func TestEnforceRunCeiling_SkipsWhenRunsCategoryNotSelected(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -261,7 +262,7 @@ func TestEnforceRunCeiling_SkipsWhenRunsCategoryNotSelected(t *testing.T) {
 // all "new" purges nothing, and the ceiling pass that runs after it is what
 // actually bounds the index.
 func TestCleanCmd_CeilingCatchesWhatAgeAloneMisses(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -25,7 +26,7 @@ import (
 // to process subsequent events. Pre-fix the dag.NewWorkflowRun
 // invariant panic kills the consumer goroutine and the process exits.
 func TestOrchestrator_EmptyWorkflowDefDoesNotCrash(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -123,7 +124,7 @@ func TestOrchestrator_EmptyWorkflowDefDoesNotCrash(t *testing.T) {
 // safeDispatch wrapper. Post-fix dispatchEvent's defer recover converts
 // it to a "handler panic" error.
 func TestOrchestrator_DispatchRecoversFromHandlerPanic(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}

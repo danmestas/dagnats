@@ -5,7 +5,7 @@
 // owner -- this connection's own heartbeat re-register, or its own
 // disconnect-time deregister racing a reconnect -- must never
 // surface as ErrWorkerIDOwned/409. Methodology: real embedded NATS
-// server via natsutil.StartTestServer, httptest server; each
+// server via natstest.StartServer, httptest server; each
 // scenario is looped many times (dozens of iterations) rather than
 // run once, since the underlying race is timing-dependent and a
 // single pass can pass by luck even on unfixed code.
@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -31,7 +32,7 @@ import (
 // the prior connection's own disconnect-time DeregisterOwned landing
 // in the same Get-to-write window.
 func TestConnectDevModeReconnectNeverConflicts(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -81,7 +82,7 @@ func TestConnectDevModeReconnectNeverConflicts(t *testing.T) {
 // loop is still ticking. A reconnect losing the revision race to its
 // own heartbeat's re-register must retry and succeed, never 409.
 func TestConnectReconnectRacesOwnHeartbeatNeverConflicts(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

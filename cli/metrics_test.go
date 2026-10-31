@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -332,7 +333,7 @@ func TestPrintMetricSummaryOutput(t *testing.T) {
 // --- Integration test ---
 
 func TestMetricsShowIntegration(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -414,7 +415,7 @@ func TestMetricsShowIntegration(t *testing.T) {
 }
 
 func TestMetricsShowJSONOutput(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -474,7 +475,7 @@ func TestMetricsShowJSONOutput(t *testing.T) {
 }
 
 func TestMetricsShowNoResults(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -578,7 +579,7 @@ func captureMetricsStderr(fn func()) string {
 // the ordered consumer left Next() retrying forever instead of
 // returning within collectMetricPoints's own scan timeout.
 func TestCollectMetricPointsDeletedStreamReturnsWithinBound(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

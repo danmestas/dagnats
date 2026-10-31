@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -26,7 +27,7 @@ func TestOrchestratorSleepStep(t *testing.T) {
 	// Methodology: workflow has task-a -> sleep(100ms) -> task-b.
 	// Start orchestrator, complete task-a manually, verify the sleep
 	// step completes via durable timer, then task-b gets enqueued.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -153,7 +154,7 @@ func TestOrchestratorRateLimitDelaysTask(t *testing.T) {
 	// limit of 1 per 10 seconds. Start two runs quickly. The first
 	// should get its task published immediately. The second should be
 	// deferred to the SLEEP_TIMERS stream instead of TASK_QUEUES.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -278,7 +279,7 @@ func TestOrchestratorWaitForEventMatches(t *testing.T) {
 	// Complete task-a with output containing order_id. Publish a
 	// matching event to the EVENTS stream. Verify task-b runs and
 	// workflow completes.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -423,7 +424,7 @@ func TestOrchestratorWaitForEventTimeout(t *testing.T) {
 	// task-b. Complete task-a, do NOT publish matching event. Verify
 	// the wait step completes with timeout output and task-b still
 	// runs (timeout is not a failure).
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}

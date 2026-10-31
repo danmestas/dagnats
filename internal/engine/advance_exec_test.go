@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -20,7 +21,7 @@ import (
 func TestExecuteSideEffects_EnqueueTask(t *testing.T) {
 	// Verify that EnqueueTask effects result in task messages
 	// on the TASK_QUEUES stream.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -97,7 +98,7 @@ func TestExecuteSideEffects_EnqueueTask(t *testing.T) {
 func TestExecuteSideEffects_CompleteWorkflow(t *testing.T) {
 	// Verify that CompleteWorkflow effect publishes a
 	// workflow.completed event to the history stream.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -206,7 +207,7 @@ func TestAdvanceIntegration_StepCompletedTriggersEnqueue(
 	// Full integration: start orchestrator, register 2-step workflow,
 	// start run, complete step "a" → verify "b" enqueued via Advance,
 	// complete step "b" → verify workflow completes.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}

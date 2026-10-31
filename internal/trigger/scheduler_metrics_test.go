@@ -1,6 +1,6 @@
 // internal/trigger/scheduler_metrics_test.go
 // Methodology: integration-style tests combining embedded NATS
-// (natsutil.StartTestServer) for a real Scheduler with an OTel SDK
+// (natstest.StartServer) for a real Scheduler with an OTel SDK
 // manual reader (sdkmetric.NewManualReader) for metric collection —
 // the same combination internal/engine/metrics_test.go uses for the
 // SDK side and scheduler_test.go uses for the NATS side, bridged
@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel/attribute"
@@ -57,7 +58,7 @@ func findGaugeDataPoint(
 // the workflow.started subscription, only the scheduler + metrics.
 func newTestScheduler(t *testing.T) (*Scheduler, *nats.Conn) {
 	t.Helper()
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
 	if err != nil {

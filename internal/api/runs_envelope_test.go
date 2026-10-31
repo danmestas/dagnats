@@ -16,6 +16,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/worker"
 )
@@ -156,7 +157,7 @@ func TestCountUnfilteredUsesCountAll(t *testing.T) {
 // signal the count assertions rely on — see waitAllComplete (#570).
 func newRunsSvc(t *testing.T, wfName string) *Service {
 	t.Helper()
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}

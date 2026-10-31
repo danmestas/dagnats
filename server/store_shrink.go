@@ -17,7 +17,7 @@ import (
 // storeBudgetShrinkHeadroomBytes is the slack added on top of what existing
 // streams reserve when #688's auto-shrink temporarily raises the embedded
 // server's JetStreamMaxStore to admit them. Matches the convention
-// natsutil.testServerMaxStoreHeadroomBytes already uses for the same
+// natstest.MaxStoreHeadroomBytes already uses for the same
 // purpose: JetStream's own bookkeeping needs a little more than the exact
 // sum of stream MaxBytes, so an exact match still risks err 10047.
 const storeBudgetShrinkHeadroomBytes int64 = 64 << 20

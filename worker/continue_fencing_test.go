@@ -21,6 +21,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	enginepkg "github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -74,7 +75,7 @@ func readContinue(t *testing.T, nc *nats.Conn, runID string) (protocol.Event, st
 }
 
 func TestContinue_CarriesCheckpointedStateAndIdentity(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -109,7 +110,7 @@ func TestContinue_CarriesCheckpointedStateAndIdentity(t *testing.T) {
 }
 
 func TestContinue_WithoutCheckpointCarriesPayloadStateForward(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -158,7 +159,7 @@ func TestContinue_OverCapStateFailsBeforePublishing(t *testing.T) {
 }
 
 func TestLoadCheckpoint_PauseMarkerShadowsPayloadStateUntilContinue(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc, natsutil.WithKVBuckets(
 		natsutil.KVConfig{Bucket: "checkpoints"},
 	)); err != nil {
@@ -203,7 +204,7 @@ func TestLoadCheckpoint_PauseMarkerShadowsPayloadStateUntilContinue(t *testing.T
 }
 
 func TestCheckpoint_UnderOldEngineWritesKVAndContinueKeepsIt(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc, natsutil.WithKVBuckets(
 		natsutil.KVConfig{Bucket: "checkpoints"},
 	)); err != nil {
@@ -241,7 +242,7 @@ func TestCheckpoint_UnderOldEngineWritesKVAndContinueKeepsIt(t *testing.T) {
 }
 
 func TestCheckpoint_NilClearsStateInContinue(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -270,7 +271,7 @@ func TestCheckpoint_NilClearsStateInContinue(t *testing.T) {
 // engine's own step-timeout step.failed for a stalled handler, each
 // name the dispatch they answer.
 func TestLifecycleEventsCarryIdentity(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

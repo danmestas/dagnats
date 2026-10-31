@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -30,7 +31,7 @@ func TestOrchestratorMapStepFanOut(t *testing.T) {
 	// map processes each item (3 instances).
 	// summarize receives the collected array of results.
 	// Verify: all 3 map instances complete, summarize gets [r0, r1, r2].
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -218,7 +219,7 @@ func TestOrchestratorMapStepFanOutCarriesRealWorkflowName(t *testing.T) {
 	// workflow definition name (wfDef.Name), never "". RED against main
 	// (which forges an empty workflow name for map instances), GREEN after
 	// the fix (publishMapTasks threads wfDef.Name through unmodified).
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -335,7 +336,7 @@ func TestOrchestratorMapStepFanOutStripsControlPlaneCapabilityRegardlessOfGrant(
 	// that unrelated capabilities like "gpu" survive unstripped, and that
 	// WorkflowName is still the real name (the #513 fix coexists with the
 	// preserved #380 invariant in the same dispatch).
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -459,7 +460,7 @@ func TestOrchestratorMapStepFanOutStripsControlPlaneCapabilityRegardlessOfGrant(
 func TestOrchestratorMapStepFailFast(t *testing.T) {
 	// Methodology: workflow has fetch -> map.
 	// One map instance fails. Verify: map step and workflow fail.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}

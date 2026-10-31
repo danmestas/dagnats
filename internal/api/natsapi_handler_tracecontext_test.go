@@ -26,6 +26,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
@@ -160,7 +161,7 @@ func tracedEndpointCases(
 func TestNATSAPIHandlersPropagateTraceContext(t *testing.T) {
 	exporter := installSpanRecorder(t)
 
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}

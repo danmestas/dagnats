@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/workertoken"
 	"github.com/nats-io/nats.go/jetstream"
@@ -60,7 +61,7 @@ func pollWithBearer(
 }
 
 func TestTokenPollInScopeSucceeds(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -97,7 +98,7 @@ func TestTokenPollInScopeSucceeds(t *testing.T) {
 }
 
 func TestTokenPollOutOfScopeForbidden(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -134,7 +135,7 @@ func TestTokenPollOutOfScopeForbidden(t *testing.T) {
 // scoped to nothing has no way to tell "wrong type" from "no types at
 // all" without reaching for another tool.
 func TestTokenPollOutOfScopeBodyNamesScopes(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -182,7 +183,7 @@ func TestTokenPollOutOfScopeBodyNamesScopes(t *testing.T) {
 // token minted with no task types must say so plainly, not just
 // blame whatever type happened to be requested.
 func TestTokenPollEmptyScopeBodySaysScopedToNothing(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -226,7 +227,7 @@ func TestTokenPollEmptyScopeBodySaysScopedToNothing(t *testing.T) {
 }
 
 func TestTokenAdminBypassesScoping(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -259,7 +260,7 @@ func TestTokenAdminBypassesScoping(t *testing.T) {
 // itself requires the admin token, so no worker token could ever
 // exist to satisfy a Store-only gate).
 func TestTokenEnvUnsetStoreWiredAllowsUnauthenticated(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -288,7 +289,7 @@ func TestTokenEnvUnsetStoreWiredAllowsUnauthenticated(t *testing.T) {
 // bearer -> 401" case pinned once a Store is wired in, distinct from
 // the dev-mode case above.
 func TestTokenEnvSetRandomBearerRejected(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

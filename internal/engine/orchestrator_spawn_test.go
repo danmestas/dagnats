@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -23,7 +24,7 @@ import (
 )
 
 func TestOrchestratorHandlesWorkflowSpawn(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("setup: %v", err)
@@ -100,7 +101,7 @@ func TestOrchestratorHandlesWorkflowSpawn(t *testing.T) {
 }
 
 func TestOrchestratorChildCompletionNotifiesParent(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("setup: %v", err)
@@ -180,7 +181,7 @@ func TestOrchestratorChildCompletionNotifiesParent(t *testing.T) {
 }
 
 func TestOrchestratorRejectsExcessiveNesting(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("setup: %v", err)
@@ -273,7 +274,7 @@ func waitForEventType(
 func TestOrchestratorChildFailureNotifiesParent(t *testing.T) {
 	// Methodology: spawn a child, fail it, verify parent gets
 	// workflow.child.failed event.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -357,7 +358,7 @@ func TestOrchestratorChildFailureNotifiesParent(t *testing.T) {
 // downstream run_terminal trigger reacting to the child would use to
 // compute the NEXT depth in the chain.
 func TestOrchestratorChildInheritsTriggerDepth(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -500,7 +501,7 @@ func TestOrchestratorChildInheritsTriggerDepth(t *testing.T) {
 // still self-roots for a detached child (lineage DISPLAY, unaffected
 // by this fix) even though TriggerDepth (the safety cap) inherits.
 func TestOrchestratorDetachedChildInheritsTriggerDepth(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("setup: %v", err)
 	}

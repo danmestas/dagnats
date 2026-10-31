@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -19,7 +20,7 @@ import (
 )
 
 func TestPlanner_MaterializeAndComplete(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -190,7 +191,7 @@ func TestPlanner_MaterializeAndComplete(t *testing.T) {
 }
 
 func TestPlanner_MaxStepsExceeded(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -283,7 +284,7 @@ func TestPlanner_MaxStepsExceeded(t *testing.T) {
 }
 
 func TestPlanner_AllowedTasksViolation(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -376,7 +377,7 @@ func TestPlanner_AllowedTasksViolation(t *testing.T) {
 }
 
 func TestPlanner_CycleInFragment(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -474,7 +475,7 @@ func TestPlanner_CycleInFragment(t *testing.T) {
 }
 
 func TestPlanner_EmptyPlan(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

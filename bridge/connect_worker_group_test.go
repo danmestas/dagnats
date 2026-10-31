@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/workertoken"
 	"github.com/danmestas/dagnats/worker"
@@ -38,7 +39,7 @@ type connectGroupHarness struct {
 
 func newConnectGroupHarness(t *testing.T) connectGroupHarness {
 	t.Helper()
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

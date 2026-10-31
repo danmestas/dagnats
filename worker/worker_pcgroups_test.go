@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 
 	"github.com/danmestas/dagnats/protocol"
@@ -21,7 +22,7 @@ import (
 )
 
 func TestWorker_ElasticConsume(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -99,7 +100,7 @@ func TestWorker_ElasticConsume(t *testing.T) {
 }
 
 func TestWorker_Singleton(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -157,7 +158,7 @@ func TestWorker_Singleton(t *testing.T) {
 }
 
 func TestHandleSingletonPanicsOnEmptyTaskType(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	w := NewWorker(nc,
 		WithPartitions(4),
 	)
@@ -179,7 +180,7 @@ func TestHandleSingletonPanicsOnEmptyTaskType(t *testing.T) {
 }
 
 func TestHandleSingletonPanicsOnNilHandler(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	w := NewWorker(nc,
 		WithPartitions(4),
 	)
@@ -235,7 +236,7 @@ func TestWithPartitionsUpperBound(t *testing.T) {
 // derives, for the grouped elastic path, and that none fall back to the
 // old un-anchored ">" shape.
 func TestWorker_ElasticConsumeFilterIsAnchored(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

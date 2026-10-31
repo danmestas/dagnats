@@ -14,12 +14,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
 )
 
 func TestServiceCreateTriggerRouteConflictReturns409(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -72,7 +73,7 @@ func TestServiceCreateTriggerRouteConflictReturns409(t *testing.T) {
 }
 
 func TestServiceCreateTriggerSamePathDifferentMethodAllowed(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -113,7 +114,7 @@ func TestServiceCreateTriggerSelfReplaceNoConflict(t *testing.T) {
 	// Re-registering the same trigger ID with the same route must
 	// succeed (idempotent update), not return a conflict. Conflicts
 	// are between *different* trigger IDs claiming the same route.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
