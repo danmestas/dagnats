@@ -597,13 +597,13 @@ func WithConcurrency(n int) HandlerOption
 WithConcurrency lets each consumer lane of the handler's type run up to n tasks at once \(\#842\). A lane is one consumer: the pull consumer, the sticky consumer, each WithGroups group, each WithPartitions member. The default is 1 per lane, which is how every lane has always run. With n \> 1 a lane's tasks no longer finish in delivery order, including within a partition. Panics unless 1 \<= n \<= ConcurrencyMax, and on a HandleSingleton type when n \> 1.
 
 <a name="WithMaxRunTime"></a>
-### func [WithMaxRunTime](<https://github.com/danmestas/dagnats/blob/main/worker/progress.go#L43>)
+### func [WithMaxRunTime](<https://github.com/danmestas/dagnats/blob/main/worker/progress.go#L45>)
 
 ```go
 func WithMaxRunTime(d time.Duration) HandlerOption
 ```
 
-WithMaxRunTime overrides, for one task type, how long the automatic heartbeat keeps a task alive \(the worker default is WithHeartbeatMax\). Give it to handlers that legitimately run long; a long wait is better spent in ctx.Pause\(name, d\), which holds no worker while it waits. Panics unless 0 \< d \<= MaxRunTimeMax.
+WithMaxRunTime overrides, for one task type, how long the automatic heartbeat keeps a task alive \(the worker default is WithHeartbeatMax\). Give it to handlers that legitimately run long; a long wait is better spent in ctx.Pause\(name, d\), which holds no worker while it waits. In a lane of one \(no WithConcurrency\) a hung handler blocks the lane, so past the cap its task can only redeliver to another worker. Panics unless 0 \< d \<= MaxRunTimeMax.
 
 <a name="LoopTask"></a>
 ## type [LoopTask](<https://github.com/danmestas/dagnats/blob/main/worker/roles.go#L39-L45>)

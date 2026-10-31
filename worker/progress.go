@@ -38,7 +38,9 @@ const MaxRunTimeMax = 30 * 24 * time.Hour
 // WithMaxRunTime overrides, for one task type, how long the automatic
 // heartbeat keeps a task alive (the worker default is WithHeartbeatMax).
 // Give it to handlers that legitimately run long; a long wait is better
-// spent in ctx.Pause(name, d), which holds no worker while it waits.
+// spent in ctx.Pause(name, d), which holds no worker while it waits. In a
+// lane of one (no WithConcurrency) a hung handler blocks the lane, so
+// past the cap its task can only redeliver to another worker.
 // Panics unless 0 < d <= MaxRunTimeMax.
 func WithMaxRunTime(d time.Duration) HandlerOption {
 	if d <= 0 {
@@ -111,6 +113,9 @@ type progressEnds struct {
 	abandoned <-chan struct{} // closed when Stop gives up on handlers
 	max       time.Duration   // the heartbeat cap
 	atMax     func()          // runs once if the cap is reached
+	// release frees the task's claim, so its next delivery runs (through
+	// decodeTask) instead of being skipped as a duplicate.
+	release func()
 }
 
 // startProgress starts the automatic heartbeat of the task tc runs from
@@ -141,8 +146,8 @@ func (w *Worker) startProgress(
 			slog.Warn("task outlived its max run time; it will redeliver",
 				"task_type", l.taskType, "run_id", tc.runID,
 				"step_id", tc.stepID, "max_run_time", maxRunTime)
-			w.running.forget(c)
 		},
+		release: func() { w.running.forget(c) },
 	}
 	go p.run(msg, l.ackWait/2, ends)
 	return p
@@ -167,9 +172,13 @@ func (p *progressTicker) run(
 		case <-ends.abandoned:
 			return
 		case <-ends.ctx.Done():
+			// A cancelled handler that hangs must not have its
+			// redeliveries skipped forever.
+			ends.release()
 			return
 		case <-capped.C:
 			ends.atMax()
+			ends.release()
 			return
 		case <-ticker.C:
 			if p.frozen.Load() > 0 {

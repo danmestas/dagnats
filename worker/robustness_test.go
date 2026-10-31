@@ -515,3 +515,57 @@ func TestWithMaxRunTime_Bounds(t *testing.T) {
 		WithMaxRunTime(MaxRunTimeMax + time.Second)
 	})
 }
+
+// TestHeartbeat_CancelFreesAHungHandlersTask: a cancelled run's handler
+// that hangs must not have its redeliveries skipped as duplicates.
+func TestHeartbeat_CancelFreesAHungHandlersTask(t *testing.T) {
+	nc, js := startConcurrencyServer(t)
+	var runs atomic.Int64
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	w := NewWorker(nc)
+	w.Handle("probe.cancelhang", hangFirst(&runs, release),
+		WithAckWait(robustAckWait), WithConcurrency(2))
+	if err := w.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer w.Stop()
+
+	publishConcurrencyTask(t, js, "probe.cancelhang", "run-cancelhang")
+	awaitRuns(t, &runs, 1, concurrencyWaitBound)
+	w.cancels.cancelRun("run-cancelhang")
+	awaitRuns(t, &runs, 2, concurrencyWaitBound)
+}
+
+// metaMsg is a message that only answers Metadata.
+type metaMsg struct {
+	jetstream.Msg
+	meta jetstream.MsgMetadata
+}
+
+func (m *metaMsg) Metadata() (*jetstream.MsgMetadata, error) { return &m.meta, nil }
+
+// TestRunningSet_RecreatedStreamReusesSequences: a recreated stream's
+// message with an acked one's sequence is a different message.
+func TestRunningSet_RecreatedStreamReusesSequences(t *testing.T) {
+	var s runningSet
+	s.addLane(1)
+	now := time.Now()
+	published := func(at time.Time) *metaMsg {
+		meta := jetstream.MsgMetadata{Stream: "STICKY_TASKS", Timestamp: at}
+		meta.Sequence.Stream = 7
+		return &metaMsg{meta: meta}
+	}
+	c, v := s.claim(published(now), now)
+	if v != verdictRun {
+		t.Fatalf("first claim verdict = %v, want run", v)
+	}
+	s.release(c, true, time.Minute, now)
+
+	if _, v := s.claim(published(now), now); v != verdictSettled {
+		t.Errorf("same message again: verdict = %v, want settled", v)
+	}
+	if _, v := s.claim(published(now.Add(time.Second)), now); v != verdictRun {
+		t.Errorf("reused sequence, new message: verdict = %v, want run", v)
+	}
+}

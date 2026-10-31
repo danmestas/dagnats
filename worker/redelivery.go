@@ -19,10 +19,13 @@ type lane struct {
 }
 
 // deliveryKey names one stream message. Sequences are per stream, and a
-// Worker consumes both TASK_QUEUES and STICKY_TASKS.
+// Worker consumes both TASK_QUEUES and STICKY_TASKS. A stream recreated
+// within the recent window (STICKY_TASKS is in memory) reuses sequences,
+// so the publish time tells its messages apart.
 type deliveryKey struct {
-	stream   string
-	sequence uint64
+	stream            string
+	sequence          uint64
+	publishedUnixNano int64
 }
 
 // claim is one delivery's hold on its key. The generation tells a
@@ -94,7 +97,10 @@ func (s *runningSet) claim(msg jetstream.Msg, now time.Time) (claim, verdict) {
 	if err != nil || meta == nil {
 		return claim{}, verdictRun
 	}
-	key := deliveryKey{stream: meta.Stream, sequence: meta.Sequence.Stream}
+	key := deliveryKey{
+		stream: meta.Stream, sequence: meta.Sequence.Stream,
+		publishedUnixNano: meta.Timestamp.UnixNano(),
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.running == nil {
