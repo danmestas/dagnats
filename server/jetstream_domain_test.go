@@ -164,39 +164,12 @@ func TestServer_JetStreamDomainCompletesRun(t *testing.T) {
 }
 
 // A hub without a domain reaches a leaf's JetStream only through the leaf's
-// domain; its own $JS.API stays its own.
+// domain; its own $JS.API stays its own. The leaf dials the hub's leaf
+// listener and logs in with leaf_user.
 func TestJetStreamDomain_HubReachesLeafByDomain(t *testing.T) {
-	hubURL, leafRemote := startDomainHub(t)
-	leaf, err := startNATS(Config{
-		DataDir: t.TempDir(), NATSPort: -1, NATSHost: "127.0.0.1",
-		MaxStoreBytes: 1 << 30, JetStreamDomain: "e-mac",
-		LeafRemotes: []string{leafRemote},
-	})
-	if err != nil {
-		t.Fatalf("start leaf: %v", err)
-	}
-	defer leaf.Shutdown()
-	assertHubReachesLeafByDomain(t, hubURL, leaf)
-}
-
-// startDomainHub starts a plain JetStream server with a leafnode listener and
-// returns its client URL and the leaf remote URL that dials it.
-func startDomainHub(t *testing.T) (string, string) {
-	t.Helper()
-	opts := &natsserver.Options{
-		Host: "127.0.0.1", Port: -1, JetStream: true, StoreDir: t.TempDir(),
-		LeafNode: natsserver.LeafNodeOpts{Host: "127.0.0.1", Port: -1},
-		NoLog:    true, NoSigs: true,
-	}
-	hub, err := tryStartNATS(opts)
-	if err != nil {
-		t.Fatalf("start hub: %v", err)
-	}
-	t.Cleanup(hub.Shutdown)
-	if opts.LeafNode.Port <= 0 {
-		t.Fatalf("hub leaf port not resolved: %d", opts.LeafNode.Port)
-	}
-	return hub.ClientURL(), fmt.Sprintf("nats-leaf://127.0.0.1:%d", opts.LeafNode.Port)
+	hub, port := startLeafHub(t, Config{})
+	leaf := startDagnatsLeaf(t, port, testLeafPassword)
+	assertHubReachesLeafByDomain(t, hub.ClientURL(), leaf)
 }
 
 // assertHubReachesLeafByDomain creates a stream on the leaf, then reads it

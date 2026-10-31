@@ -22,6 +22,12 @@ Zero-config starts everything on defaults. Environment variables always win.
 | `nats_port` | int | `4222` | `4222` |
 | `leaf_remotes` | []string | (none) | (none) |
 | `leaf_credentials` | string | (none) | (none) |
+| `leaf_user` | string | (none) | (none) |
+| `leaf_password_file` | string | (none) | (none) |
+| `leaf_port` | int | `0` (off) | `0` (off) |
+| `leaf_host` | string | `127.0.0.1` | `127.0.0.1` |
+| `leaf_listen_user` | string | (none) | (none) |
+| `leaf_listen_password_file` | string | (none) | (none) |
 | `nats_cluster_name` | string | (none) | (none) |
 | `nats_cluster_routes` | []string | (none) | (none) |
 | `nats_cluster_auth_token` | string | (none) | (none) |
@@ -44,6 +50,8 @@ Zero-config starts everything on defaults. Environment variables always win.
 
 `legacy_step_events` (`DAGNATS_LEGACY_STEP_EVENTS`) makes the engine accept `step.continue`, `step.completed` and `step.failed` events that carry no dispatch identity, from workers and bridge clients older than the fence. While it is on, a duplicate continue from such a worker can still advance a loop twice, and the engine logs a warning at startup. Set it to `false` once every worker is upgraded. `loop_state_max_bytes` (`DAGNATS_LOOP_STATE_MAX_BYTES`) caps the state an agent loop commits per iteration; it must stay below `max_payload`, and it does not apply to a step that uses the [agent journal](/docs/ai-patterns/durable-agents). Upgrade engines before workers; see [Durable Agents](/docs/ai-patterns/durable-agents#upgrading).
 
+`leaf_port` (default `0`, off) opens a leafnode listener other servers dial with a `nats-leaf://` remote. `leaf_host` is its bind IP, `127.0.0.1` when unset; name a private or tailnet IP for a hub that leaves dial over the network. `leaf_listen_user` and `leaf_listen_password_file` are the login a leaf must present, and both are required whenever `leaf_port` is set, on loopback too: a linked leaf shares every subject and stream. The listener works in embedded cluster mode. On the dialing side, `leaf_user` and `leaf_password_file` log in to every leaf remote whose URL has no login of its own, with a plain user and password instead of the operator-mode creds file `leaf_credentials` takes; they are set together and exclude `leaf_credentials`. Password files are read at start, like `nats_password_file`.
+
 `jetstream_domain` names this server's JetStream domain, so a server linked to it over a leaf connection can reach its JetStream as `$JS.<domain>.API` (`jetstream.NewWithDomain(nc, "e-mac")`) while keeping its own `$JS.API`. Local clients, dagnats included, keep using plain `$JS.API`. Set it on a leaf node that runs its own JetStream, such as a laptop that works offline; leave it unset on the hub. The value must be one NATS subject token: no dots, spaces or wildcards, max 64 bytes. Non-ASCII letters are accepted, since they are legal in a NATS token. In embedded cluster mode the domain belongs to the whole cluster, so every node sets the same value.
 
 On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
@@ -61,6 +69,12 @@ The `nats_cluster_*`, `nats_server_name` and `nats_jetstream_replicas` keys are 
 | `DAGNATS_NATS_PORT` | `nats_port` | Must be a valid integer |
 | `DAGNATS_LEAF_REMOTES` | `leaf_remotes` | Comma-separated, max 10 entries |
 | `DAGNATS_LEAF_CREDENTIALS` | `leaf_credentials` | Path to NATS credentials file |
+| `DAGNATS_LEAF_USER` | `leaf_user` | Login sent to leaf remotes; pairs with `DAGNATS_LEAF_PASSWORD_FILE` |
+| `DAGNATS_LEAF_PASSWORD_FILE` | `leaf_password_file` | File holding the leaf remotes' password |
+| `DAGNATS_LEAF_PORT` | `leaf_port` | Leafnode listener port; `0` (default) is off |
+| `DAGNATS_LEAF_HOST` | `leaf_host` | Leafnode listener bind IP; default 127.0.0.1 |
+| `DAGNATS_LEAF_LISTEN_USER` | `leaf_listen_user` | Login a leaf must present; required with `DAGNATS_LEAF_PORT` |
+| `DAGNATS_LEAF_LISTEN_PASSWORD_FILE` | `leaf_listen_password_file` | File holding the listener's password |
 | `DAGNATS_MONITOR_PORT` | `monitor_port` | NATS monitoring HTTP port |
 | `DAGNATS_MAX_STORE_BYTES` | `max_store_bytes` | Must be a positive integer |
 | `DAGNATS_MAX_MEMORY_BYTES` | `max_memory_bytes` | Bytes; also sets the Go soft memory limit; `0` or negative disables |

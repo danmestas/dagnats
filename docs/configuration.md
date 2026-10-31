@@ -15,6 +15,12 @@ DagNats uses a three-tier configuration system. Each tier overrides the previous
 | `nats_port`               | int      | `4222`                                             | `4222`                                   |
 | `leaf_remotes`            | []string | (none)                                             | (none)                                   |
 | `leaf_credentials`        | string   | (none)                                             | (none)                                   |
+| `leaf_user`               | string   | (none)                                             | (none)                                   |
+| `leaf_password_file`      | string   | (none)                                             | (none)                                   |
+| `leaf_port`               | int      | `0` (off)                                          | `0` (off)                                |
+| `leaf_host`               | string   | `127.0.0.1`                                        | `127.0.0.1`                              |
+| `leaf_listen_user`        | string   | (none)                                             | (none)                                   |
+| `leaf_listen_password_file` | string | (none)                                             | (none)                                   |
 | `nats_cluster_name`       | string   | (none)                                             | (none)                                   |
 | `nats_cluster_routes`     | []string | (none)                                             | (none)                                   |
 | `nats_cluster_auth_token` | string   | (none)                                             | (none)                                   |
@@ -49,6 +55,26 @@ These fields enable self-clustered topology (see [`production.md`](production.md
 - `nats_cluster_host` (string, default `0.0.0.0`) — IP address the route listener binds to. Set it to the node's private or tailnet IP so routes are not reachable on public interfaces.
 - `nats_server_name` (string, default `<cluster>-<hostname>-<cluster port>`) — The node's NATS server name. JetStream tracks cluster peers by this name, so it must stay the same across restarts; the default does. Override it if the hostname may change. Letters, digits, `_`, `-` and `.` only, max 64 bytes.
 - `nats_jetstream_replicas` (int, default `0`) — JetStream replication factor override. Valid: `{0, 1, 3, 5}`. `0` means auto-derive from cluster size.
+
+### Leaf listener and leaf logins
+
+A dagnats can accept leaf nodes as well as dial out as one. `leaf_port` (default `0`, off) opens a leafnode listener that other servers dial with a `nats-leaf://` remote; `leaf_host` is its bind IP, `127.0.0.1` when unset and never all interfaces by default, so a hub reachable over a private network or tailnet names that IP. The listener always requires a login: `leaf_listen_user` and `leaf_listen_password_file` (a file holding the password, read at start like `nats_password_file`) must both be set whenever `leaf_port` is, on loopback too, because a leaf that links shares every subject and stream of the server. The listener works in embedded cluster mode, where every node can open one; `leaf_remotes` stays excluded there.
+
+On the dialing side, `leaf_user` and `leaf_password_file` log in to every leaf remote whose URL carries no login of its own, with a plain user and password instead of the NKey/JWT creds file `leaf_credentials` needs (which assumes operator mode). They are set together, need `leaf_remotes`, and exclude `leaf_credentials`.
+
+```yaml
+# hub
+leaf_port: 7422
+leaf_host: 100.64.0.9
+leaf_listen_user: e-mac
+leaf_listen_password_file: /etc/dagnats/leaf-password
+
+# laptop
+leaf_remotes: nats-leaf://100.64.0.9:7422
+leaf_user: e-mac
+leaf_password_file: ~/.config/dagnats/leaf-password
+jetstream_domain: e-mac
+```
 
 ### JetStream domain
 
@@ -87,6 +113,12 @@ On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 | `DAGNATS_NATS_PORT`       | `nats_port`       | Must be a valid integer          |
 | `DAGNATS_LEAF_REMOTES`    | `leaf_remotes`    | Comma-separated, max 10 entries  |
 | `DAGNATS_LEAF_CREDENTIALS`| `leaf_credentials`| Path to creds file or inline PEM |
+| `DAGNATS_LEAF_USER`       | `leaf_user`       | Login sent to leaf remotes; pairs with `DAGNATS_LEAF_PASSWORD_FILE` |
+| `DAGNATS_LEAF_PASSWORD_FILE` | `leaf_password_file` | File holding the leaf remotes' password |
+| `DAGNATS_LEAF_PORT`       | `leaf_port`       | Leafnode listener port; `0` (default) is off |
+| `DAGNATS_LEAF_HOST`       | `leaf_host`       | Leafnode listener bind IP; default 127.0.0.1 |
+| `DAGNATS_LEAF_LISTEN_USER` | `leaf_listen_user` | Login a leaf must present; required with `DAGNATS_LEAF_PORT` |
+| `DAGNATS_LEAF_LISTEN_PASSWORD_FILE` | `leaf_listen_password_file` | File holding the listener's password |
 | `DAGNATS_NATS_CLUSTER_NAME` | `nats_cluster_name` | Required with cluster routes |
 | `DAGNATS_NATS_CLUSTER_ROUTES` | `nats_cluster_routes` | Comma-separated, 2 to 10 entries |
 | `DAGNATS_NATS_CLUSTER_AUTH_TOKEN` | `nats_cluster_auth_token` | Shared token across peers |

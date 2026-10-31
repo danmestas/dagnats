@@ -77,7 +77,36 @@ func resolveClientAuth(cfg *Config) error {
 		}
 		cfg.apiToken = token
 	}
+	if err := resolveLeafAuth(cfg); err != nil {
+		return err
+	}
 	warnUncoveredListeners(*cfg)
+	return nil
+}
+
+// resolveLeafAuth validates the leaf settings and reads the leaf
+// listener's and the leaf remotes' password files into cfg.
+func resolveLeafAuth(cfg *Config) error {
+	if cfg == nil {
+		panic("resolveLeafAuth: cfg must not be nil")
+	}
+	if err := validateLeafConfig(*cfg); err != nil {
+		return err
+	}
+	if cfg.LeafListenPasswordFile != "" {
+		password, err := readSecretFile(cfg.LeafListenPasswordFile)
+		if err != nil {
+			return fmt.Errorf("leaf_listen_password_file: %w", err)
+		}
+		cfg.leafListenPassword = password
+	}
+	if cfg.LeafPasswordFile != "" {
+		password, err := readSecretFile(cfg.LeafPasswordFile)
+		if err != nil {
+			return fmt.Errorf("leaf_password_file: %w", err)
+		}
+		cfg.leafPassword = password
+	}
 	return nil
 }
 
