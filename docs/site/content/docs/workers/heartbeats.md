@@ -3,45 +3,39 @@ title: Heartbeats
 weight: 3
 ---
 
-`Heartbeat()` extends the NATS AckWait timer on a task message to prevent redelivery while long-running work is in progress. It does not extend the step's timeout.
+A Go worker heartbeats automatically: while a handler runs, it extends the NATS AckWait timer on the task message so the task is not redelivered and run a second time. `Heartbeat()` sends one more extension by hand. Neither extends the step's timeout.
 
 ## The Problem
 
-JetStream delivers each task message with an **AckWait** deadline. If the worker does not acknowledge the message before the deadline expires, NATS assumes the worker failed and redelivers to another consumer. For tasks that take longer than AckWait (default 5 minutes; override per handler with `worker.WithAckWait`), this causes duplicate execution.
+JetStream delivers each task message with an **AckWait** deadline. If the worker does not acknowledge the message before the deadline expires, NATS assumes the worker failed and redelivers to another consumer. For tasks that take longer than AckWait (default 5 minutes; override per handler with `worker.WithAckWait`), this would cause duplicate execution.
 
-## The Solution
+## Automatic Heartbeat
 
-Calling `Heartbeat()` on the `TaskContext` signals to NATS that the worker is still alive and processing. Internally, it calls `msg.InProgress()` on the underlying JetStream message, which resets the AckWait timer.
+While any handler runs, the worker calls `msg.InProgress()` every half AckWait, using the AckWait of the consumer that delivered the task (including a `WithAckWait` override). The ticker stops when the handler returns, before the worker acks or NAKs the message, and `Pause` stops it before its delayed NAK, so the pause keeps its full delay.
+
+Because the worker keeps the message alive for as long as the handler runs, AckWait no longer bounds a hung handler. The step's timeout does: the engine fails the attempt when it passes (see [Timeouts](/docs/reliability/timeouts)). Give a step that may hang a `Timeout`.
+
+If a redelivery of a task arrives while the same task is still running in this worker (a `WithConcurrency` lane can receive one), the worker skips it without acking or NAKing it. The running handler's result settles the message.
+
+## Manual Heartbeat
+
+`Heartbeat()` still works and is never needed to prevent redelivery. It returns `worker.ErrRunCancelled` once the step's run is cancelled, so a long loop that calls it learns about a cancel promptly:
 
 ```go
 w.Handle("long-task", func(ctx worker.TaskContext) error {
-    ticker := time.NewTicker(10 * time.Second)
-    defer ticker.Stop()
     for i := 0; i < steps; i++ {
         doWork(i)
-        select {
-        case <-ticker.C:
-            ctx.Heartbeat()
-        default:
+        if err := ctx.Heartbeat(); errors.Is(err, worker.ErrRunCancelled) {
+            return err
         }
     }
     return ctx.Complete(result)
 })
 ```
 
-## Recommended Interval
-
-Send heartbeats at **one-third of the AckWait duration**. With the default 5-minute AckWait, heartbeat every 100 seconds or so. This provides two missed heartbeats as buffer before redelivery.
-
-| AckWait | Heartbeat Interval | Missed Heartbeats Before Redeliver |
-|---------|-------------------|------------------------------------|
-| 30s | 10s | 2 |
-| 60s | 20s | 2 |
-| 5m (default) | 100s | 2 |
-
 ## What Happens When Heartbeats Stop
 
-If a worker stops sending heartbeats (crash, network partition, infinite loop without heartbeat calls), the sequence is:
+If a worker stops sending heartbeats (crash, network partition), the sequence is:
 
 1. **AckWait expires** -- NATS marks the message as unacknowledged
 2. **Redelivery** -- NATS delivers the message to another available consumer
@@ -58,27 +52,11 @@ The worker that crashed does not need to do anything. JetStream's redelivery mec
 w.Handle("render-video", renderHandler, worker.WithAckWait(30*time.Minute))
 ```
 
-Use a short AckWait for sub-second tasks, so a crashed worker's task comes back quickly, and a longer one for tasks that cannot heartbeat. `HandleTyped` takes no handler options, so register a handler that needs one with `Handle(taskType, worker.Typed(fn), opts...)`.
+Use a short AckWait so a crashed worker's task comes back quickly; the automatic heartbeat keeps long tasks alive whatever the AckWait. `HandleTyped` takes no handler options, so register a handler that needs one with `Handle(taskType, worker.Typed(fn), opts...)`.
 
 ## Pause
 
 `ctx.Pause(name, duration)` is the other way to hold a task for a long time. It saves a checkpoint, then NAKs the message with a delay, so the handler runs again after `duration` and finds the pause marker with `LoadCheckpoint()`. It needs the `checkpoints` bucket. The step stays `running`, and paused time counts toward the step's timeout, so a step that pauses repeatedly needs a `Timeout` that covers its whole run.
-
-## Streaming with Heartbeats
-
-When using [PutStream](/docs/coordination/streaming) for real-time output, interleave heartbeats with stream publishes:
-
-```go
-w.Handle("generate", func(ctx worker.TaskContext) error {
-    for i, chunk := range generate(ctx.Input()) {
-        ctx.PutStream(chunk)
-        if i%50 == 0 {
-            ctx.Heartbeat()
-        }
-    }
-    return ctx.Complete(assembleResult())
-})
-```
 
 ## Panics
 
@@ -87,6 +65,5 @@ w.Handle("generate", func(ctx worker.TaskContext) error {
 ## Related
 
 - [Worker Configuration](/docs/workers/worker-configuration) -- setting up workers
-- [Streaming](/docs/coordination/streaming) -- real-time output with heartbeats
 - [Checkpoints](/docs/coordination/checkpoints) -- saving state across retries
 - [Retry Policies](/docs/reliability/retry-policies) -- controlling retry behavior

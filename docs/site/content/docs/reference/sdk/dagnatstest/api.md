@@ -466,7 +466,7 @@ func (h *Harness) Handle(t *testing.T, taskType string, fn worker.HandlerFunc)
 Handle registers a raw handler on the harness worker. Call before h.Start\(t\).
 
 <a name="Harness.RegisterAndRun"></a>
-### func \(\*Harness\) [RegisterAndRun](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/harness.go#L115-L118>)
+### func \(\*Harness\) [RegisterAndRun](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/harness.go#L117-L120>)
 
 ```go
 func (h *Harness) RegisterAndRun(t *testing.T, def dag.WorkflowDef, input []byte, timeout time.Duration) dag.WorkflowRun

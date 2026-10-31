@@ -65,8 +65,11 @@ type taskContext struct {
 	msg           jetstream.Msg
 	checkpointKV  jetstream.KeyValue
 	signalKV      jetstream.KeyValue
-	paused        bool   // set by Pause() to prevent double-ack
-	workerID      string // included in completion events for sticky routing
+	paused        bool // set by Pause() to prevent double-ack
+	// stopProgress ends the automatic heartbeat (see progressTicker);
+	// Pause calls it before its delayed NAK. nil outside runMessage.
+	stopProgress func()
+	workerID     string // included in completion events for sticky routing
 	// controlPlane is the per-step runtime control-plane handle, set by
 	// startTaskSpan only for gated steps. nil by default — deny-by-default
 	// is the zero value, so an ungated step can never reach it.
@@ -681,7 +684,8 @@ func (c *taskContext) publishEvent(
 }
 
 // Heartbeat extends the AckWait timer on the original NATS message
-// to prevent redelivery while long-running work is in progress.
+// once, on top of the automatic heartbeat runMessage keeps up while
+// the handler runs (see progressTicker).
 func (c *taskContext) Heartbeat() error {
 	if c.msg == nil {
 		panic("Heartbeat: msg already consumed or nil")
@@ -844,6 +848,9 @@ func (c *taskContext) Pause(name string, duration time.Duration) error {
 	// returns; the "paused" marker closes out this attempt's subject
 	// and stops the ticker goroutine rather than leaking it.
 	c.drainLogs(protocol.LogMarkerPaused)
+	if c.stopProgress != nil {
+		c.stopProgress()
+	}
 	return c.msg.NakWithDelay(duration)
 }
 

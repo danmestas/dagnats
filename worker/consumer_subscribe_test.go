@@ -35,7 +35,7 @@ func TestSubscribePullConsumer_AppliesExpectedConfig(t *testing.T) {
 
 	w := NewWorker(nc)
 	w.Handle("render", func(ctx TaskContext) error { return nil })
-	cc := w.subscribePullConsumer("render", "",
+	cc := mustSubscribePull(w, "render", "",
 		func(ctx TaskContext) error { return nil })
 	defer cc.Stop()
 
@@ -94,7 +94,7 @@ func TestSubscribePullConsumer_RejectsEmptyTaskType(t *testing.T) {
 			t.Fatalf("expected panic mentioning taskType, got %#v", r)
 		}
 	}()
-	w.subscribePullConsumer("", "",
+	mustSubscribePull(w, "", "",
 		func(ctx TaskContext) error { return nil })
 }
 
@@ -174,7 +174,7 @@ func TestMigration_OrphanEphemeralRemoved(t *testing.T) {
 	// subscribePullConsumer from the Start() wiring under test elsewhere.
 
 	logs := captureLogs(t, func() {
-		cc := w.subscribePullConsumer("render", "",
+		cc := mustSubscribePull(w, "render", "",
 			func(ctx TaskContext) error {
 				processed.Add(1)
 				return ctx.Complete([]byte(`"ok"`))
@@ -279,7 +279,7 @@ func TestMigration_PreservesManagedConsumer(t *testing.T) {
 
 	w := NewWorker(nc)
 	logs := captureLogs(t, func() {
-		cc := w.subscribePullConsumer("render", "",
+		cc := mustSubscribePull(w, "render", "",
 			func(ctx TaskContext) error { return nil })
 		t.Cleanup(cc.Stop)
 	})
@@ -333,7 +333,7 @@ func TestMigration_PreservesUnrelatedConsumer(t *testing.T) {
 
 	w := NewWorker(nc)
 	logs := captureLogs(t, func() {
-		cc := w.subscribePullConsumer("render", "",
+		cc := mustSubscribePull(w, "render", "",
 			func(ctx TaskContext) error { return nil })
 		t.Cleanup(cc.Stop)
 	})
@@ -407,14 +407,14 @@ func TestMigration_ConcurrentStartup_OneOrphan(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			w := NewWorker(nc1)
-			cc := w.subscribePullConsumer("render", "",
+			cc := mustSubscribePull(w, "render", "",
 				func(ctx TaskContext) error { return nil })
 			t.Cleanup(cc.Stop)
 		}()
 		go func() {
 			defer wg.Done()
 			w := NewWorker(nc2)
-			cc := w.subscribePullConsumer("render", "",
+			cc := mustSubscribePull(w, "render", "",
 				func(ctx TaskContext) error { return nil })
 			t.Cleanup(cc.Stop)
 		}()
@@ -495,7 +495,7 @@ func TestMigration_PaginationManyConsumers(t *testing.T) {
 	}
 
 	w := NewWorker(nc)
-	cc := w.subscribePullConsumer("render", "",
+	cc := mustSubscribePull(w, "render", "",
 		func(ctx TaskContext) error { return nil })
 	t.Cleanup(cc.Stop)
 
@@ -541,7 +541,7 @@ func TestMigration_NoOrphan(t *testing.T) {
 	var processed atomic.Int32
 	w := NewWorker(nc)
 	logs := captureLogs(t, func() {
-		cc := w.subscribePullConsumer("render", "",
+		cc := mustSubscribePull(w, "render", "",
 			func(ctx TaskContext) error {
 				processed.Add(1)
 				return ctx.Complete([]byte(`"ok"`))
@@ -1015,9 +1015,9 @@ func TestRealisticTaskNames_AllSanitizationPaths(t *testing.T) {
 	}
 }
 
-func TestMigration_ListFailure_Panics(t *testing.T) {
+func TestMigration_ListFailure_ReturnsError(t *testing.T) {
 	// Methodology: start Worker against a NATS server, shut the server
-	// down before Start runs, expect Start to panic with a message naming
+	// down before Start runs, expect Start to return an error naming
 	// the cleanup operation. If injecting list-failure proves > 1 hour of
 	// effort, defer per ADR-006 §6.3 — file follow-up issue and add a
 	// TODO referencing it.
@@ -1027,8 +1027,8 @@ func TestMigration_ListFailure_Panics(t *testing.T) {
 	// the client enters RECONNECTING and each JS call inside Start
 	// (bindOptionalKV × 2, registerDirectory, cleanupOrphanEphemerals)
 	// waits the default 5s JS context-timeout — totalling ~20s per
-	// run with no observability gain. The panic-during-cleanup signal
-	// fires identically either way; this just makes it fire fast.
+	// run with no observability gain. The cleanup error fires
+	// identically either way; this just makes it fire fast.
 	ns, nc := natsutil.StartTestServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
@@ -1039,29 +1039,20 @@ func TestMigration_ListFailure_Panics(t *testing.T) {
 	ns.WaitForShutdown()
 	nc.Close()
 
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic on shut-down NATS, got none")
-		}
-		msg, ok := r.(string)
-		if !ok {
-			t.Fatalf("expected string panic, got %#v", r)
-		}
-		if !strings.Contains(msg, "Stream") &&
-			!strings.Contains(msg, "cleanupOrphanEphemerals") &&
-			!strings.Contains(msg, "iterator") {
-			t.Fatalf("expected cleanup-related panic, got: %s", msg)
-		}
-	}()
-	w.Start()
+	err := w.Start()
+	if err == nil {
+		t.Fatal("expected an error on shut-down NATS, got none")
+	}
+	if !strings.Contains(err.Error(), "orphan cleanup") {
+		t.Fatalf("expected a cleanup error, got: %v", err)
+	}
 }
 
-func TestMigration_DeleteFailure_Panics(t *testing.T) {
+func TestMigration_DeleteFailure_ReturnsError(t *testing.T) {
 	// Methodology: same family — if delete failures (non-NotFound) are
 	// painful to inject under embedded NATS, this test stays a placeholder
 	// and is filed as a follow-up issue. The minimal viable shape: pre-seed
-	// an orphan, force a delete error, expect panic. Without an SDK seam
+	// an orphan, force a delete error, expect an error from Start. Without an SDK seam
 	// for "make DeleteConsumer fail with non-NotFound," shutting the
 	// server mid-cleanup is the cheapest reproduction.
 	ns, nc := natsutil.StartTestServer(t)
@@ -1093,15 +1084,31 @@ func TestMigration_DeleteFailure_Panics(t *testing.T) {
 
 	// Shut down NATS just before Start to fail the delete (or list).
 	// nc.Close() forces fail-fast on JS calls — see sibling test
-	// TestMigration_ListFailure_Panics for the rationale (saves ~20s).
+	// TestMigration_ListFailure_ReturnsError for the rationale (saves ~20s).
 	ns.Shutdown()
 	ns.WaitForShutdown()
 	nc.Close()
 
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic, got none")
-		}
-	}()
-	w.Start()
+	err = w.Start()
+	if err == nil {
+		t.Fatal("expected an error, got none")
+	}
+	if !strings.Contains(err.Error(), "TASK_QUEUES") {
+		t.Fatalf("expected a TASK_QUEUES error, got: %v", err)
+	}
+}
+
+// mustSubscribePull subscribes or panics, so it is safe on any goroutine;
+// setup failures here are a broken test server, not the behavior tested.
+func mustSubscribePull(
+	w *Worker, taskType, group string, handler HandlerFunc,
+) jetstream.ConsumeContext {
+	if w == nil {
+		panic("mustSubscribePull: w must not be nil")
+	}
+	cc, err := w.subscribePullConsumer(taskType, group, handler)
+	if err != nil {
+		panic("mustSubscribePull: " + err.Error())
+	}
+	return cc
 }

@@ -582,7 +582,12 @@ func startRichWorker(
 	workers := make([]*worker.Worker, 0, len(domains))
 	for _, taskTypes := range domains {
 		w := buildDomainWorker(nc, svc, taskTypes)
-		w.Start()
+		if err := w.Start(); err != nil {
+			for _, started := range workers {
+				started.Stop()
+			}
+			return nil, err
+		}
 		workers = append(workers, w)
 	}
 	return workers, nil

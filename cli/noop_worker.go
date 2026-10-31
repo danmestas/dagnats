@@ -301,7 +301,9 @@ func startNoopWorker(
 			return noopHandle(tc, svc)
 		},
 	)
-	w.Start()
+	if err := w.Start(); err != nil {
+		return nil, err
+	}
 	return w, nil
 }
 

@@ -60,7 +60,9 @@ w.Handle("llm-coder", func(ctx worker.TaskContext) error {
     code := generateCode(plan)
     return ctx.Complete(code)
 })
-w.Start()
+if err := w.Start(); err != nil {
+	log.Fatal(err)
+}
 ```
 
 ## How it works
