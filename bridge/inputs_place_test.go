@@ -13,10 +13,13 @@ package bridge
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/danmestas/dagnats/inputs"
+	"github.com/danmestas/dagnats/journal"
 	"github.com/danmestas/dagnats/protocol"
 )
 
@@ -70,7 +73,7 @@ func TestBridgeInputsPlaceReturnsOnceAndSettlesOnCommit(t *testing.T) {
 		t.Fatalf("first place = %s, want only q1 steer with content", body)
 	}
 	status, body = resolveBody(t, ts, taskID, `{"action":"inputs.place","mode":"steer"}`)
-	if again := decodePlace(t, status, body); len(again.Inputs) != 0 || body == "null" {
+	if again := decodePlace(t, status, body); len(again.Inputs) != 0 || !strings.Contains(body, `"inputs":[]`) {
 		t.Fatalf("second place = %s, want {\"inputs\":[]}", body)
 	}
 	if status, body := resolveBody(t, ts, taskID, `{"action":"inputs.place","mode":"follow_up"}`); status != 200 ||
@@ -154,5 +157,89 @@ func TestBridgeInputsPlaceRedeliveryReturnsEarlierPlacementOnce(t *testing.T) {
 	status, body = resolveBody(t, ts1, task1, `{"action":"inputs.place","mode":"steer"}`)
 	if status != 409 {
 		t.Fatalf("fenced first delivery place = %d %s, want 409", status, body)
+	}
+}
+
+// A transient store failure after the first claim must not lose the
+// input already placed: the call answers it, and nothing is settled
+// done unseen.
+func TestBridgeInputsPlaceTransientErrorAfterPlacementKeepsPlacedInput(t *testing.T) {
+	rig := newJournalRig(t)
+	b, ts := rig.front(t)
+	const runID, stepID = "run-place-fault", "step-place-fault"
+	var failing = true
+	b.placeSeam = func(p *journal.Placer) {
+		p.ClaimFault = func(requestID string) error {
+			if failing && requestID == "q2" {
+				return errors.New("transient kv error")
+			}
+			return nil
+		}
+	}
+	rig.publish(t, protocol.TaskPayload{RunID: runID, StepID: stepID, DispatchNonce: "n1"})
+	taskID := pollOne(t, ts)
+	store := rig.submitMode(t, runID, stepID, "q1", inputs.ModeSteer)
+	rig.submitMode(t, runID, stepID, "q2", inputs.ModeSteer)
+
+	status, body := resolveBody(t, ts, taskID, `{"action":"inputs.place","mode":"steer"}`)
+	first := decodePlace(t, status, body)
+	if len(first.Inputs) != 1 || first.Inputs[0].RequestID != "q1" {
+		t.Fatalf("place with q2 failing = %d %s, want 200 with q1", status, body)
+	}
+	failing = false
+	status, body = resolveBody(t, ts, taskID, `{"action":"inputs.place","mode":"steer"}`)
+	retry := decodePlace(t, status, body)
+	if len(retry.Inputs) != 1 || retry.Inputs[0].RequestID != "q2" {
+		t.Fatalf("retry = %s, want only q2 (q1 was already returned)", body)
+	}
+	if status, body := resolveBody(t, ts, taskID, `{"action":"continue","output":{}}`); status != 200 {
+		t.Fatalf("continue: %d %s", status, body)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, id := range []string{"q1", "q2"} {
+		if e, err := store.Get(ctx, runID, stepID, id); err != nil || e.Status != inputs.StatusDone {
+			t.Fatalf("%s = %s (%v), want done after being returned", id, e.Status, err)
+		}
+	}
+}
+
+// A delivery that dies after placing and before committing: the
+// redelivery gets the placement back once, and its commit settles it.
+func TestBridgeInputsPlaceCrashBeforeCommitRedeliversPlacementOnce(t *testing.T) {
+	rig := newJournalRig(t)
+	b1, ts1 := rig.front(t)
+	_, ts2 := rig.front(t)
+	const runID, stepID = "run-place-crash", "step-place-crash"
+	rig.publish(t, protocol.TaskPayload{RunID: runID, StepID: stepID, DispatchNonce: "n1"})
+	task1 := pollOne(t, ts1)
+	store := rig.submitMode(t, runID, stepID, "q1", inputs.ModeSteer)
+	if status, body := resolveBody(t, ts1, task1, `{"action":"inputs.place","mode":"steer"}`); len(decodePlace(t, status, body).Inputs) != 1 {
+		t.Fatalf("first place = %d %s, want q1", status, body)
+	}
+	msg, ok := b1.ackMap.Load(task1)
+	if !ok {
+		t.Fatal("first bridge lost the claim")
+	}
+	if err := msg.Nak(); err != nil { // the worker dies; the message comes back
+		t.Fatalf("nak: %v", err)
+	}
+
+	task2 := pollOne(t, ts2)
+	status, body := resolveBody(t, ts2, task2, `{"action":"inputs.place","mode":"steer"}`)
+	if got := decodePlace(t, status, body); len(got.Inputs) != 1 || got.Inputs[0].RequestID != "q1" {
+		t.Fatalf("redelivery place = %s, want q1 once", body)
+	}
+	status, body = resolveBody(t, ts2, task2, `{"action":"inputs.place","mode":"steer"}`)
+	if got := decodePlace(t, status, body); len(got.Inputs) != 0 {
+		t.Fatalf("second place = %s, want nothing", body)
+	}
+	if status, body := resolveBody(t, ts2, task2, `{"action":"continue","output":{}}`); status != 200 {
+		t.Fatalf("continue: %d %s", status, body)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if e, err := store.Get(ctx, runID, stepID, "q1"); err != nil || e.Status != inputs.StatusDone {
+		t.Fatalf("q1 = %s (%v), want done", e.Status, err)
 	}
 }

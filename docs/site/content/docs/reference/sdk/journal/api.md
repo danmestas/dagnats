@@ -423,7 +423,7 @@ type Pause struct {
 ```
 
 <a name="Placer"></a>
-## type [Placer](<https://github.com/danmestas/dagnats/blob/main/journal/place.go#L19-L32>)
+## type [Placer](<https://github.com/danmestas/dagnats/blob/main/journal/place.go#L19-L35>)
 
 Placer places inputs for one claim of one iteration. It belongs to the goroutine \(or bridge claim\) that owns the Journal.
 
@@ -438,12 +438,15 @@ type Placer struct {
     // claiming them; Fault fails an append by request id.
     BeforeClaim func()
     Fault       func(requestID string) error
+    // ClaimFault fails a claim by request id with the error it returns,
+    // standing in for a transient store failure.
+    ClaimFault func(requestID string) error
     // contains filtered or unexported fields
 }
 ```
 
 <a name="Placer.Place"></a>
-### func \(\*Placer\) [Place](<https://github.com/danmestas/dagnats/blob/main/journal/place.go#L50>)
+### func \(\*Placer\) [Place](<https://github.com/danmestas/dagnats/blob/main/journal/place.go#L53>)
 
 ```go
 func (p *Placer) Place(ctx context.Context, mode inputs.Mode) ([]InputPlaced, error)
@@ -454,7 +457,7 @@ Place moves every queued input of mode into the conversation and returns them in
 Each input is claimed before it is recorded: a compare\-and\-swap of its status to placed at the revision it was read at, then the input.placed append. A withdrawal that lands in between wins the swap, so a 204 never precedes a placement \(ADR\-027 R7\). A claim whose writer died before appending leaves placed with no record; only a claim of this step writes that state, so a later delivery reclaims it, and the journal \(which knows every record\) is what keeps any input from being placed twice. An input whose record cannot be appended for a reason other than fencing is settled unanswered rather than blocking every later turn.
 
 <a name="Placer.Settle"></a>
-### func \(\*Placer\) [Settle](<https://github.com/danmestas/dagnats/blob/main/journal/place.go#L92>)
+### func \(\*Placer\) [Settle](<https://github.com/danmestas/dagnats/blob/main/journal/place.go#L95>)
 
 ```go
 func (p *Placer) Settle(ctx context.Context)

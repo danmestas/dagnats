@@ -12,6 +12,7 @@ import (
 
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/workertoken"
+	"github.com/danmestas/dagnats/journal"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel"
@@ -45,9 +46,11 @@ import (
 // the inbound HTTP request into the NATS plane — without it, the
 // trace ID would terminate at the HTTP boundary for non-Go workers.
 type Bridge struct {
-	pub          *natsutil.TracingPublisher
-	nc           *nats.Conn
-	js           jetstream.JetStream
+	pub *natsutil.TracingPublisher
+	nc  *nats.Conn
+	js  jetstream.JetStream
+	// placeSeam is a test seam run on each new inputs placer.
+	placeSeam    func(*journal.Placer)
 	ackMap       *AckMap
 	checkpointKV jetstream.KeyValue
 	signalKV     jetstream.KeyValue

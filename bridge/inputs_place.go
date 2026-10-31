@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -53,7 +54,15 @@ func (b *Bridge) resolveInputsPlace(
 			}
 			placed, err := placer.Place(ctx, mode)
 			if err != nil {
-				return nil, err
+				// Placements already appended are marked returned and settle done
+				// at the commit: dropping them would lose the input. Answer them
+				// and let the next place pick up the rest, as the Go SDK's
+				// (placed, err) return lets its caller do.
+				if _, _, isOutcome := journalHTTPStatus(err); len(placed) == 0 || isOutcome {
+					return nil, err
+				}
+				slog.WarnContext(ctx, "inputs.place failed after placing; returning the placed inputs",
+					"task_id", taskID, "placed", len(placed), "error", err)
 			}
 			out := inputsPlaceResponse{Inputs: placed}
 			if out.Inputs == nil {
@@ -68,7 +77,7 @@ func (b *Bridge) resolveInputsPlace(
 func (b *Bridge) placerFor(
 	ctx context.Context, taskID string, j *journal.Journal,
 ) (*journal.Placer, error) {
-	if placer := b.ackMap.Placer(taskID); placer != nil {
+	if placer := b.ackMap.Placer(taskID); placer != nil && placer.Journal == j {
 		return placer, nil
 	}
 	store, err := inputs.Open(ctx, b.js)
@@ -79,6 +88,12 @@ func (b *Bridge) placerFor(
 	placer := &journal.Placer{
 		Journal: j, Store: store, RunID: task.RunID, StepID: task.StepID,
 		Iteration: task.Iteration,
+	}
+	if placer.Journal != j {
+		panic("placerFor: placer must be bound to the task's journal")
+	}
+	if b.placeSeam != nil {
+		b.placeSeam(placer)
 	}
 	if !b.ackMap.SetPlacer(taskID, placer) {
 		return nil, errors.New("task is no longer claimed")

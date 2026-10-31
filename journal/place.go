@@ -26,6 +26,9 @@ type Placer struct {
 	// claiming them; Fault fails an append by request id.
 	BeforeClaim func()
 	Fault       func(requestID string) error
+	// ClaimFault fails a claim by request id with the error it returns,
+	// standing in for a transient store failure.
+	ClaimFault func(requestID string) error
 
 	placed   []inputs.Entry
 	returned map[string]bool
@@ -139,6 +142,11 @@ func (p *Placer) recordedPlacements(ctx context.Context, mode inputs.Mode) []Inp
 // record and nothing to reclaim it, so a placed input this journal has
 // no record of is claimed again, as a dead claim is on redelivery.
 func (p *Placer) claim(ctx context.Context, entry inputs.Entry) (inputs.Entry, error) {
+	if p.ClaimFault != nil {
+		if err := p.ClaimFault(entry.RequestID); err != nil {
+			return inputs.Entry{}, err
+		}
+	}
 	claimed, err := p.Store.Claim(ctx, entry, p.Iteration)
 	if !errors.Is(err, inputs.ErrConflict) {
 		return claimed, err
