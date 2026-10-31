@@ -4,6 +4,7 @@
 //
 //	<root>/<program>/<table>/dt=YYYY-MM-DD/part-<sha256-16>.parquet
 //	<root>/<program>/<table>/dt=YYYY-MM-DD/part-<sha256-16>.json   (commit record)
+//	<root>/<program>/<table>/dt=YYYY-MM-DD/part-<sha256-16>.json.superseded   (see Supersede)
 //
 // Every program writes through lake/writer, the one implementation of this layout, into a
 // writer.Store: a local directory (writer.LocalStore) or an S3-compatible store (lode). The

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The lake can supersede a committed part, for lode's compaction and retention.** `lake.Supersede(ctx, store, commit, by, at)` writes a create-only `part-<stem>.json.superseded` record beside the part's commit. The record holds the commit with the new `SupersededBy` field, the stem of the part that now holds its rows (empty when retention dropped them), and `WrittenAt` set to when the part stopped being live. `lake.ListCommitted` lists superseded parts in the new `Listing.Superseded` instead of `Commits` and leaves them out of `Overlaps`. A supersede record whose part is gone is not rejected. Superseding a part again to the same successor returns the stored record; naming another successor is an error. It writes through `lake.RecordStore`, which every `writer.Store` satisfies. `lake/writer` is unchanged.
+
 ### Fixed
 
 - **`make build-release` names artifacts after the `v*` release tag.** With the lake module's own `lake/v*` tag on the same commit, `git describe --tags` returned `lake/v0.1.0`, so `VERSION` broke the tarball paths. The Makefile's version lookups now match `v*` only.
