@@ -26,15 +26,25 @@ mkdir -p "$dest"
 dest="$(cd "$dest" && pwd)"
 cd "$root/sdk/ts"
 
+# Apache-2.0 requires the license to travel with the code; sdk/ts/LICENSE is a
+# copy so a plain `npm pack` includes it, and a drifted copy fails the release.
+if ! cmp -s "$root/LICENSE" LICENSE; then
+  echo "pack-sdk-ts: sdk/ts/LICENSE differs from the repository LICENSE; copy it over" >&2
+  exit 1
+fi
+
 backup="$(mktemp -d)"
 cp package.json "$backup/package.json"
 cp package-lock.json "$backup/package-lock.json"
+# Idempotent, and run by EXIT only: a signal exits, which fires EXIT once.
 restore() {
+  [ -d "$backup" ] || return 0
   cp "$backup/package.json" package.json
   cp "$backup/package-lock.json" package-lock.json
   rm -rf "$backup"
 }
-trap restore EXIT INT TERM
+trap restore EXIT
+trap 'exit 130' INT TERM
 
 npm ci --no-audit --no-fund
 npm pkg set version="$version"
