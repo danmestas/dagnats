@@ -20,6 +20,7 @@ const (
 	workflowCountMax   = 256
 	streamCountMax     = 16
 	bucketCountMax     = 32
+	readCountMax       = 32
 	protocolCountMax   = 16
 	dottedLenMax       = 128
 	versionLenMax      = 64
@@ -53,6 +54,7 @@ func Validate(m Manifest) error {
 	errs = append(errs, validateWorkflows(m.Name, m.Workflows)...)
 	errs = append(errs, validateStreams(m.Name, m.Streams)...)
 	errs = append(errs, validateBuckets(m.Name, m.Buckets)...)
+	errs = append(errs, validateReads(m.Name, m.Reads)...)
 	errs = append(errs, validateProtocols(m.Name, m.Protocols)...)
 	errs = append(errs, validateLabels(m))
 	if len(errs) < 2 {
@@ -119,6 +121,7 @@ func validateCounts(m Manifest) error {
 		{"workflows", len(m.Workflows), workflowCountMax},
 		{"streams", len(m.Streams), streamCountMax},
 		{"buckets", len(m.Buckets), bucketCountMax},
+		{"reads", len(m.Reads), readCountMax},
 		{"protocols", len(m.Protocols), protocolCountMax},
 	}
 	var errs []error
@@ -254,6 +257,31 @@ func validateBuckets(name string, buckets []BucketSpec) []error {
 			errs = append(errs, fmt.Errorf("bucket %q ttl %v is negative", b.Name, b.TTL))
 		}
 		seen[b.Name] = true
+	}
+	return errs
+}
+
+// validateReads checks each read grant is "<owner>_<rest>" with a valid
+// owner name other than the program itself, and not an engine bucket.
+func validateReads(name string, reads []string) []error {
+	var errs []error
+	seen := map[string]bool{}
+	engine := natsutil.ProvisionedKVBucketNames()
+	for _, r := range reads {
+		owner, _, found := strings.Cut(r, "_")
+		switch {
+		case slices.Contains(engine, r):
+			errs = append(errs, fmt.Errorf("read %q is an engine bucket", r))
+		case !found || validateName(owner) != nil || !suffixMatches(r, owner+"_", 'a', 'z'):
+			errs = append(errs, fmt.Errorf(
+				"read %q must be another program's bucket, \"<program>_<rest>\"", r))
+		case owner == name:
+			errs = append(errs, fmt.Errorf(
+				"read %q is under the program's own prefix %s_ (already full access)", r, name))
+		case seen[r]:
+			errs = append(errs, fmt.Errorf("read %q listed twice", r))
+		}
+		seen[r] = true
 	}
 	return errs
 }

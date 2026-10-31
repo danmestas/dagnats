@@ -78,6 +78,9 @@ func PermissionsFor(m Manifest) Permissions {
 		pub = append(pub, ownStreamPublish("KV_"+b.Name)...)
 		pub = append(pub, "$KV."+b.Name+".>")
 	}
+	for _, b := range m.Reads {
+		pub = append(pub, readBucketPublish(b)...)
+	}
 	own := append([]string{m.Name + ".>"}, protocolSubjects(m.Protocols)...)
 	pub = append(pub, own...)
 	pub = append(pub, "_INBOX.>")
@@ -166,6 +169,28 @@ func sharedBucketPublish(bucket string) []string {
 		panic("program.sharedBucketPublish: bucket must be one literal token")
 	}
 	return out
+}
+
+// readBucketPublish grants a read-only view of another program's
+// bucket: open, get, watch (consumer create, info, delete, flow
+// control) and nothing under "$KV.<bucket>.>", so no put, delete or
+// purge. Deliveries arrive on the program's own inbox.
+func readBucketPublish(bucket string) []string {
+	if bucket == "" {
+		panic("program.readBucketPublish: bucket must not be empty")
+	}
+	if strings.ContainsAny(bucket, ".*>") {
+		panic("program.readBucketPublish: bucket must be one literal token")
+	}
+	stream := "KV_" + bucket
+	return []string{
+		"$JS.API.STREAM.INFO." + stream,
+		"$JS.API.DIRECT.GET." + stream + ".>",
+		"$JS.API.CONSUMER.CREATE." + stream + ".>",
+		"$JS.API.CONSUMER.INFO." + stream + ".*",
+		"$JS.API.CONSUMER.DELETE." + stream + ".*",
+		"$JS.FC." + stream + ".>",
+	}
 }
 
 // ownStreamPublish grants reads and consumers on one of the program's
