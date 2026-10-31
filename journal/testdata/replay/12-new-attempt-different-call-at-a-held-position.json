@@ -1,0 +1,139 @@
+{
+  "description": "Attempt 1 sent to ops at position 0 and failed; this is attempt 2. Its first call is a different one, send to dev: it matches no prior unsafe intent, so it is fresh, and position 0 is held by the prior send, so it takes position 1 and key run.agent.0.1, never run.agent.0.0. The later send to ops is honoured with its recorded result under its own call 0 and key.",
+  "task": {
+    "run_id": "run",
+    "step_id": "agent",
+    "iteration": 0,
+    "attempt": 2,
+    "dispatch_nonce": "n2",
+    "delivered": 1,
+    "stream_seq": 8
+  },
+  "records": [
+    {
+      "seq": 1,
+      "type": "claim",
+      "iteration": 0,
+      "attempt": 1,
+      "dispatch_nonce": "n1",
+      "delivered": 1,
+      "stream_seq": 7,
+      "index": 0,
+      "data": {
+        "iteration": 0,
+        "attempt": 1,
+        "dispatch_nonce": "n1",
+        "delivered": 1,
+        "stream_seq": 7
+      }
+    },
+    {
+      "seq": 2,
+      "type": "tool.intent",
+      "iteration": 0,
+      "attempt": 1,
+      "dispatch_nonce": "n1",
+      "delivered": 1,
+      "stream_seq": 7,
+      "index": 1,
+      "data": {
+        "name": "send",
+        "input": {
+          "to": "ops"
+        },
+        "call": 0,
+        "key": "run.agent.0.0",
+        "replay": "unsafe"
+      }
+    },
+    {
+      "seq": 3,
+      "type": "tool.result",
+      "iteration": 0,
+      "attempt": 1,
+      "dispatch_nonce": "n1",
+      "delivered": 1,
+      "stream_seq": 7,
+      "index": 2,
+      "data": {
+        "call": 0,
+        "key": "run.agent.0.0",
+        "output": "sent"
+      }
+    },
+    {
+      "seq": 4,
+      "type": "commit",
+      "iteration": 0,
+      "attempt": 1,
+      "dispatch_nonce": "n1",
+      "delivered": 1,
+      "stream_seq": 7,
+      "index": 3,
+      "data": {
+        "action": "fail",
+        "error": "boom"
+      }
+    }
+  ],
+  "calls": [
+    {
+      "kind": "tool",
+      "name": "send",
+      "input": {
+        "to": "dev"
+      },
+      "replay": "unsafe",
+      "output": "sent to dev"
+    },
+    {
+      "kind": "tool",
+      "name": "send",
+      "input": {
+        "to": "ops"
+      },
+      "replay": "unsafe",
+      "output": "sent again"
+    }
+  ],
+  "expect": [
+    {
+      "outcome": "ran",
+      "result": {
+        "call": 1,
+        "key": "run.agent.0.1",
+        "output": "sent to dev"
+      }
+    },
+    {
+      "outcome": "reused",
+      "result": {
+        "call": 0,
+        "key": "run.agent.0.0",
+        "output": "sent"
+      }
+    }
+  ],
+  "appended": [
+    {
+      "type": "tool.intent",
+      "data": {
+        "name": "send",
+        "input": {
+          "to": "dev"
+        },
+        "call": 1,
+        "key": "run.agent.0.1",
+        "replay": "unsafe"
+      }
+    },
+    {
+      "type": "tool.result",
+      "data": {
+        "call": 1,
+        "key": "run.agent.0.1",
+        "output": "sent to dev"
+      }
+    }
+  ]
+}

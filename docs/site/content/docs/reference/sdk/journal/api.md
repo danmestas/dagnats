@@ -35,6 +35,7 @@ A Journal is one claim on one dispatch of a step. Open reads the tail from the s
   - [func \(j \*Journal\) Records\(\) \[\]Record](<#Journal.Records>)
   - [func \(j \*Journal\) Restarts\(\) int](<#Journal.Restarts>)
   - [func \(j \*Journal\) Resume\(\) \(string, bool\)](<#Journal.Resume>)
+  - [func \(j \*Journal\) Resync\(ctx context.Context\) error](<#Journal.Resync>)
   - [func \(j \*Journal\) Seq\(\) uint64](<#Journal.Seq>)
   - [func \(j \*Journal\) State\(\) \[\]byte](<#Journal.State>)
   - [func \(j \*Journal\) Task\(\) Task](<#Journal.Task>)
@@ -335,6 +336,15 @@ func (j *Journal) Resume() (string, bool)
 ```
 
 Resume returns the pause name when the newest record of this iteration before the claim is a pause: this delivery resumes it.
+
+<a name="Journal.Resync"></a>
+### func \(\*Journal\) [Resync](<https://github.com/danmestas/dagnats/blob/main/journal/replay.go#L528>)
+
+```go
+func (j *Journal) Resync(ctx context.Context) error
+```
+
+Resync checks, without writing, that no other claim has fenced this one since its last record, and returns ErrFenced if one has. A caller about to act on its view of the journal without appending \(the bridge's journal.view\) uses it to learn of the fence now rather than on its next append.
 
 <a name="Journal.Seq"></a>
 ### func \(\*Journal\) [Seq](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L415>)

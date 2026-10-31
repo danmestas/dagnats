@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Drain agent journal steps before upgrading workers** (let in-flight agent steps finish). An in-flight agent step whose attempt was recorded by an older SDK, with a fresh tool call at a position a prior attempt's unsafe call held, is replayed under the new positions on a redelivery after the upgrade: that call runs again, under a new key.
 
+### Added
+
+- **HTTP bridge clients can apply the agent journal's replay rules themselves (#849).** A poll item now carries its delivery identity, `delivered` and `stream_seq`: the values in the journal claim the bridge writes for it. A new resolve action, `journal.view`, answers `{"claim", "records"}`: the task's claim and the records of its iteration written before it, the input the Go SDK replays from; a task another claim has replaced gets `409 fenced` instead, from `journal.view` and now from `journal.read` too. `journal.Journal.Resync` reports that fence to a Go caller without writing. The wire-protocol reference gains "Replay rules for clients", and `journal/testdata/replay/` holds JSON fixtures that the Go SDK's `Tool` and `Model` are tested against, for clients in other languages to run.
+- **`lake` module: the file layout and Parquet writer of the shared analytics store.** `github.com/danmestas/dagnats/lake` is its own module (pure Go). The writer (internal to the module) buffers events and writes them as `<root>/<program>/<table>/dt=<event date>/part-<sha>.parquet`, then a `part-<sha>.json` commit record after the part, so `lake.ListCommitted` trusts only whole parts; a crash between the two leaves an ignored orphan. Part names are the hash of their bytes. `event_id`, `event_time`, `stream_seq`, `schema_version` and `payload` are reserved columns on every row, and a declared column that is missing or mistyped in an event is NULL. The writer is not exported: only the archive program writes, so it will live in this module. Local roots only.
+- **The bridge enforces the restart limit for bridge workers (#850).** A journal step claimed 5 times with no journal record between the claims now fails with `restart_limit` instead of being redelivered forever, as it already did for Go workers (ADR-028). The worker sees `410 {"code":"restart_limit"}` and the step's retry policy takes over. Set the limit with `Bridge.SetRestartLimit(n)` or `DAGNATS_BRIDGE_RESTART_LIMIT` (default 5). `worker.RestartLimitMax` is now exported.
+
 ### Fixed
 
 - **The console opens workflows whose names contain a slash** (`acme/support-ticket`), including a name that itself ends in `/run`: only a POST to a trailing `/run` starts a run, and a GET always shows the detail page. Contributed by @calionauta (#836).
@@ -19,11 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - **`dagnats-mcp-duckdb` takes `klauspost/compress` v1.20.1** (was v1.18.3), past the fix for GHSA high-severity integer overflow and out-of-bounds write in its s2 decoder (fixed in v1.18.7).
-
-### Added
-
-- **`lake` module: the file layout and Parquet writer of the shared analytics store.** `github.com/danmestas/dagnats/lake` is its own module (pure Go). The writer (internal to the module) buffers events and writes them as `<root>/<program>/<table>/dt=<event date>/part-<sha>.parquet`, then a `part-<sha>.json` commit record after the part, so `lake.ListCommitted` trusts only whole parts; a crash between the two leaves an ignored orphan. Part names are the hash of their bytes. `event_id`, `event_time`, `stream_seq`, `schema_version` and `payload` are reserved columns on every row, and a declared column that is missing or mistyped in an event is NULL. The writer is not exported: only the archive program writes, so it will live in this module. Local roots only.
-- **The bridge enforces the restart limit for bridge workers (#850).** A journal step claimed 5 times with no journal record between the claims now fails with `restart_limit` instead of being redelivered forever, as it already did for Go workers (ADR-028). The worker sees `410 {"code":"restart_limit"}` and the step's retry policy takes over. Set the limit with `Bridge.SetRestartLimit(n)` or `DAGNATS_BRIDGE_RESTART_LIMIT` (default 5). `worker.RestartLimitMax` is now exported.
 
 ## [0.0.35] - 2026-10-30
 

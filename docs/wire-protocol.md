@@ -326,7 +326,7 @@ A step may keep a journal: one append-only subject `journal.{run_id}.{step_id}` 
 | `Dagnats-Journal-Index` | the record's position within its claim; the claim is `0` |
 | `Dagnats-Dispatch-Nonce` | `TaskPayload.dispatch_nonce` |
 
-Bodies: `claim` `{"iteration","attempt","dispatch_nonce","delivered"}`; `pause` `{"name","duration_ms"}`; `commit` `{"action":"continue"|"complete"|"fail","output","state","error","failure_type","retry_after_ms","wait"}`; `tool.intent` `{"name","input","call","key","replay":"safe"|"unsafe"}`; `tool.result` `{"call","key","output","error","interrupted","partial"}`; `model.response` `{"call","output"}`; `input.placed` `{"request_id","mode","content"}` (ADR-027: the record of an input joining the conversation; the `submissions` bucket's status is a projection of it); `entry` is the handler's JSON, opaque to dagnats.
+Bodies: `claim` `{"iteration","attempt","dispatch_nonce","delivered","stream_seq"}` (`stream_seq` is the task message's sequence in `TASK_QUEUES`, omitted when unknown); `pause` `{"name","duration_ms"}`; `commit` `{"action":"continue"|"complete"|"fail","output","state","error","failure_type","retry_after_ms","wait"}`; `tool.intent` `{"name","input","call","key","replay":"safe"|"unsafe"}`; `tool.result` `{"call","key","output","error","interrupted","partial"}`; `model.response` `{"call","output"}`; `input.placed` `{"request_id","mode","content"}` (ADR-027: the record of an input joining the conversation; the `submissions` bucket's status is a projection of it); `entry` is the handler's JSON, opaque to dagnats.
 
 **Tool calls and model responses.** `call` is the call's position in the iteration, counting tool and model calls separately from 0; `key` is the idempotency key `{run_id}.{step_id}.{iteration}.{call}`, for the tool to pass to external systems: the same on every delivery of an attempt, kept by an honoured unsafe call in a new attempt, and free to differ between attempts for a fresh call, whose position can. The SDK writes `tool.intent` before running a tool and `tool.result` after. A claim that recovers an attempt matches calls by position, and the recorded call must be the same call (`name` and canonical `input`), else the SDK reports a replay mismatch and writes nothing. Within an attempt (across deliveries, before any commit): a `tool.result` already recorded is reused; a `tool.intent` without a result is rerun only when its recorded `replay` and the current declaration are both `safe`, and otherwise answered with a `tool.result` whose `interrupted` is true, `error` is `interrupted`, `key` is the call's key and `partial` is the JSON array of the `entry` bodies the previous holder appended after the intent. The successor writes no second intent, so every call has one intent answered by one result, possibly from different claims. On a new attempt of the iteration (after a fail commit, or a higher attempt from iteration 1) safe calls and model requests run afresh with new records, and only unsafe intents from the prior attempt are honoured, matched by `name` and canonical `input` rather than position: the first such intent not yet honoured in this attempt answers the call under its own `call` and `key`, with its recorded result, or `interrupted` when unfinished. Every other call takes the next `call` that no prior-attempt unsafe intent of the iteration holds, so a fresh call never shares a `key` with a prior unsafe intent; the held set is computed from the records before the claim, so every delivery of the attempt assigns the same positions. The guarantee is one start per unsafe position, not one effect: a holder stalled between its intent and the effect may complete it after the takeover, and `key` is what an external system deduplicates on. A `model.response` this attempt recorded for a position is returned without a request; a failed request records nothing and does not consume the position. `PutStream` output is a non-durable preview: a crash mid-stream re-sends the request.
 
@@ -421,12 +421,18 @@ the groups it was minted with; polling outside that scope returns `403`.
     "step_id": "step-a",
     "iteration": 0,
     "attempt": 1,
+    "delivered": 1,
+    "stream_seq": 42,
     "input": {"prompt": "hello"}
   }
 ]
 ```
 
 **Behavior**:
+- Each item carries its delivery identity: `delivered` (the message's
+  delivery count, higher on a redelivery) and `stream_seq` (its
+  sequence in `TASK_QUEUES`, shared by redeliveries). They are the
+  values the bridge's journal claim for the delivery carries
 - Shares one durable consumer per `task_type`+`worker_group` pair with
   every other poller of that same pair (native workers included) —
   `worker_group` selects which durable, exactly as a native worker's
@@ -444,7 +450,7 @@ Resolves a polled task by completing, failing, pausing, or checkpointing it.
 **Request**:
 ```json
 {
-  "action": "complete|fail|pause|checkpoint|continue|heartbeat|stream|send_signal|wait_signal|journal.append|journal.read|load_checkpoint",
+  "action": "complete|fail|pause|checkpoint|continue|heartbeat|stream|send_signal|wait_signal|journal.append|journal.read|journal.view|load_checkpoint",
   "output": {"result": "ok"},
   "error": "error message",
   "failure_type": "retriable",
@@ -473,12 +479,13 @@ Resolves a polled task by completing, failing, pausing, or checkpointing it.
 | `send_signal` | `run_id`, `name`, `data` | Writes the signal to the `signals` KV bucket at `{run_id}.{name}` and extends the ack deadline |
 | `wait_signal` | `name`, `timeout_ms` | Blocks until the signal arrives, then answers 200 with the signal value as the body. `timeout_ms` must be in (0, 3600000]; on timeout the response is `408` |
 | `journal.append` | `type` (default `entry`), `data` | Claims the task's journal on first use, then appends a `type` record with `data` as its body; answers `{"seq": N}`. `type` must not be `claim` or `commit`, and `data` is required (`400`). Extends the ack deadline |
-| `journal.read` | none | Claims the journal on first use and answers `{"records": [...]}`, every record of the step in order |
+| `journal.read` | none | Claims the journal on first use and answers `{"records": [...]}`, every record of the step in order. It reads the journal tail first, so a task another claim has replaced gets `409 fenced`. Extends the ack deadline |
+| `journal.view` | none | Claims the journal on first use and answers `{"claim": {...}, "records": [...]}`: the claim body this task holds and the records of its iteration written before that claim, in order, the input to the replay rules. Fixed when the claim is made. Reads the tail first, so a replaced task gets `409 fenced`. Extends the ack deadline |
 | `load_checkpoint` | none | Answers `{"source", "state"}` like the SDK's `LoadCheckpoint`: the state a `checkpoint` buffered this claim (`source` `checkpoint`), else the journal's (`journal`: `{"pause_resume": name}` on a resumed pause, else the last committed state) when this claim has opened the journal, else the `checkpoints` bucket entry (`checkpoint`), else the state the task was polled with (`payload`). `state` is JSON; state that is not JSON comes back as `state_base64`. Extends the ack deadline |
 
 The request body is parsed into `bridge.resolveRequest` in `bridge/resolve.go`; `protocol.TaskResolution` in `protocol/protocol.go` is the shared subset.
 
-**Journal steps** (ADR-026). The first `journal.append` or `journal.read` claims the task's journal through the same `journal` package the Go SDK uses, with the polled message's delivery count (`NumDelivered`) in the claim, so a redelivery to another poller claims with a higher count and fences this one. From then on `complete`, `fail`, `continue` and `pause` commit before they publish (a `pause` appends a `pause` record instead of writing the `checkpoints` marker) and the event carries the commit's `journal_seq`; a `continue` carries no state, because the commit is the state of record. Every action answers one of these outcomes with a JSON body `{"error": "...", "code": "..."}`, and the worker must stop on all of them:
+**Journal steps** (ADR-026). The first `journal.append`, `journal.read` or `journal.view` claims the task's journal through the same `journal` package the Go SDK uses, with the polled message's delivery count (`NumDelivered`) in the claim, so a redelivery to another poller claims with a higher count and fences this one. From then on `complete`, `fail`, `continue` and `pause` commit before they publish (a `pause` appends a `pause` record instead of writing the `checkpoints` marker) and the event carries the commit's `journal_seq`; a `continue` carries no state, because the commit is the state of record. Every action answers one of these outcomes with a JSON body `{"error": "...", "code": "..."}`, and the worker must stop on all of them:
 
 | Status | `code` | Meaning | Bridge side effect |
 |--------|--------|---------|--------------------|
@@ -490,6 +497,8 @@ The request body is parsed into `bridge.resolveRequest` in `bridge/resolve.go`; 
 A `409` with a plain-text body `run cancelled` is the unrelated cancellation signal described below.
 
 **Response**: `200 OK` on success. `404 Not Found` if the task ID is not in the ack map, `403` if the caller's token did not claim the task, `400` for a body that is not valid JSON or has a missing or unknown `action`, `500` when an action's own checks or publish fail (for example a `duration_ms` out of range), and `409 Conflict` if the task's run was cancelled (the claim is withdrawn and the worker should stop).
+
+**Replay rules for clients.** A non-Go client that records model and tool calls applies the Go SDK's replay rules to the `journal.view` records. The rules are stated in full under "Replay rules for clients" in `docs/site/content/docs/reference/wire-protocol.md`, and `journal/testdata/replay/` holds JSON fixtures that `TestReplayFixtures` checks against `journal.Tool` and `journal.Model`.
 
 ### 4. POST /v1/tasks/{id}/logs
 

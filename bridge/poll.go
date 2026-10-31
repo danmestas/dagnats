@@ -33,11 +33,17 @@ type pollRequest struct {
 
 // pollResponse is a single task returned from a poll.
 type pollResponse struct {
-	TaskID    string          `json:"task_id"`
-	RunID     string          `json:"run_id"`
-	StepID    string          `json:"step_id"`
-	Iteration int             `json:"iteration,omitempty"`
-	Attempt   int             `json:"attempt,omitempty"`
+	TaskID    string `json:"task_id"`
+	RunID     string `json:"run_id"`
+	StepID    string `json:"step_id"`
+	Iteration int    `json:"iteration,omitempty"`
+	Attempt   int    `json:"attempt,omitempty"`
+	// Delivered and StreamSeq are this delivery's identity, the values
+	// the bridge's journal claim for it carries: a client finds its own
+	// claim by them and tells a redelivery or a resend from the
+	// delivery it replaces (ADR-026).
+	Delivered int             `json:"delivered"`
+	StreamSeq uint64          `json:"stream_seq,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
 	// W3C names, deliberately un-underscored: these are the wire keys
 	// from the trace-context spec, unlike protocol.Event's persisted
@@ -659,12 +665,15 @@ func (b *Bridge) processPolledMsg(
 	taskID := payload.RunID + "." + payload.StepID
 	b.storeClaimedTask(ctx, taskID, msg)
 	traceHdr := dispatchTraceHeader(dispatchCtx)
+	delivered, streamSeq := deliveryIdentity(msg, attemptNumber)
 	resp := pollResponse{
 		TaskID:        taskID,
 		RunID:         payload.RunID,
 		StepID:        payload.StepID,
 		Iteration:     payload.Iteration,
 		Attempt:       attemptNumber,
+		Delivered:     delivered,
+		StreamSeq:     streamSeq,
 		Input:         payload.Input,
 		TraceParent:   traceHdr.Get("traceparent"),
 		TraceState:    traceHdr.Get("tracestate"),

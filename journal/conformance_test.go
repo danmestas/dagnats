@@ -291,6 +291,29 @@ func TestConformance_RedeliveryFencesStalledWorker(t *testing.T) {
 	})
 }
 
+func TestConformance_ResyncReportsTheFenceWithoutWriting(t *testing.T) {
+	forEachDispatch(t, func(t *testing.T, nc *nats.Conn, runID string, d dispatch) {
+		c := newClient(t, nc)
+		stalled := open(t, c, task(runID, d.iteration, d.first, 1))
+		ctx, cancel := context.WithTimeout(context.Background(), caseTimeout)
+		defer cancel()
+		if err := stalled.Resync(ctx); err != nil {
+			t.Fatalf("Resync before the redelivery: %v", err)
+		}
+		successor := open(t, c, task(runID, d.iteration, d.redelivered, 2))
+		before := countRecords(t, c, runID)
+		if err := stalled.Resync(ctx); !errors.Is(err, ErrFenced) || !stalled.Fenced() {
+			t.Fatalf("stalled Resync err = %v, want ErrFenced", err)
+		}
+		if err := successor.Resync(ctx); err != nil {
+			t.Fatalf("successor Resync: %v", err)
+		}
+		if got := countRecords(t, c, runID); got != before {
+			t.Errorf("records = %d, want %d: Resync writes nothing", got, before)
+		}
+	})
+}
+
 func TestConformance_RedeliveryOutsideDedupWindowStillFences(t *testing.T) {
 	forEachDispatch(t, func(t *testing.T, nc *nats.Conn, runID string, d dispatch) {
 		c := newClient(t, nc)
