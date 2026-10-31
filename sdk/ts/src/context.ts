@@ -24,19 +24,34 @@ export interface JournalView {
   records: ViewRecord[];
 }
 
+/** What loadCheckpoint answers: the state and where the bridge found it. */
+export interface Checkpoint {
+  /** The saved JSON, or bytes when the state is not JSON. */
+  state: unknown;
+  /** The bridge's own value: "journal", "checkpoint" (buffered or stored) or "payload" (as polled). */
+  source: string;
+}
+
+/** The delivery's identity: what Journal.open takes, plus the type it was polled under. */
+export interface TaskIdentity extends Task {
+  task_type: string;
+}
+
 export class TaskContext {
   readonly task_id: string;
   readonly input: unknown;
   readonly item: PollItem;
   private readonly client: BridgeClient;
-  private readonly identity: Task;
+  /** The delivery's identity as polled; Journal.open takes it as is. */
+  readonly task: TaskIdentity;
 
   constructor(client: BridgeClient, item: PollItem) {
     this.client = client;
     this.item = item;
     this.task_id = item.task_id;
     this.input = item.input;
-    this.identity = {
+    this.task = {
+      task_type: item.task_type,
       run_id: item.run_id,
       step_id: item.step_id,
       iteration: item.iteration ?? 0,
@@ -45,11 +60,6 @@ export class TaskContext {
       delivered: item.delivered,
       stream_seq: item.stream_seq ?? 0,
     };
-  }
-
-  /** The delivery's identity; Journal.open takes it as is. */
-  get task(): Task {
-    return this.identity;
   }
 
   private resolve(action: string, body: Record<string, unknown>, call?: CallOptions): Promise<unknown> {
@@ -71,15 +81,20 @@ export class TaskContext {
   }
 
   /**
-   * loadCheckpoint answers the saved state, or undefined when the task has
-   * none. State that is not JSON comes back as bytes.
+   * loadCheckpoint answers the saved state and where the bridge found it,
+   * or undefined when the task has none. State that is not JSON comes back
+   * as bytes.
    */
-  async loadCheckpoint(call?: CallOptions): Promise<unknown> {
+  async loadCheckpoint(call?: CallOptions): Promise<Checkpoint | undefined> {
     const res = (await this.resolve("load_checkpoint", {}, call)) as
-      | { state?: unknown; state_base64?: string }
+      | { source: string; state?: unknown; state_base64?: string }
       | undefined;
-    if (res?.state_base64 !== undefined) return new Uint8Array(Buffer.from(res.state_base64, "base64"));
-    return res?.state ?? undefined;
+    if (res === undefined) return undefined;
+    if (res.state_base64 !== undefined) {
+      return { state: new Uint8Array(Buffer.from(res.state_base64, "base64")), source: res.source };
+    }
+    if (res.state === null || res.state === undefined) return undefined;
+    return { state: res.state, source: res.source };
   }
 
   /** heartbeat extends the claim with nothing else. */

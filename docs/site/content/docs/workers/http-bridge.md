@@ -122,7 +122,7 @@ Resolves a polled task. The `action` field determines behavior:
 | `fail` | Publishes step.failed with `error` and a `failure_type` |
 | `continue` | Requests another iteration of an agent loop, with `output` as the next input |
 | `pause` | Saves `checkpoint`, NAKs for `duration_ms` (1 to 3,600,000) so the task comes back |
-| `checkpoint` | Saves `data` to the checkpoints KV and extends the claim |
+| `checkpoint` | Buffers `data` as the task's loop state for the next `continue`, and extends the claim |
 | `heartbeat` | Extends the claim with nothing else |
 | `stream` | Publishes `data` to `stream.{run_id}.{step_id}` for live consumers and extends the claim |
 | `send_signal` | Writes `data` to the signal `name` of run `run_id` |
@@ -134,6 +134,8 @@ Resolves a polled task. The `action` field determines behavior:
 A journal step can be fenced: when the task is redelivered to another poller, the first worker's next action answers `409` with `"code":"fenced"` and it must stop. `410` (`stale`, `committed` or `restart_limit`) means the task is finished. See the [wire protocol](/docs/reference/wire-protocol).
 
 The bridge also guards a journal step against a crash loop, as the Go SDK does ([ADR-028](/docs/architecture)). When a worker claims an iteration and dies without writing anything, the next delivery claims it again, and so on. A claim that finds 5 earlier claims on the iteration with no journal record between them fails the step with `restart_limit` and answers `410 {"code":"restart_limit"}`; the task is acknowledged and the step's retry policy takes over. Any journal record (`journal.append`, a pause, a commit) resets the count. The limit belongs to the bridge, not to a worker: set it with `Bridge.SetRestartLimit(n)` or the `DAGNATS_BRIDGE_RESTART_LIMIT` environment variable (1 to 1000, default 5, the same as `worker.WithRestartLimit`). An invalid environment value logs a warning and falls back to 5; `SetRestartLimit` panics on an invalid argument.
+
+A `checkpoint` is durable only once a later `continue` commits it: until then the state lives in the bridge's memory for this claim, and a worker that dies before `continue` loses it. The state may be at most `loop_state_max_bytes` bytes (256 KiB by default; set it with the `loop_state_max_bytes` key or `DAGNATS_LOOP_STATE_MAX_BYTES`, up to `max_payload`). Over it, `checkpoint` and `continue` answer `413 {"code":"state_too_large","max_bytes":N,"bytes":M}`; the task stays claimed. A resolve request body is limited to 8 MiB, the largest `max_payload` dagnats allows; a bigger one answers `413 {"code":"body_too_large","max_bytes":8388608}`.
 
 `complete`, `fail`, `continue` and `pause` end the claim. The other actions leave the task in flight and restart its claim window.
 
@@ -257,7 +259,7 @@ Working examples of non-Go workers using the HTTP bridge:
 
 ## TypeScript client
 
-[`sdk/ts`](https://github.com/danmestas/dagnats/tree/main/sdk/ts) is a TypeScript client for these endpoints (`@dagnats/bridge`, Node 22.19 or later, no runtime dependencies). It holds the `connect` heartbeat stream open and reconnects, maps the two `409` shapes and the `410` and `503` codes to typed errors, and runs the agent journal's replay rules, tested against the same fixtures as the Go SDK. It is not published to npm yet.
+[`sdk/ts`](https://github.com/danmestas/dagnats/tree/main/sdk/ts) is a TypeScript client for these endpoints (`@dagnats/bridge`, Node 22.19 or later, no runtime dependencies). It holds the `connect` heartbeat stream open and reconnects, maps the two `409` shapes and the `410` and `503` codes to typed errors, and runs the agent journal's replay rules, tested against the same fixtures as the Go SDK. It ships as a GitHub release asset (`dagnats-bridge-<version>.tgz`), not on npm.
 
 ## Related
 

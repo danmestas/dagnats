@@ -91,6 +91,8 @@ test("close stops reconnecting", async () => {
   await until(() => f.hits() >= 1, "the first attempt");
   conn.close();
   await assert.rejects(conn.closed, /closed/);
+  // A request already on the wire when close() ran may still reach the server; let it land.
+  await new Promise((r) => setTimeout(r, 50));
   const seen = f.hits();
   await new Promise((r) => setTimeout(r, 150));
   assert.equal(f.hits(), seen, "no attempts after close");

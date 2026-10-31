@@ -16,6 +16,8 @@ import {
   RestartLimit,
   RunCancelled,
   Stale,
+  StateTooLarge,
+  BodyTooLarge,
   errorFromResponse,
   isTerminal,
 } from "../src/errors.ts";
@@ -87,4 +89,17 @@ test("isTerminal is true for the fenced/finished family and false for the retrya
   assert.equal(isTerminal(new TypeError("fetch failed")), false);
   assert.equal(isTerminal(new DOMException("aborted", "AbortError")), false);
   assert.equal(isTerminal("string"), false);
+});
+
+test("the two 413 codes carry their sizes and are not terminal", () => {
+  const state = errorFromResponse(413, '{"error":"x","code":"state_too_large","max_bytes":64,"bytes":65}\n');
+  assert.ok(state instanceof StateTooLarge);
+  assert.equal(state.maxBytes, 64);
+  assert.equal(state.bytes, 65);
+  const body = errorFromResponse(413, '{"error":"x","code":"body_too_large","max_bytes":8388608}');
+  assert.ok(body instanceof BodyTooLarge);
+  assert.equal(body.maxBytes, 8388608);
+  assert.equal(isTerminal(state), false);
+  assert.equal(isTerminal(body), false);
+  assert.equal(errorFromResponse(413, "too big").constructor, BridgeError);
 });

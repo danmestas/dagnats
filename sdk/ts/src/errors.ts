@@ -31,6 +31,26 @@ export class Stale extends BridgeError {}
 export class Committed extends BridgeError {}
 /** 410 restart_limit: the claim found the restart limit's worth of claims with no progress. */
 export class RestartLimit extends BridgeError {}
+/** 413 state_too_large: loop state over the task's loop_state_max_bytes. Not terminal: send less. */
+export class StateTooLarge extends BridgeError {
+  readonly maxBytes: number | undefined;
+  readonly bytes: number | undefined;
+
+  constructor(status: number, body: string) {
+    super(status, body);
+    this.maxBytes = jsonNumber(body, "max_bytes");
+    this.bytes = jsonNumber(body, "bytes");
+  }
+}
+/** 413 body_too_large: a request body over the bridge's 8 MiB limit. Not terminal. */
+export class BodyTooLarge extends BridgeError {
+  readonly maxBytes: number | undefined;
+
+  constructor(status: number, body: string) {
+    super(status, body);
+    this.maxBytes = jsonNumber(body, "max_bytes");
+  }
+}
 /** 503 not_provisioned: the AGENT_JOURNAL stream is missing. */
 export class NotProvisioned extends BridgeError {}
 
@@ -48,6 +68,16 @@ function jsonCode(body: string): string | undefined {
   return undefined;
 }
 
+function jsonNumber(body: string, key: string): number | undefined {
+  if (!body.startsWith("{")) return undefined;
+  try {
+    const value = (JSON.parse(body) as { [k: string]: unknown })[key];
+    return typeof value === "number" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** errorFromResponse picks the class for a non-2xx answer from its status and body. */
 export function errorFromResponse(status: number, body: string): BridgeError {
   const code = jsonCode(body);
@@ -59,6 +89,10 @@ export function errorFromResponse(status: number, body: string): BridgeError {
     if (code === "stale") return new Stale(status, body);
     if (code === "committed") return new Committed(status, body);
     if (code === "restart_limit") return new RestartLimit(status, body);
+  }
+  if (status === 413) {
+    if (code === "state_too_large") return new StateTooLarge(status, body);
+    if (code === "body_too_large") return new BodyTooLarge(status, body);
   }
   if (status === 503 && code === "not_provisioned") return new NotProvisioned(status, body);
   return new BridgeError(status, body);

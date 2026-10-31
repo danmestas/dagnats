@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, test } from "node:test";
-import { BridgeClient, Fenced } from "../src/index.ts";
+import { BridgeClient, BridgeError, Fenced } from "../src/index.ts";
 
 const servers: http.Server[] = [];
 afterEach(async () => {
@@ -42,7 +42,7 @@ async function fake(respond: (req: Seen, res: http.ServerResponse) => void): Pro
 
 test("poll sends the bridge's field names and returns the items", async () => {
   const f = await fake((_, res) => res.end(JSON.stringify([{ task_id: "r.s", run_id: "r", step_id: "s", delivered: 1 }])));
-  const items = await new BridgeClient(f.url, "tok").poll({ worker: "w", task_types: ["a"], max: 3, wait_ms: 1234 });
+  const items = await new BridgeClient(f.url, "tok").poll({ task_types: ["a"], max: 3, wait_ms: 1234 });
   assert.deepEqual(f.seen[0]!.body, { task_types: ["a"], max_tasks: 3, timeout_ms: 1234 });
   assert.equal(f.seen[0]!.auth, "Bearer tok");
   assert.equal(items[0]!.task_id, "r.s");
@@ -50,7 +50,7 @@ test("poll sends the bridge's field names and returns the items", async () => {
 
 test("an empty token sends no Authorization header", async () => {
   const f = await fake((_, res) => res.end("[]"));
-  await new BridgeClient(f.url, "").poll({ worker: "w", task_types: ["a"] });
+  await new BridgeClient(f.url, "").poll({ task_types: ["a"] });
   assert.equal(f.seen[0]!.auth, undefined);
 });
 
@@ -72,6 +72,17 @@ test("logs base64-encodes the data and tags the stream", async () => {
       { stream: "err", data: Buffer.from("oops").toString("base64") },
     ],
   });
+});
+
+test("a 2xx with a body that is not JSON is a BridgeError, never a SyntaxError", async () => {
+  const f = await fake((_, res) => res.end("<html>proxy</html>"));
+  const err = await new BridgeClient(f.url, "").poll({ task_types: ["a"] }).then(
+    () => undefined,
+    (e: unknown) => e,
+  );
+  assert.ok(err instanceof BridgeError, String(err));
+  assert.equal(err.status, 200);
+  assert.equal(err.body, "<html>proxy</html>");
 });
 
 test("a call that outlives its timeout rejects with TimeoutError", async () => {

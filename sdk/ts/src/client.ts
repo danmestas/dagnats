@@ -6,7 +6,7 @@
 // never hang a worker. TaskContext (context.ts) is the per-task layer on top.
 
 import { Connection, type ConnectOptions } from "./connection.ts";
-import { errorFromResponse } from "./errors.ts";
+import { BridgeError, errorFromResponse } from "./errors.ts";
 
 /** Per-call options: cancel it, or change how long it may take. */
 export interface CallOptions {
@@ -15,11 +15,6 @@ export interface CallOptions {
 }
 
 export interface PollOptions {
-  /**
-   * The worker's id. The poll wire carries none (the claim is by token),
-   * so this is accepted for symmetry with connect and not sent.
-   */
-  worker: string;
   task_types: string[];
   worker_group?: string;
   /** Tasks to take at most; the bridge defaults to 1. */
@@ -116,6 +111,12 @@ export class BridgeClient {
     });
     const text = await res.text();
     if (!res.ok) throw errorFromResponse(res.status, text);
-    return text === "" ? undefined : JSON.parse(text);
+    if (text === "") return undefined;
+    try {
+      return JSON.parse(text);
+    } catch {
+      // A proxy's HTML page on a 200 is the bridge's problem to explain, not a SyntaxError.
+      throw new BridgeError(res.status, text, `bridge: ${res.status} answered a body that is not JSON`);
+    }
   }
 }

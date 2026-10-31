@@ -4,7 +4,17 @@ A TypeScript client for the dagnats [HTTP bridge](../../docs/site/content/docs/w
 with the ADR-026 agent journal replay rules. Node 22.19 or later, ESM, no runtime
 dependencies (global `fetch`, SSE parsed by hand).
 
-Not published to npm yet; build it from this directory with `npm ci && npm run build`.
+## Install
+
+dagnats does not publish this package to npmjs or GitHub Packages. It ships as a GitHub release
+asset, `dagnats-bridge-<version>.tgz`, listed in the release's `SHA256SUMS`:
+
+```
+npm install https://github.com/danmestas/dagnats/releases/download/<tag>/dagnats-bridge-<version>.tgz
+```
+
+`<tag>` is the dagnats release tag (`v0.0.37`) and `<version>` is the same without the `v`
+(`0.0.37`). The tarball is compiled ESM plus `.d.ts` and has no dependencies.
 
 ## Use
 
@@ -37,9 +47,11 @@ gets its `wait_ms` plus 5 s.
 ### TaskContext
 
 `complete(output)`, `fail({ error, failure_type?, retry_after_ms? })`, `checkpoint(data)`,
-`loadCheckpoint()` (the data, or `undefined` when there is none), `heartbeat()`, `stream(chunk)`,
+`loadCheckpoint()` (`{ state, source }`, with the bridge's own `source`: `"journal"`, `"checkpoint"`
+or `"payload"`; `undefined` when there is none), `heartbeat()`, `stream(chunk)`,
 `journal.view()` (`{ claim, records }`) and `journal.append(type, data)`. `task` is the
-delivery identity for `Journal.open`.
+delivery identity from the poll item (including `dispatch_nonce` and `task_type`) and goes to
+`Journal.open`. A `checkpoint` is durable only once a later `continue` commits it.
 
 ### Errors
 
@@ -50,12 +62,13 @@ Told apart by status and body, so a fence and a cancelled run are not confused (
 | `Fenced` | `409 {"code":"fenced"}` |
 | `RunCancelled` | `409`, plain text `run cancelled` |
 | `Stale`, `Committed`, `RestartLimit` | `410` with that `code` |
+| `StateTooLarge`, `BodyTooLarge` | `413` with that `code`; `StateTooLarge` carries `maxBytes` and `bytes` |
 | `NotProvisioned` | `503 {"code":"not_provisioned"}` |
 | `BridgeError` | anything else; carries `status`, `body` and the JSON `code` if any |
 
 All extend `BridgeError`. They surface from `journal.append` and `journal.view` as well as from
 `complete`. `isTerminal(err)` is true for `Fenced`, `Stale`, `Committed`, `RestartLimit` and
-`RunCancelled`, and false for network errors and 5xx.
+`RunCancelled`, and false for network errors, 5xx and the 413s.
 
 ### Journal
 

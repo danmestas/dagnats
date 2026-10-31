@@ -90,8 +90,14 @@ func (b *Bridge) handleResolve(
 		writeJournalOutcome(w, stop)
 		return
 	}
-	req, err := parseResolveRequest(r)
+	req, err := parseResolveRequest(w, r)
 	if err != nil {
+		if errors.Is(err, errBodyTooLarge) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, tooLargeBody{
+				Error: err.Error(), Code: "body_too_large", MaxBytes: resolveBodyBytesMax,
+			})
+			return
+		}
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -109,6 +115,14 @@ func (b *Bridge) handleResolve(
 	err = b.dispatchAction(ctx, taskID, claimingTokenID, msg, req, w, r)
 	if err != nil {
 		if errors.Is(err, errResponseAlreadyWritten) {
+			return
+		}
+		var tooLarge *stateTooLargeError
+		if errors.As(err, &tooLarge) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, tooLargeBody{
+				Error: err.Error(), Code: "state_too_large",
+				MaxBytes: tooLarge.maxBytes, Bytes: tooLarge.bytes,
+			})
 			return
 		}
 		var badRequest *badRequestError
@@ -162,9 +176,44 @@ func (b *Bridge) withdrawIfRunCancelled(
 	return true
 }
 
+// resolveBodyBytesMax bounds a resolve request body at 8 MiB, the
+// largest max_payload dagnats allows: nothing a resolve carries to NATS
+// can be bigger, so a bigger body is refused before it is buffered.
+const resolveBodyBytesMax = 8 << 20
+
+// errBodyTooLarge marks a resolve body over resolveBodyBytesMax.
+var errBodyTooLarge = errors.New("request body is over the 8 MiB limit")
+
+// tooLargeBody is the JSON body of a 413 from a resolve. Bytes is set
+// for state_too_large only.
+type tooLargeBody struct {
+	Error    string `json:"error"`
+	Code     string `json:"code"`
+	MaxBytes int    `json:"max_bytes"`
+	Bytes    int    `json:"bytes,omitempty"`
+}
+
+// stateTooLargeError is loop state over the task's loop_state_max_bytes.
+type stateTooLargeError struct{ maxBytes, bytes int }
+
+func (e *stateTooLargeError) Error() string {
+	return fmt.Sprintf(
+		"state is %d bytes, over the %d byte cap (loop_state_max_bytes)",
+		e.bytes, e.maxBytes,
+	)
+}
+
+// checkStateSize refuses state over the task's cap with a typed error.
+func checkStateSize(state []byte, maxBytes int) error {
+	if len(state) > maxBytes {
+		return &stateTooLargeError{maxBytes: maxBytes, bytes: len(state)}
+	}
+	return nil
+}
+
 // parseResolveRequest validates the resolve JSON body.
 func parseResolveRequest(
-	r *http.Request,
+	w http.ResponseWriter, r *http.Request,
 ) (resolveRequest, error) {
 	if r == nil {
 		panic("parseResolveRequest: r must not be nil")
@@ -173,8 +222,12 @@ func parseResolveRequest(
 		panic("parseResolveRequest: r.Body must not be nil")
 	}
 	var req resolveRequest
-	dec := json.NewDecoder(r.Body)
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, resolveBodyBytesMax))
 	if err := dec.Decode(&req); err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			return req, errBodyTooLarge
+		}
 		return req, fmt.Errorf("invalid JSON: %w", err)
 	}
 	if req.Action == "" {
@@ -448,6 +501,13 @@ func (b *Bridge) resolveCheckpoint(
 	if msg == nil {
 		panic("resolveCheckpoint: msg must not be nil")
 	}
+	dispatch, err := resolveDispatch(msg)
+	if err != nil {
+		return err
+	}
+	if err := checkStateSize(req.Data, dispatch.stateMaxBytes); err != nil {
+		return err
+	}
 	if !b.ackMap.SetPendingState(taskID, req.Data) {
 		return fmt.Errorf("task %q is no longer claimed", taskID)
 	}
@@ -530,10 +590,14 @@ func (b *Bridge) continuePayload(
 	if pendingSet {
 		state = pending
 	}
-	if j, ok := b.ackMap.Journal(taskID); ok {
-		if !pendingSet {
-			state = j.State()
-		}
+	j, journaled := b.ackMap.Journal(taskID)
+	if journaled && !pendingSet {
+		state = j.State()
+	}
+	if err := checkStateSize(state, dispatch.stateMaxBytes); err != nil {
+		return nil, 0, err
+	}
+	if journaled {
 		seq, err := b.commitJournal(ctx, taskID, tokenID, msg, journal.Commit{
 			Action: journal.ActionContinue, Output: req.Output, State: state,
 		})
@@ -542,12 +606,6 @@ func (b *Bridge) continuePayload(
 		}
 		payload, err := json.Marshal(protocol.StepContinuePayload{Output: req.Output})
 		return payload, seq, err
-	}
-	if len(state) > dispatch.stateMaxBytes {
-		return nil, 0, fmt.Errorf(
-			"continue: state is %d bytes, over the %d byte cap (loop_state_max_bytes)",
-			len(state), dispatch.stateMaxBytes,
-		)
 	}
 	payload, err := json.Marshal(protocol.StepContinuePayload{
 		Output: req.Output, State: state, StateSet: true,

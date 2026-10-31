@@ -10,7 +10,7 @@
 
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { BridgeClient, BridgeLog, Fenced, Journal, RunCancelled, TaskContext, isTerminal } from "../src/index.ts";
+import { BridgeClient, BridgeLog, Fenced, Journal, RunCancelled, StateTooLarge, TaskContext, isTerminal } from "../src/index.ts";
 import type { PollItem } from "../src/index.ts";
 import {
   cancelRun,
@@ -39,7 +39,7 @@ let typeSeq = 0;
 const uniqueType = () => `ts-${++typeSeq}-${Date.now()}`;
 
 async function pollOne(c: BridgeClient, taskType: string): Promise<PollItem> {
-  const items = await c.poll({ worker: "w", task_types: [taskType], max: 1, wait_ms: 5000 });
+  const items = await c.poll({ task_types: [taskType], max: 1, wait_ms: 5000 });
   assert.equal(items.length, 1, "expected one task within 5s");
   return items[0]!;
 }
@@ -51,6 +51,7 @@ test("poll then complete finishes the run", async () => {
   assert.equal(item.run_id, runId);
   assert.equal(item.step_id, "step");
   assert.equal(item.task_type, type);
+  assert.equal(new TaskContext(client, item).task.task_type, type);
   assert.equal(item.task_id, `${runId}.step`);
   assert.deepEqual(item.input, { n: 1 });
   assert.equal(item.delivered, 1);
@@ -82,7 +83,10 @@ test("checkpoint round-trips, and no checkpoint reads as undefined", async () =>
   const ctx = new TaskContext(client, await pollOne(client, type));
   assert.equal(await ctx.loadCheckpoint(), undefined);
   await ctx.checkpoint({ step: 3, notes: ["a", "b"] });
-  assert.deepEqual(await ctx.loadCheckpoint(), { step: 3, notes: ["a", "b"] });
+  assert.deepEqual(await ctx.loadCheckpoint(), {
+    state: { step: 3, notes: ["a", "b"] },
+    source: "checkpoint",
+  });
   await ctx.heartbeat();
   await ctx.stream({ delta: "hi" });
   await ctx.complete(null);
@@ -197,7 +201,7 @@ test("a Journal over BridgeLog records and replays through the bridge", async ()
 test("an abort ends a long poll without waiting out wait_ms", async () => {
   const controller = new AbortController();
   const started = Date.now();
-  const pending = client.poll({ worker: "w", task_types: [uniqueType()], wait_ms: 30_000 }, { signal: controller.signal });
+  const pending = client.poll({ task_types: [uniqueType()], wait_ms: 30_000 }, { signal: controller.signal });
   setTimeout(() => controller.abort(), 200);
   await assert.rejects(pending, (e: unknown) => (e as Error).name === "AbortError");
   assert.ok(Date.now() - started < 5000, "the abort did not take effect promptly");
@@ -216,4 +220,28 @@ test("connect holds the heartbeat stream open until closed", async () => {
   assert.equal(settled, "open");
   conn.close();
   await assert.rejects(conn.closed, /closed/);
+});
+
+test("loadCheckpoint reports the bridge's source: payload for polled state", async () => {
+  const type = uniqueType();
+  const state = Buffer.from(JSON.stringify({ s: 0 })).toString("base64");
+  await publishTask(srv, type, { run_id: `payload-${type}`, step_id: "step", dispatch_nonce: "n1", state });
+  const ctx = new TaskContext(client, await pollOne(client, type));
+  assert.deepEqual(await ctx.loadCheckpoint(), { state: { s: 0 }, source: "payload" });
+  await ctx.complete(null);
+});
+
+test("a checkpoint over the state cap raises StateTooLarge, which is not terminal", async () => {
+  const type = uniqueType();
+  await publishTask(srv, type, { run_id: `cap-${type}`, step_id: "step", dispatch_nonce: "n1" });
+  const ctx = new TaskContext(client, await pollOne(client, type));
+  const err = await ctx.checkpoint("x".repeat(300 * 1024)).then(
+    () => undefined,
+    (e: unknown) => e,
+  );
+  assert.ok(err instanceof StateTooLarge, String(err));
+  assert.equal(err.maxBytes, 256 * 1024);
+  assert.ok((err.bytes ?? 0) > 256 * 1024);
+  assert.equal(isTerminal(err), false);
+  await ctx.complete(null);
 });

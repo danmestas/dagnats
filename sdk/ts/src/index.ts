@@ -6,8 +6,9 @@ export type { CallOptions, LogLine, PollItem, PollOptions } from "./client.ts";
 export { Connection } from "./connection.ts";
 export type { ConnectOptions } from "./connection.ts";
 export { TaskContext } from "./context.ts";
-export type { Claim, FailOptions, FailureType, JournalView } from "./context.ts";
+export type { Checkpoint, Claim, FailOptions, FailureType, JournalView, TaskIdentity } from "./context.ts";
 export {
+  BodyTooLarge,
   BridgeError,
   Committed,
   Fenced,
@@ -15,6 +16,7 @@ export {
   RestartLimit,
   RunCancelled,
   Stale,
+  StateTooLarge,
   isTerminal,
 } from "./errors.ts";
 export { BridgeLog, INTERRUPTED, Journal, MemoryLog, ReplayMismatch, canonical } from "../journal/index.ts";

@@ -38,6 +38,11 @@ jobs:
   sdk-ts:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    name: sdk-ts (node ${{ matrix.node }})
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.19.0', '24']
     defaults:
       run:
         working-directory: sdk/ts
@@ -50,7 +55,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: '22.19.0'
+          node-version: ${{ matrix.node }}
           cache: npm
           cache-dependency-path: sdk/ts/package-lock.json
 
@@ -62,6 +67,10 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Pack
+        # The release asset: only dist and the README, importable on its own.
+        run: npm pack --dry-run
 
       - name: Test
         # pretest builds the Go dev server the integration tests start.

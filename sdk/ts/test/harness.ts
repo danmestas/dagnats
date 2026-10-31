@@ -100,11 +100,11 @@ export async function waitForStatus(srv: DevServer, runId: string, status: strin
   throw new Error(`run ${runId} is ${last}, wanted ${status}`);
 }
 
-/** Puts a hand-made task on the queue through the second bridge; a repeat is a dispatch resend. */
+/** Puts a hand-made task (`state` is base64, as Go encodes []byte) on the queue through the second bridge; a repeat is a dispatch resend. */
 export async function publishTask(
   srv: DevServer,
   taskType: string,
-  payload: { run_id: string; step_id: string; dispatch_nonce: string },
+  payload: { run_id: string; step_id: string; dispatch_nonce: string; state?: string },
 ): Promise<void> {
   await rest(`${srv.secondURL}/_test/publish?type=${taskType}`, "POST", payload);
 }
