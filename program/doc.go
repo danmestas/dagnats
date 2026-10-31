@@ -52,8 +52,9 @@
 //     need push consumers, so denying consumer creates is not an option.
 //     User permissions inside one account cannot close this; one NATS
 //     account per program, or a server-side check of the deliver
-//     subject, will (TestAttack_PushConsumerCannotDeliverIntoForeignSubjects
-//     is the proof, skipped until then).
+//     subject, will. Tracked as dagnats#862;
+//     TestAttack_PushConsumerCannotDeliverIntoForeignSubjects is the proof,
+//     skipped until then.
 //   - Name-gated grants. Consumer delete on shared buckets and next/ack
 //     on STICKY_TASKS are gated only by consumer names, which are random
 //     NUIDs that a program cannot list.
