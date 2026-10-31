@@ -155,7 +155,7 @@ func TestAPITokenGate(t *testing.T) {
 	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	})
-	gated := apiTokenGate("tok-123", ok)
+	gated := apiTokenGate("tok-123", nil, ok)
 	cases := []struct {
 		path, auth string
 		want       int
@@ -183,11 +183,11 @@ func TestAPITokenGate(t *testing.T) {
 			t.Errorf("%s with %q: status %d, want %d", c.path, c.auth, rec.Code, c.want)
 		}
 	}
-	if apiTokenGate("", ok) == nil {
+	if apiTokenGate("", nil, ok) == nil {
 		t.Fatal("no gate returned for an empty token")
 	}
 	rec := httptest.NewRecorder()
-	apiTokenGate("", ok).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/runs", nil))
+	apiTokenGate("", nil, ok).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/runs", nil))
 	if rec.Code != http.StatusTeapot {
 		t.Fatalf("with no token configured the gate blocked: %d", rec.Code)
 	}
@@ -272,5 +272,93 @@ func TestReadSecretFile_DoesNotReadPastTheLimit(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("readSecretFile kept reading an endless file")
+	}
+}
+
+// A bridge worker presents its own worker token, which the API token does
+// not match. The gate lets it through on the bridge's worker routes when
+// the bridge accepts it, and nowhere else.
+func TestAPITokenGate_BridgeWorkerToken(t *testing.T) {
+	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	})
+	workerAuth := func(header string) bool { return header == "Bearer worker-tok" }
+	gated := apiTokenGate("tok-123", workerAuth, ok)
+	cases := []struct {
+		method, path, auth string
+		want               int
+	}{
+		{http.MethodPost, "/v1/tasks/poll", "Bearer worker-tok", http.StatusTeapot},
+		{http.MethodPost, "/v1/workers/connect", "Bearer worker-tok", http.StatusTeapot},
+		{http.MethodPost, "/v1/tasks/t-1/resolve", "Bearer worker-tok", http.StatusTeapot},
+		{http.MethodPost, "/v1/tasks/t-1/logs", "Bearer worker-tok", http.StatusTeapot},
+		{http.MethodPost, "/v1/tasks/poll", "Bearer tok-123", http.StatusTeapot},
+		{http.MethodPost, "/v1/tasks/poll", "Bearer other", http.StatusUnauthorized},
+		{http.MethodPost, "/v1/tasks/poll", "", http.StatusUnauthorized},
+		{http.MethodGet, "/v1/workers", "Bearer worker-tok", http.StatusUnauthorized},
+		{http.MethodPost, "/v1/tokens", "Bearer worker-tok", http.StatusUnauthorized},
+		{http.MethodGet, "/runs", "Bearer worker-tok", http.StatusUnauthorized},
+		{http.MethodGet, "/v1/tasks/poll", "Bearer worker-tok", http.StatusUnauthorized},
+	}
+	for _, c := range cases {
+		req := httptest.NewRequest(c.method, c.path, nil)
+		if c.auth != "" {
+			req.Header.Set("Authorization", c.auth)
+		}
+		rec := httptest.NewRecorder()
+		gated.ServeHTTP(rec, req)
+		if rec.Code != c.want {
+			t.Errorf("%s %s with %q: status %d, want %d",
+				c.method, c.path, c.auth, rec.Code, c.want)
+		}
+	}
+}
+
+// The whole server again: with an API token set, a bridge worker that
+// presents the bridge's own token still polls, and the API token still
+// guards everything else. Removing bridgeWorkerAuth from startHTTP fails
+// this test with a 401 on the poll.
+func TestServer_APITokenAdmitsBridgeWorkerToken(t *testing.T) {
+	t.Setenv("DAGNATS_BRIDGE_TOKEN", "bridge-admin")
+	cfg := testConfig(t)
+	cfg.APITokenFile = writeSecret(t, "server-token")
+	srv := New(cfg)
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Run() }()
+	defer func() {
+		srv.Stop()
+		select {
+		case <-errCh:
+		case <-time.After(20 * time.Second):
+			t.Fatal("Run() did not return within 20s")
+		}
+	}()
+	httpAddr := waitHTTPAddr(t, srv)
+
+	status := func(method, path, auth, body string) int {
+		req, err := http.NewRequest(method, "http://"+httpAddr+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	poll := `{"task_types":["echo"],"timeout_ms":100}`
+	if got := status(http.MethodPost, "/v1/tasks/poll", "Bearer bridge-admin", poll); got != http.StatusOK {
+		t.Errorf("poll with the bridge token: %d, want 200", got)
+	}
+	if got := status(http.MethodPost, "/v1/tasks/poll", "", poll); got != http.StatusUnauthorized {
+		t.Errorf("poll without a token: %d, want 401", got)
+	}
+	if got := status(http.MethodGet, "/workflows", "Bearer bridge-admin", ""); got != http.StatusUnauthorized {
+		t.Errorf("/workflows with the bridge token: %d, want 401", got)
 	}
 }

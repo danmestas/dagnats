@@ -58,6 +58,7 @@ bridge/stranded\_check.go Defense\-in\-depth counterpart to the engine's primary
   - [func \(am \*AckMap\) WithLogState\(taskID string, fn func\(seq uint64, totalBytes int64, truncated bool\) \(newSeq uint64, newTotalBytes int64, newTruncated bool\)\) bool](<#AckMap.WithLogState>)
 - [type Bridge](<#Bridge>)
   - [func NewBridge\(pub \*natsutil.TracingPublisher\) \*Bridge](<#NewBridge>)
+  - [func \(b \*Bridge\) AuthorizesWorker\(header string\) bool](<#Bridge.AuthorizesWorker>)
   - [func \(b \*Bridge\) Handler\(\) http.Handler](<#Bridge.Handler>)
   - [func \(b \*Bridge\) SetRestartLimit\(n int\)](<#Bridge.SetRestartLimit>)
   - [func \(b \*Bridge\) SetTokenStore\(store \*workertoken.Store\)](<#Bridge.SetTokenStore>)
@@ -273,6 +274,15 @@ func NewBridge(pub *natsutil.TracingPublisher) *Bridge
 NewBridge creates a Bridge. Panics on nil pub — a programmer error at startup. The TracingPublisher wraps both \*nats.Conn and jetstream.JetStream and is the only legal publish surface inside this package \(CI lint enforces this\).
 
 Binds optional KV buckets for checkpoints and signals \(nil if not present\).
+
+<a name="Bridge.AuthorizesWorker"></a>
+### func \(\*Bridge\) [AuthorizesWorker](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L271>)
+
+```go
+func (b *Bridge) AuthorizesWorker(header string) bool
+```
+
+AuthorizesWorker reports whether header carries a token this bridge accepts: its admin bearer or a minted worker token. In dev mode, with no admin bearer, it accepts nothing, so a front gate that defers to it never opens a route the bridge leaves open.
 
 <a name="Bridge.Handler"></a>
 ### func \(\*Bridge\) [Handler](<https://github.com/danmestas/dagnats/blob/main/bridge/bridge.go#L166>)

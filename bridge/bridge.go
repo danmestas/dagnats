@@ -264,6 +264,21 @@ func (b *Bridge) authMiddleware(
 	})
 }
 
+// AuthorizesWorker reports whether header carries a token this bridge
+// accepts: its admin bearer or a minted worker token. In dev mode, with no
+// admin bearer, it accepts nothing, so a front gate that defers to it never
+// opens a route the bridge leaves open.
+func (b *Bridge) AuthorizesWorker(header string) bool {
+	if b == nil {
+		panic("AuthorizesWorker: b must not be nil")
+	}
+	if b.token == "" {
+		return false
+	}
+	_, ok := b.authorize(header)
+	return ok
+}
+
 // authorize resolves one Authorization header value into Claims,
 // trying each configured mode in order: the env admin bearer, then a
 // configured Store, then dev-mode allow-all when neither is

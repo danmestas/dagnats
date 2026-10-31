@@ -130,7 +130,7 @@ On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 | `DAGNATS_NATS_HOST` | `nats_host` | Client listener bind IP; default 127.0.0.1, or 0.0.0.0 in leaf mode |
 | `DAGNATS_NATS_USER` | `nats_user` | Login required on the client port and WebSocket listener; set with `nats_password_file`. Unset: open |
 | `DAGNATS_NATS_PASSWORD_FILE` | `nats_password_file` | File holding that user's password (chmod 600) |
-| `DAGNATS_API_TOKEN_FILE` | `api_token_file` | File holding a bearer token every HTTP request must carry, except `/health`, `/health/cluster` and `/ready`. Unset: open. Neither login covers `monitor_port` or cluster routes (use `nats_cluster_auth_token`) |
+| `DAGNATS_API_TOKEN_FILE` | `api_token_file` | File holding a bearer token every HTTP request must carry, except `/health`, `/health/cluster` and `/ready`. On the bridge's worker routes (`POST /v1/workers/connect` and `POST /v1/tasks/...`) a token the bridge accepts also passes: its `DAGNATS_BRIDGE_TOKEN` or a minted worker token. Unset: open. Neither login covers `monitor_port` or cluster routes (use `nats_cluster_auth_token`) |
 | `DAGNATS_NATS_SERVER_NAME` | `nats_server_name` | Stable server name; default derived from host |
 | `DAGNATS_JETSTREAM_DOMAIN` | `jetstream_domain` | JetStream domain a leaf hub addresses this server by; default none |
 | `DAGNATS_NATS_JETSTREAM_REPLICAS` | `nats_jetstream_replicas` | One of `{0,1,3,5}`; `0`=auto |

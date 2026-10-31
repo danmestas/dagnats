@@ -669,7 +669,7 @@ func (s *Server) startHTTP() (<-chan error, error) {
 	mountConsole(mux, s.cfg.HTTPAddr, s.svc, s.nc,
 		s.metricsAgg, s.metricsErrorReason, s.ns, s.cfg.Build)
 
-	s.httpSrv = &http.Server{Handler: apiTokenGate(s.cfg.apiToken, mux)}
+	s.httpSrv = &http.Server{Handler: apiTokenGate(s.cfg.apiToken, s.bridgeWorkerAuth(), mux)}
 
 	errCh := make(chan error, 1)
 	go func() {
