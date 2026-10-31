@@ -453,10 +453,12 @@ func taskOf(r Record) Task {
 // successor answers a crashed holder's unfinished call without a
 // second intent (ADR-026). An intent left unanswered is no violation
 // once its attempt ended: a fail commit of the iteration follows it,
-// or a higher attempt wrote to the iteration (the engine timed the
-// attempt out; the next attempt runs a safe call afresh at the same
-// position, and a fresh call skips an unsafe intent's position). The last unanswered intent is tolerated when the
-// step ended failed: nothing could answer it.
+// or a higher attempt wrote its own intent for the call (the engine
+// timed the attempt out; the next attempt runs a safe call afresh and
+// supersedes it). An unsafe intent's position is never reused, so one
+// a higher attempt left alone is no violation (unsafeIntentLeftAlone).
+// The last unanswered intent is tolerated when the step ended failed:
+// nothing could answer it.
 func checkToolPairs(records []Record, stepFailed bool) []string {
 	if records == nil {
 		panic("checkToolPairs: records must not be nil")
@@ -465,11 +467,8 @@ func checkToolPairs(records []Record, stepFailed bool) []string {
 	open := map[toolCall]Record{}
 	// lastCommit is the newest fail commit per iteration.
 	lastCommit := map[int]uint64{}
-	// attempt is the highest attempt that wrote to each iteration.
-	attempt := map[int]int{}
 	var violations []string
 	for _, r := range records {
-		attempt[r.Iteration] = max(attempt[r.Iteration], r.Attempt)
 		switch r.Type {
 		case TypeCommit:
 			if commitAction(r) == ActionFail {
@@ -514,7 +513,7 @@ func checkToolPairs(records []Record, stepFailed bool) []string {
 		last = max(last, pending.Seq)
 	}
 	for key, pending := range open {
-		if pending.Seq <= lastCommit[key.iteration] || pending.Attempt < attempt[key.iteration] ||
+		if pending.Seq <= lastCommit[key.iteration] || unsafeIntentLeftAlone(pending, records) ||
 			(stepFailed && pending.Seq == last) {
 			continue
 		}
@@ -524,6 +523,38 @@ func checkToolPairs(records []Record, stepFailed bool) []string {
 	}
 	sort.Strings(violations)
 	return violations
+}
+
+// unsafeIntentLeftAlone reports whether pending, an unanswered intent,
+// is unsafe and a higher attempt wrote to its iteration without
+// running the same call (name and canonical input). A higher attempt
+// that ran the same call afresh should have honoured pending instead:
+// that is a silent re-execution, not an ended attempt.
+func unsafeIntentLeftAlone(pending Record, records []Record) bool {
+	if pending.Type != TypeToolIntent {
+		panic("unsafeIntentLeftAlone: pending must be a tool intent")
+	}
+	if len(records) > recordsMax {
+		panic("unsafeIntentLeftAlone: records exceed the read bound")
+	}
+	var intent ToolIntent
+	if err := json.Unmarshal(pending.Data, &intent); err != nil || intent.Replay != Unsafe {
+		return false
+	}
+	ended := false
+	for _, r := range records {
+		if r.Iteration != pending.Iteration || r.Attempt <= pending.Attempt {
+			continue
+		}
+		ended = true
+		var later ToolIntent
+		if r.Type == TypeToolIntent && json.Unmarshal(r.Data, &later) == nil &&
+			later.Name == intent.Name &&
+			canonicalJSON(later.Input) == canonicalJSON(intent.Input) {
+			return false
+		}
+	}
+	return ended
 }
 
 // checkPlacedInputs is the journal half of invariant 5: each placed

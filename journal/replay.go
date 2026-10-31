@@ -38,8 +38,10 @@ const callsMax = recordsMax
 // ToolCall is one tool invocation. The handler sets Name and Input;
 // Tool fills Call (the call's position in the iteration, counting
 // from 0) and Key, the idempotency key {run}.{step}.{iteration}.{call},
-// which is the same on every delivery and attempt of the iteration so
-// the tool can hand it to an external system that deduplicates.
+// which is the same on every delivery of an attempt so the tool can
+// hand it to an external system that deduplicates. A new attempt
+// keeps a prior unsafe call's key when it honours the call; a fresh
+// call's position, and so its key, can differ between attempts.
 type ToolCall struct {
 	Name  string          `json:"name"`
 	Input json.RawMessage `json:"input,omitempty"`
@@ -194,7 +196,10 @@ func (j *Journal) nextToolPosition() int {
 	if j.toolCalls < 0 {
 		panic("nextToolPosition: toolCalls must not be negative")
 	}
-	held := j.priorUnsafePositions()
+	held := j.heldPositions
+	if len(held) > recordsMax {
+		panic("nextToolPosition: more held positions than records")
+	}
 	position := j.toolCalls
 	for range len(held) {
 		if !held[position] {

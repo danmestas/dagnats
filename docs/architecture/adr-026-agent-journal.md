@@ -231,16 +231,21 @@ The successor writes no second intent for a call it answers, so each
 call has one intent answered by one result, in order (checker invariant
 4, keyed by iteration and call rather than by claim; an intent left
 unanswered is tolerated once its attempt ended, by a fail commit or by
-any record of a higher attempt in the iteration, and the last one is
-tolerated when the step ended failed; amended 2026-10-30 from "a higher
-attempt's intent for the call", which a fresh call no longer writes at
-an unsafe intent's position). A tool's own error is part of its result,
+a higher attempt's intent for the call, and the last one is tolerated
+when the step ended failed; amended 2026-10-30: since a fresh call no
+longer takes an unsafe intent's position, an unanswered unsafe intent
+is also tolerated once a higher attempt wrote to the iteration, unless
+that attempt ran the same call (name and canonical input) afresh
+instead of honouring it, which is a silent re-execution). A tool's own error is part of its result,
 not a reason to stop the step; the error `Tool` returns is the journal's
 (`ErrFenced`, `ErrCommitted`, `ErrReplayMismatch`, transport).
 
-Each call has a stable idempotency key, `{run}.{step}.{iteration}.{call}`,
-the same on every delivery and attempt, for tools to pass to external
-systems that deduplicate (ADR-028's spawn key defaults to it).
+Each call has an idempotency key, `{run}.{step}.{iteration}.{call}`,
+for tools to pass to external systems that deduplicate (ADR-028's spawn
+key defaults to it). It is the same on every delivery of an attempt; a
+new attempt keeps an honoured unsafe call's key, and a fresh call's
+position, and so its key, can differ between attempts (amended
+2026-10-30: it read "the same on every delivery and attempt").
 
 `j.Model(ctx, fn)` returns the `model.response` this attempt recorded for
 the call at this position, and otherwise reads the tail first (a holder

@@ -55,7 +55,7 @@ Calls are matched by position. If the handler issues a different call at a posit
 
 A retry is different from a redelivery. When the engine starts a new attempt of an iteration (after a failure or a timeout), it means "do it again": safe calls and model requests run fresh. Only unsafe intents from the earlier attempt are honoured, matched by name and input, so a retry cannot repeat a charge the first attempt already started.
 
-Each call carries an idempotency key, `{run}.{step}.{iteration}.{call}`, in `call.Key`. It is the same on every delivery and attempt. Pass it to any external system that deduplicates.
+Each call carries an idempotency key, `{run}.{step}.{iteration}.{call}`, in `call.Key`. It is the same on every delivery of an attempt, and a new attempt keeps it for an unsafe call it answers from the prior attempt; a fresh call in a new attempt can get a different key. Pass it to any external system that deduplicates.
 
 ### What "at most once" means
 
