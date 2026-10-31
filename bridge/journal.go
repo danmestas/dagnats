@@ -33,6 +33,7 @@ import (
 	"net/http"
 
 	"github.com/danmestas/dagnats/inputs"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/journal"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
@@ -442,12 +443,12 @@ type loadCheckpointResponse struct {
 // action, else the journal's when the task has claimed one, else the
 // checkpoints bucket, else the state the task was polled with.
 func (b *Bridge) resolveLoadCheckpoint(
-	ctx context.Context, taskID string, msg jetstream.Msg, w http.ResponseWriter,
+	ctx context.Context, taskID, tokenID string, msg jetstream.Msg, w http.ResponseWriter,
 ) error {
 	if taskID == "" {
 		panic("resolveLoadCheckpoint: taskID must not be empty")
 	}
-	state, source, err := b.loadState(ctx, taskID, msg)
+	state, source, err := b.loadState(ctx, taskID, tokenID, msg)
 	if err != nil {
 		return err
 	}
@@ -468,19 +469,18 @@ func (b *Bridge) resolveLoadCheckpoint(
 
 // loadState resolves the state and its source for resolveLoadCheckpoint.
 func (b *Bridge) loadState(
-	ctx context.Context, taskID string, msg jetstream.Msg,
+	ctx context.Context, taskID, tokenID string, msg jetstream.Msg,
 ) ([]byte, string, error) {
 	if pending, ok := b.ackMap.PendingState(taskID); ok {
 		return pending, "checkpoint", nil
 	}
-	if mu := b.ackMap.JournalLock(taskID); mu != nil {
-		mu.Lock()
-		j, ok := b.ackMap.Journal(taskID)
-		mu.Unlock()
-		if ok {
-			state, err := journalState(j)
-			return state, "journal", err
-		}
+	j, err := b.journalIfAny(ctx, taskID, tokenID, msg)
+	if err != nil {
+		return nil, "", err
+	}
+	if j != nil {
+		state, err := journalState(j)
+		return state, "journal", err
 	}
 	if b.checkpointKV != nil {
 		entry, err := b.checkpointKV.Get(ctx, taskID)
@@ -496,6 +496,51 @@ func (b *Bridge) loadState(
 		return nil, "", err
 	}
 	return dispatch.state, "payload", nil
+}
+
+// journalIfAny returns the task's journal claim, opening it first when
+// the step already has journal records: a step whose earlier iteration
+// committed state through the journal must report that state whichever
+// action comes first. A step with no records is not a journal step yet,
+// so nothing is claimed for it. nil without error means no journal.
+func (b *Bridge) journalIfAny(
+	ctx context.Context, taskID, tokenID string, msg jetstream.Msg,
+) (*journal.Journal, error) {
+	mu := b.ackMap.JournalLock(taskID)
+	if mu == nil {
+		return nil, nil
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if j, ok := b.ackMap.Journal(taskID); ok {
+		return j, nil
+	}
+	runID, stepID := splitTaskID(taskID)
+	has, err := b.hasJournalRecords(ctx, runID, stepID)
+	if err != nil || !has {
+		return nil, err
+	}
+	return b.openJournal(ctx, taskID, tokenID, msg)
+}
+
+// hasJournalRecords reports whether the step's journal subject holds a
+// record. A missing stream means no journal was ever written.
+func (b *Bridge) hasJournalRecords(ctx context.Context, runID, stepID string) (bool, error) {
+	stream, err := b.js.Stream(ctx, natsutil.AgentJournalStream)
+	if err != nil {
+		if errors.Is(err, jetstream.ErrStreamNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("journal stream: %w", err)
+	}
+	_, err = stream.GetLastMsgForSubject(ctx, natsutil.JournalSubject(runID, stepID))
+	if errors.Is(err, jetstream.ErrMsgNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("journal tail: %w", err)
+	}
+	return true, nil
 }
 
 // journalState is the state a journal step reports: the pause marker

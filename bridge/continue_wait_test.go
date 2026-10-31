@@ -43,6 +43,12 @@ type waitRig struct {
 // step on task type "echo"; the step id is "agent".
 func newWaitRig(t *testing.T) *waitRig {
 	t.Helper()
+	return newWaitRigOfType(t, dag.StepTypeAgentLoop)
+}
+
+// newWaitRigOfType is newWaitRig with the step's type chosen.
+func newWaitRigOfType(t *testing.T, stepType dag.StepType) *waitRig {
+	t.Helper()
 	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc, natsutil.WithStoreBudget(storeBudgetBytes)); err != nil {
 		t.Fatalf("SetupAll: %v", err)
@@ -63,8 +69,7 @@ func newWaitRig(t *testing.T) *waitRig {
 	wfDef := dag.WorkflowDef{
 		Name: "continue-wait", Version: "1",
 		Steps: []dag.StepDef{{
-			ID: "agent", Task: "echo", Type: dag.StepTypeAgentLoop,
-			Config: dag.MarshalConfig(&dag.AgentLoopConfig{MaxIterations: 10}),
+			ID: "agent", Task: "echo", Type: stepType, Config: stepConfig(stepType),
 		}},
 	}
 	if err := svc.RegisterWorkflow(ctx, wfDef); err != nil {
@@ -263,5 +268,34 @@ func TestContinueWait_InvalidIs400(t *testing.T) {
 	}
 	if status, _ := resolveBody(t, rig.ts, task.TaskID, `{"action":"heartbeat"}`); status != 200 {
 		t.Fatalf("heartbeat after invalid waits = %d, want 200", status)
+	}
+}
+
+func stepConfig(stepType dag.StepType) json.RawMessage {
+	if stepType != dag.StepTypeAgentLoop {
+		return nil
+	}
+	return dag.MarshalConfig(&dag.AgentLoopConfig{MaxIterations: 10})
+}
+
+// A wait on a step that is not an agent loop has no wake: it is refused,
+// the claim survives, and a continue without a wait is unaffected.
+func TestContinueWait_RefusedOnNonAgentLoopStep(t *testing.T) {
+	rig := newWaitRigOfType(t, dag.StepTypeNormal)
+	task := rig.claim(t, false)
+	for _, wait := range []string{`{"delay_ms":1000}`, `{"input":true}`} {
+		status, body := resolveBody(t, rig.ts, task.TaskID,
+			`{"action":"continue","wait":`+wait+`}`)
+		var got struct{ Code string }
+		if status != 400 || json.Unmarshal([]byte(body), &got) != nil ||
+			got.Code != "wait_requires_agent_loop" {
+			t.Fatalf("wait %s = %d %s, want 400 wait_requires_agent_loop", wait, status, body)
+		}
+	}
+	if status, _ := resolveBody(t, rig.ts, task.TaskID, `{"action":"heartbeat"}`); status != 200 {
+		t.Fatalf("heartbeat after refusal = %d, want 200 (still claimed)", status)
+	}
+	if n := countHistory(t, rig.nc, rig.runID, protocol.EventStepContinue); n != 0 {
+		t.Fatalf("%d step.continue events after refused waits, want 0", n)
 	}
 }

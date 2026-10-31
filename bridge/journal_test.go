@@ -460,3 +460,56 @@ func TestBridgeJournalRetriedCompleteRepublishesCommit(t *testing.T) {
 		t.Fatal("committed task still in the ack map")
 	}
 }
+
+// load_checkpoint as the first call on a fresh claim must read the
+// state an earlier iteration committed through the journal, not the
+// stale payload state; a step with no journal is left unclaimed.
+func TestBridgeJournalLoadCheckpointFirstReadsJournalState(t *testing.T) {
+	rig := newJournalRig(t)
+	b, ts := rig.front(t)
+	const runID, stepID = "run-jfirst", "step-jfirst"
+	prior := journal.Task{RunID: runID, StepID: stepID, Iteration: 0, Attempt: 1,
+		DispatchNonce: "n0", Delivered: 1}
+	pub := natsutil.NewTracingPublisher(rig.nc, rig.js)
+	j, err := journal.Open(context.Background(), rig.js, pub, prior)
+	if err != nil {
+		t.Fatalf("open prior: %v", err)
+	}
+	if _, err := j.Commit(context.Background(), journal.Commit{
+		Action: journal.ActionContinue, State: []byte(`{"turn":1}`),
+	}); err != nil {
+		t.Fatalf("commit prior: %v", err)
+	}
+	rig.publish(t, protocol.TaskPayload{RunID: runID, StepID: stepID, Iteration: 1,
+		DispatchNonce: "n1", State: []byte(`{"stale":true}`)})
+	taskID := pollOne(t, ts)
+
+	status, body := resolveBody(t, ts, taskID, `{"action":"load_checkpoint"}`)
+	var got loadCheckpointResponse
+	if status != 200 || json.Unmarshal([]byte(body), &got) != nil {
+		t.Fatalf("load_checkpoint: %d %s", status, body)
+	}
+	if got.Source != "journal" || string(got.State) != `{"turn":1}` {
+		t.Fatalf("first load = %s from %s, want journal {\"turn\":1}", got.State, got.Source)
+	}
+	if _, ok := b.ackMap.Journal(taskID); !ok {
+		t.Fatal("load_checkpoint did not open the claim's journal")
+	}
+}
+
+func TestBridgeLoadCheckpointWithoutJournalStaysPayloadAndUnclaimed(t *testing.T) {
+	rig := newJournalRig(t)
+	b, ts := rig.front(t)
+	rig.publish(t, protocol.TaskPayload{RunID: "run-plainlc", StepID: "step-plainlc",
+		DispatchNonce: "n1", State: []byte(`{"p":1}`)})
+	taskID := pollOne(t, ts)
+	status, body := resolveBody(t, ts, taskID, `{"action":"load_checkpoint"}`)
+	var got loadCheckpointResponse
+	if status != 200 || json.Unmarshal([]byte(body), &got) != nil ||
+		got.Source != "payload" || string(got.State) != `{"p":1}` {
+		t.Fatalf("load_checkpoint = %d %s, want payload {\"p\":1}", status, body)
+	}
+	if _, ok := b.ackMap.Journal(taskID); ok {
+		t.Fatal("a step with no journal was claimed by load_checkpoint")
+	}
+}

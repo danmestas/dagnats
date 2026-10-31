@@ -68,6 +68,8 @@ export class RecordTooLarge extends BridgeError {
 export class InputsQueued extends BridgeError {}
 /** 400 invalid_wait: the `wait` of a `continue` was refused. Not terminal: fix the wait. */
 export class InvalidWait extends BridgeError {}
+/** 400 wait_requires_agent_loop: a `continue` with a `wait` on a step that is not an agent_loop step. Not terminal: continue without the wait. */
+export class WaitRequiresAgentLoop extends BridgeError {}
 /** 503 not_provisioned: the AGENT_JOURNAL stream is missing. */
 export class NotProvisioned extends BridgeError {}
 
@@ -104,6 +106,7 @@ export function errorFromResponse(status: number, body: string): BridgeError {
     if (body.trim() === "run cancelled") return new RunCancelled(status, body);
   }
   if (status === 400 && code === "invalid_wait") return new InvalidWait(status, body);
+  if (status === 400 && code === "wait_requires_agent_loop") return new WaitRequiresAgentLoop(status, body);
   if (status === 410) {
     if (code === "stale") return new Stale(status, body);
     if (code === "committed") return new Committed(status, body);

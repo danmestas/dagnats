@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/json"
+	"errors"
 	"strconv"
 	"time"
 )
@@ -66,6 +67,29 @@ type TaskPayload struct {
 	// publishing it, with the same number the engine would enforce.
 	// Zero (a legacy payload) means LoopStateMaxBytesDefault.
 	StateMaxBytes int `json:"state_max_bytes,omitempty"`
+	// AgentLoop marks a dispatch of an agent_loop step, the only kind
+	// the engine continues or parks. A payload from an engine older than
+	// this field has no state cap either (StateMaxBytes 0); see
+	// CheckWait.
+	AgentLoop bool `json:"agent_loop,omitempty"`
+}
+
+// ErrWaitRequiresAgentLoop: a step.continue carried a wait for a step
+// that is not an agent_loop step. The engine has no wake for it, so the
+// step would sit until its claim lapsed and then be refused as already
+// committed.
+var ErrWaitRequiresAgentLoop = errors.New(
+	"a continue with a wait needs an agent_loop step")
+
+// CheckWait refuses a wait on a dispatch that is not an agent loop. A
+// payload with no state cap predates the AgentLoop mark and is not
+// refused: its engine cannot honor a wait anyway. Shared by the Go
+// worker SDK and the HTTP bridge.
+func (p TaskPayload) CheckWait(wait *ContinueWait) error {
+	if wait.IsZero() || p.AgentLoop || p.StateMaxBytes <= 0 {
+		return nil
+	}
+	return ErrWaitRequiresAgentLoop
 }
 
 // LoopStateMaxBytesDefault is the default cap on the state a

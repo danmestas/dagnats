@@ -84,6 +84,9 @@ func (c *taskContext) continueWait(opts []ContinueOption) (*protocol.ContinueWai
 	if wait.IsZero() {
 		return nil, nil
 	}
+	if err := c.dispatch.CheckWait(wait); err != nil {
+		return nil, err
+	}
 	if !wait.Input {
 		return wait, nil
 	}

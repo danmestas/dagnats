@@ -467,6 +467,7 @@ func (tp *TaskPublisher) doPublish(
 		Metadata:      step.Metadata,
 		State:         run.Steps[step.ID].LoopState,
 		StateMaxBytes: tp.loopStateMaxBytes,
+		AgentLoop:     step.Type == dag.StepTypeAgentLoop,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -545,6 +546,7 @@ func (tp *TaskPublisher) PublishIteration(
 		Metadata:      step.Metadata,
 		State:         loopState,
 		StateMaxBytes: tp.loopStateMaxBytes,
+		AgentLoop:     step.Type == dag.StepTypeAgentLoop,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {

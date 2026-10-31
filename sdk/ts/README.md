@@ -83,12 +83,13 @@ Told apart by status and body, so a fence and a cancelled run are not confused (
 | `StateTooLarge`, `BodyTooLarge`, `RecordTooLarge` | `413` with that `code`; `StateTooLarge` carries `maxBytes` and `bytes`, the others `maxBytes`. A journal record must fit the server's `max_payload` |
 | `InputsQueued` | `409 {"code":"inputs_queued"}`: a `continue` with `wait.input` while inputs are queued; not terminal, the task stays claimed |
 | `InvalidWait` | `400 {"code":"invalid_wait"}`: a malformed `wait`; not terminal |
+| `WaitRequiresAgentLoop` | `400 {"code":"wait_requires_agent_loop"}`: a `continue` with a `wait` on a step that is not an `agent_loop` step; not terminal, continue without the wait |
 | `NotProvisioned` | `503 {"code":"not_provisioned"}` |
 | `BridgeError` | anything else; carries `status`, `body` and the JSON `code` if any |
 
 All extend `BridgeError`. They surface from `journal.append` and `journal.view` as well as from
 `complete`. `isTerminal(err)` is true for `Fenced`, `Stale`, `Committed`, `RestartLimit` and
-`RunCancelled`, and false for network errors, 5xx, the 413s, `InputsQueued` and `InvalidWait`.
+`RunCancelled`, and false for network errors, 5xx, the 413s, `InputsQueued`, `InvalidWait` and `WaitRequiresAgentLoop`.
 
 ### Journal
 

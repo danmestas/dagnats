@@ -132,6 +132,7 @@ func (sr *StickyRouter) PublishTask(
 		Metadata:      step.Metadata,
 		State:         run.Steps[step.ID].LoopState,
 		StateMaxBytes: sr.loopStateMaxBytes,
+		AgentLoop:     step.Type == dag.StepTypeAgentLoop,
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {

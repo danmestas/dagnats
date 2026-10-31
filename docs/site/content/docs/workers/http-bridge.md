@@ -130,7 +130,7 @@ Resolves a polled task. The `action` field determines behavior:
 | `wait_signal` | Blocks until signal `name` arrives, or answers `408` after `timeout_ms` (1 to 3,600,000) |
 | `journal.append` | Claims the task's agent journal on first use and appends a record (`type`, default `entry`; `data`); answers `{"seq": N}` |
 | `journal.read` | Claims the journal on first use and answers every record of the step |
-| `load_checkpoint` | Answers the task's state and where it came from (`journal`, `checkpoint` or `payload`) |
+| `load_checkpoint` | Answers the task's state and where it came from (`journal`, `checkpoint` or `payload`). When the step already has journal records (an earlier iteration committed through the journal) the call opens the claim's journal itself, so the answer is the journal's whichever action came first; a step with no journal records is not claimed |
 
 A journal step can be fenced: when the task is redelivered to another poller, the first worker's next action answers `409` with `"code":"fenced"` and it must stop. `410` (`stale`, `committed` or `restart_limit`) means the task is finished. See the [wire protocol](/docs/reference/wire-protocol).
 
@@ -146,7 +146,7 @@ A `continue` may carry `wait` (ADR-027), a durable wait the engine schedules wit
 {"action": "continue", "output": {"turn": 3}, "wait": {"delay_ms": 30000, "until": "2026-10-31T12:00:00Z", "input": true}}
 ```
 
-All three fields are optional. `until` is an RFC 3339 time and wins over `delay_ms`; `input: true` wakes the step as soon as an input is submitted to it, and with a time too, on whichever comes first. A negative `delay_ms` or a zero `until` answers `400 {"error":"...","code":"invalid_wait"}`. With `input: true` while a submission is already queued for the step, nothing is parked: the answer is `409 {"error":"...","code":"inputs_queued"}`, the task stays claimed, and the worker places the inputs and sends `continue` without the input wait (the Go SDK's `ErrInputsQueued`).
+All three fields are optional. `until` is an RFC 3339 time and wins over `delay_ms`; `input: true` wakes the step as soon as an input is submitted to it, and with a time too, on whichever comes first. A negative `delay_ms` or a zero `until` answers `400 {"error":"...","code":"invalid_wait"}`. A `wait` is only for an `agent_loop` step, because the engine has no wake for any other kind: on a step of another type, `continue` with a `wait` answers `400 {"error":"...","code":"wait_requires_agent_loop"}`, the task stays claimed, and `continue` without a `wait` is unaffected. (The Go SDK's `Continue` returns `protocol.ErrWaitRequiresAgentLoop` for the same case.) With `input: true` while a submission is already queued for the step, nothing is parked: the answer is `409 {"error":"...","code":"inputs_queued"}`, the task stays claimed, and the worker places the inputs and sends `continue` without the input wait (the Go SDK's `ErrInputsQueued`).
 
 `complete`, `fail`, `continue` and `pause` end the claim. The other actions leave the task in flight and restart its claim window.
 

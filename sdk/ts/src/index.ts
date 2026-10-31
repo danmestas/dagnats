@@ -20,6 +20,7 @@ export {
   RunCancelled,
   Stale,
   StateTooLarge,
+  WaitRequiresAgentLoop,
   isTerminal,
 } from "./errors.ts";
 export { BridgeLog, INTERRUPTED, Journal, MemoryLog, ReplayMismatch, canonical } from "../journal/index.ts";
