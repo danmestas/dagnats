@@ -30,6 +30,15 @@ type Manifest struct {
 	Workflows []string
 	Streams   []StreamSpec
 	Buckets   []BucketSpec
+	// Reads are other programs' KV buckets this program may read (get
+	// and watch, never write), each a full bucket name such as
+	// "tools_registry" under ANOTHER program's prefix. Not the
+	// program's own buckets (those already get full access) and not an
+	// engine bucket. Whether the owner program exists is not checkable
+	// by Validate: an entry for a bucket nobody owns grants nothing
+	// usable. A reader's watcher.Stop returns a timeout error after ~5s
+	// (consumer delete is denied); the server reaps the consumer itself.
+	Reads []string
 	// Protocols are shared subject roots the program speaks, e.g.
 	// "tool.exec": publish and subscribe on the root and below it.
 	Protocols []string

@@ -85,6 +85,30 @@ func TestValidate_RejectsUnprefixedAndProtocolUnderPrefix(t *testing.T) {
 		}, "fraction"},
 		{"bucket unprefixed", func(m *program.Manifest) { m.Buckets[0].Name = "state" }, "toy_"},
 		{"bucket no size", func(m *program.Manifest) { m.Buckets[0].MaxBytes = 0 }, "max_bytes"},
+		{"read own prefix", func(m *program.Manifest) {
+			m.Reads = []string{"toy_state"}
+		}, "own prefix"},
+		{"read engine bucket", func(m *program.Manifest) {
+			m.Reads = []string{"workflow_runs"}
+		}, "engine bucket"},
+		{"read engine bucket no underscore", func(m *program.Manifest) {
+			m.Reads = []string{"workers"}
+		}, "engine bucket"},
+		{"read no owner prefix", func(m *program.Manifest) { m.Reads = []string{"registry"} }, "read"},
+		{"read empty rest", func(m *program.Manifest) { m.Reads = []string{"tools_"} }, "read"},
+		{"read wildcard", func(m *program.Manifest) { m.Reads = []string{"tools_>"} }, "read"},
+		{"read uppercase", func(m *program.Manifest) { m.Reads = []string{"tools_Reg"} }, "read"},
+		{"read reserved owner", func(m *program.Manifest) {
+			m.Reads = []string{"history_x"}
+		}, "read"},
+		{"read duplicate", func(m *program.Manifest) {
+			m.Reads = []string{"tools_registry", "tools_registry"}
+		}, "twice"},
+		{"read too many", func(m *program.Manifest) {
+			for i := 0; i < 33; i++ {
+				m.Reads = append(m.Reads, "tools_b"+strings.Repeat("x", i))
+			}
+		}, "reads"},
 		{"protocol under own prefix", func(m *program.Manifest) {
 			m.Protocols = []string{"toy.tool"}
 		}, "prefix"},
@@ -113,5 +137,19 @@ func TestValidate_RejectsUnprefixedAndProtocolUnderPrefix(t *testing.T) {
 				t.Fatalf("Validate = %q, want it to mention %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestValidate_AcceptsReadsOfOtherProgramsBuckets(t *testing.T) {
+	m := validManifest()
+	m.Reads = []string{"tools_registry", "tools_roles", "other2_a_b"}
+	// Positive: well-formed foreign bucket names pass.
+	if err := program.Validate(m); err != nil {
+		t.Fatalf("Validate(reads) = %v, want nil", err)
+	}
+	// Negative: one bad entry among good ones still fails.
+	m.Reads = append(m.Reads, "toy_state")
+	if err := program.Validate(m); err == nil {
+		t.Fatal("Validate(reads with own bucket) = nil, want error")
 	}
 }

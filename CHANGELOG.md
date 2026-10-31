@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`program.Manifest.Reads` grants read-only access to other programs' KV buckets (#885).** Each entry is a full bucket name under another program's prefix (for example `tools_registry`); the program can open, get and watch it but not put, delete or purge. Own-prefix entries and engine buckets are rejected by `Validate`. An entry for a bucket nobody owns grants nothing usable.
+
 ### Fixed
 
 - **Journal replay tests no longer fail with "fenced by another claim".** `startBlockedTool` waited for an absolute record count, which the claim and calls before the stalled tool (or an earlier iteration's records) already met, so it could return before the stalled tool's intent and entry landed. The takeover's claim then raced those appends and was fenced. It now waits for the tool function to signal that it is parked. This hit `TestReplay_NewAttemptRerunsSafeCallsAndModelButKeepsUnsafeOutcomes` and the iteration-1 cases of `TestReplay_Matrix` and `TestReplay_UnsafeSideEffectAtMostOnceAcrossCrashPoints`.

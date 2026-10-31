@@ -473,3 +473,189 @@ func waitFor(cond func() bool) bool {
 	}
 	return cond()
 }
+
+func TestPermissions_ReadsGrantReadSubjectsOnly(t *testing.T) {
+	m := validManifest()
+	m.Reads = []string{"tools_registry"}
+	perms := program.PermissionsFor(m)
+	for _, subject := range []string{
+		"$JS.API.STREAM.INFO.KV_tools_registry",
+		"$JS.API.DIRECT.GET.KV_tools_registry.$KV.tools_registry.k",
+		"$JS.API.CONSUMER.CREATE.KV_tools_registry.c.$KV.tools_registry.>",
+		"$JS.API.CONSUMER.INFO.KV_tools_registry.c",
+		"$JS.API.CONSUMER.DELETE.KV_tools_registry.c",
+		"$JS.FC.KV_tools_registry.c.x",
+	} {
+		// Positive: each read crossing is granted.
+		if !allowedBy(perms.Publish, subject) {
+			t.Errorf("publish %q not granted", subject)
+		}
+	}
+	for _, subject := range []string{
+		"$KV.tools_registry.k",
+		"$JS.API.STREAM.PURGE.KV_tools_registry",
+		"$JS.API.STREAM.DELETE.KV_tools_registry",
+		"$JS.API.STREAM.UPDATE.KV_tools_registry",
+		"$JS.API.STREAM.MSG.DELETE.KV_tools_registry",
+		"$JS.API.STREAM.INFO.KV_tools_roles",
+	} {
+		// Negative: no write, purge or ungranted bucket.
+		if allowedBy(perms.Publish, subject) {
+			t.Errorf("publish %q granted, want denied", subject)
+		}
+	}
+}
+
+func consumerCount(ctx context.Context, t *testing.T, js jetstream.JetStream, stream string) int {
+	t.Helper()
+	s, err := js.Stream(ctx, stream)
+	if err != nil {
+		t.Fatalf("stream %s: %v", stream, err)
+	}
+	n := 0
+	names := s.ListConsumers(ctx)
+	for range names.Info() {
+		n++
+	}
+	if err := names.Err(); err != nil {
+		t.Fatalf("list consumers: %v", err)
+	}
+	return n
+}
+
+// TestPermissions_OwnerWatchSurvivesReaderDelete: a reader can delete the
+// owner's watch consumer (names are random, so the grant cannot be
+// scoped), and the owner's ordered watcher recreates it and keeps
+// delivering.
+func TestPermissions_OwnerWatchSurvivesReaderDelete(t *testing.T) {
+	owner := program.Manifest{
+		Name: "tools", Dagnats: ">=0.0.35 <0.1.0",
+		Buckets: []program.BucketSpec{{Name: "tools_registry", History: 1, MaxBytes: 1 << 20}},
+	}
+	reader := validManifest()
+	reader.Reads = []string{"tools_registry"}
+	f := startFixture(t, owner, reader)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	adminJS, err := jetstream.New(f.admin)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	kv, err := adminJS.CreateKeyValue(ctx, jetstream.KeyValueConfig{
+		Bucket: "tools_registry", History: 1, MaxBytes: 1 << 20,
+	})
+	if err != nil {
+		t.Fatalf("create bucket: %v", err)
+	}
+	w, err := kv.WatchAll(ctx)
+	if err != nil {
+		t.Fatalf("owner watch: %v", err)
+	}
+	defer w.Stop()
+	stream, err := adminJS.Stream(ctx, "KV_tools_registry")
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	var name string
+	for ci := range stream.ListConsumers(ctx).Info() {
+		name = ci.Name
+	}
+	if name == "" {
+		t.Fatal("owner watcher consumer not found")
+	}
+	js, err := jetstream.New(f.dialProgram(t, reader.Name))
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	// Drain the initial nil marker, then delete the consumer.
+	if err := js.DeleteConsumer(ctx, "KV_tools_registry", name); err != nil {
+		t.Fatalf("reader delete: %v", err)
+	}
+	// Positive: puts after the delete still reach the owner's watcher.
+	deadline := time.After(20 * time.Second)
+	for i := 0; ; i++ {
+		if _, err := kv.Put(ctx, "k", []byte{byte(i)}); err != nil {
+			t.Fatalf("put: %v", err)
+		}
+		select {
+		case e := <-w.Updates():
+			if e != nil && e.Key() == "k" {
+				return
+			}
+		case <-time.After(500 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("owner watcher delivered nothing within 20s of the consumer delete")
+		}
+	}
+}
+
+func TestPermissions_ReaderGetsWatchesButCannotWrite(t *testing.T) {
+	owner := program.Manifest{
+		Name: "tools", Dagnats: ">=0.0.35 <0.1.0",
+		Buckets: []program.BucketSpec{{Name: "tools_registry", History: 1, MaxBytes: 1 << 20}},
+	}
+	reader := validManifest()
+	reader.Reads = []string{"tools_registry"}
+	f := startFixture(t, owner, reader)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	adminJS, err := jetstream.New(f.admin)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	seed, err := adminJS.CreateKeyValue(ctx, jetstream.KeyValueConfig{
+		Bucket: "tools_registry", History: 1, MaxBytes: 1 << 20,
+	})
+	if err != nil {
+		t.Fatalf("create owner bucket: %v", err)
+	}
+	if _, err := seed.Put(ctx, "k", []byte("v1")); err != nil {
+		t.Fatalf("seed put: %v", err)
+	}
+	js, err := jetstream.New(f.dialProgram(t, reader.Name))
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	kv, err := js.KeyValue(ctx, "tools_registry")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	// Positive: Get and Watch work.
+	if e, err := kv.Get(ctx, "k"); err != nil || string(e.Value()) != "v1" {
+		t.Fatalf("Get = %v, %v, want v1", e, err)
+	}
+	w, err := kv.Watch(ctx, "k")
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	select {
+	case e := <-w.Updates():
+		if e == nil || string(e.Value()) != "v1" {
+			t.Fatalf("watch first = %v, want v1", e)
+		}
+	case <-ctx.Done():
+		t.Fatal("watch: no initial value")
+	}
+	// Positive: Stop deletes its consumer promptly and cleanly.
+	if err := w.Stop(); err != nil {
+		t.Fatalf("watch stop: %v", err)
+	}
+	if !waitFor(func() bool { return consumerCount(ctx, t, adminJS, "KV_tools_registry") == 0 }) {
+		t.Error("stopped watcher's consumer was not reaped")
+	}
+	// Negative: Put and Delete are refused and the key is untouched.
+	short, cancelShort := context.WithTimeout(ctx, time.Second)
+	defer cancelShort()
+	if _, err := kv.Put(short, "k", []byte("v2")); err == nil {
+		t.Error("Put on read-only bucket succeeded, want denial")
+	}
+	if err := kv.Delete(short, "k"); err == nil {
+		t.Error("Delete on read-only bucket succeeded, want denial")
+	}
+	if e, err := seed.Get(ctx, "k"); err != nil || string(e.Value()) != "v1" {
+		t.Fatalf("owner key after denied writes = %v, %v, want v1", e, err)
+	}
+	if !f.violations.contains("$KV.tools_registry.k") {
+		t.Error("no violation logged for the denied write")
+	}
+}
