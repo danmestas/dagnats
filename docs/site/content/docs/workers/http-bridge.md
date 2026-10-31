@@ -127,7 +127,9 @@ Resolves a polled task. The `action` field determines behavior:
 | `journal.read` | Claims the journal on first use and answers every record of the step |
 | `load_checkpoint` | Answers the task's state and where it came from (`journal`, `checkpoint` or `payload`) |
 
-A journal step can be fenced: when the task is redelivered to another poller, the first worker's next action answers `409` with `"code":"fenced"` and it must stop. `410` (`stale` or `committed`) means the task is finished. See the [wire protocol](/docs/reference/wire-protocol).
+A journal step can be fenced: when the task is redelivered to another poller, the first worker's next action answers `409` with `"code":"fenced"` and it must stop. `410` (`stale`, `committed` or `restart_limit`) means the task is finished. See the [wire protocol](/docs/reference/wire-protocol).
+
+The bridge also guards a journal step against a crash loop, as the Go SDK does ([ADR-028](/docs/architecture)). When a worker claims an iteration and dies without writing anything, the next delivery claims it again, and so on. A claim that finds 5 earlier claims on the iteration with no journal record between them fails the step with `restart_limit` and answers `410 {"code":"restart_limit"}`; the task is acknowledged and the step's retry policy takes over. Any journal record (`journal.append`, a pause, a commit) resets the count. The limit belongs to the bridge, not to a worker: set it with `Bridge.SetRestartLimit(n)` or the `DAGNATS_BRIDGE_RESTART_LIMIT` environment variable (1 to 1000, default 5, the same as `worker.WithRestartLimit`). An invalid environment value logs a warning and falls back to 5; `SetRestartLimit` panics on an invalid argument.
 
 `complete`, `fail`, `continue` and `pause` end the claim. The other actions leave the task in flight and restart its claim window.
 
