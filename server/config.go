@@ -236,7 +236,7 @@ type Config struct {
 	FailOnPortConflict bool `json:"fail_on_port_conflict"`
 
 	// Build is the binary's version/revision string, threaded from
-	// cli.Version by the serve command (ldflags-stamped). Empty for
+	// buildinfo.Version by the serve command (ldflags-stamped). Empty for
 	// un-stamped local builds — the console footer degrades empty to
 	// the honest "dev" marker (consoleBuildLabel). Not persisted to
 	// dagnats.yaml; it is link-time identity, not user config.

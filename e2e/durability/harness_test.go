@@ -37,6 +37,7 @@ import (
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/chaos"
 	enginepkg "github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/journal"
@@ -146,7 +147,7 @@ func newFixture(t *testing.T, opts fixtureOptions) *fixture {
 	if cluster {
 		nc = dagnatstest.StartTestCluster(t, 3)
 	} else {
-		_, nc = natsutil.StartTestServer(t)
+		_, nc = natstest.StartServer(t)
 	}
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)

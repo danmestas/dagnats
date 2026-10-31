@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -24,7 +25,7 @@ import (
 )
 
 func TestSubscribePullConsumer_AppliesExpectedConfig(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -79,7 +80,7 @@ func TestSubscribePullConsumer_AppliesExpectedConfig(t *testing.T) {
 }
 
 func TestSubscribePullConsumer_RejectsEmptyTaskType(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -135,7 +136,7 @@ func TestMigration_OrphanEphemeralRemoved(t *testing.T) {
 	// Start() wiring, assert the orphan is deleted, the migration INFO log
 	// fires with all five expected fields, the durable is created, and a
 	// published message round-trips.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -252,7 +253,7 @@ func TestMigration_PreservesManagedConsumer(t *testing.T) {
 	// filter we'd claim. subscribePullConsumer must not delete it; the durable
 	// count on the stream stays 1 (CreateOrUpdate is idempotent) and no
 	// migration log fires.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -306,7 +307,7 @@ func TestMigration_PreservesUnrelatedConsumer(t *testing.T) {
 	// Methodology: pre-seed an unrelated durable (audit-tap on task.audit.>)
 	// on the same stream, drive subscribePullConsumer for render, assert the
 	// unrelated consumer is untouched and no migration log fires.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -368,7 +369,7 @@ func TestMigration_ConcurrentStartup_OneOrphan(t *testing.T) {
 	// false on resource-constrained CI runners. The relaxed assertion
 	// matches the real invariant: cleanup happened, audit trail
 	// recorded it.
-	_, nc1 := natsutil.StartTestServer(t)
+	_, nc1 := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc1); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -455,7 +456,7 @@ func TestMigration_PaginationManyConsumers(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping 300-consumer pagination test in -short mode")
 	}
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -529,7 +530,7 @@ func TestMigration_NoOrphan(t *testing.T) {
 	// Methodology: fresh stream, no pre-seeded orphan. subscribePullConsumer
 	// creates the durable cleanly and emits no migration log. Round-trips
 	// a message through the durable to confirm end-to-end happy path.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -588,7 +589,7 @@ func TestTwoWorkers_SameTaskType_NoPanic(t *testing.T) {
 	// same stream. Original repro from #136: WorkQueuePolicy refuses two
 	// consumers with the same FilterSubject; pre-fix this panics with NATS
 	// error 10100. Post-fix both share the durable workers-render.
-	_, nc1 := natsutil.StartTestServer(t)
+	_, nc1 := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc1); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -636,7 +637,7 @@ func TestTwoWorkers_LoadBalance(t *testing.T) {
 	// the shared durable. Each worker tracks how many messages it processed;
 	// the sum must be 10 and each must process at least one (otherwise
 	// "load-balance" is a misnomer).
-	_, nc1 := natsutil.StartTestServer(t)
+	_, nc1 := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc1); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -713,7 +714,7 @@ func TestTwoWorkers_KillOne_OtherDrains(t *testing.T) {
 	// 5-minute production default is just the worst-possible window
 	// for tests to wait through.
 	const ackWait = 2 * time.Second
-	_, nc1 := natsutil.StartTestServer(t)
+	_, nc1 := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc1); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -776,7 +777,7 @@ func TestWorkerStart_DurableIdempotent(t *testing.T) {
 	// Methodology: Start, Stop, Start again on the same Worker. Both Start
 	// calls succeed; the durable persists across Stop/Start; a message
 	// published between phases delivers after the second Start.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -846,7 +847,7 @@ func TestWorkerStart_NewProcessReclaimsDurable(t *testing.T) {
 	// but #141 made generic errors publish step.failed + Ack rather
 	// than NAK — so a blocking handler + tight AckWait is the right
 	// way to keep the message redeliverable across worker restarts.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -930,7 +931,7 @@ func TestRealisticTaskNames_AllSanitizationPaths(t *testing.T) {
 	// exercised end-to-end: any character that triggers safe-escape also
 	// makes the resulting filter subject invalid in NATS. That branch is
 	// covered by the unit test in TestSanitizeConsumerName.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -1029,7 +1030,7 @@ func TestMigration_ListFailure_ReturnsError(t *testing.T) {
 	// waits the default 5s JS context-timeout — totalling ~20s per
 	// run with no observability gain. The cleanup error fires
 	// identically either way; this just makes it fire fast.
-	ns, nc := natsutil.StartTestServer(t)
+	ns, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -1055,7 +1056,7 @@ func TestMigration_DeleteFailure_ReturnsError(t *testing.T) {
 	// an orphan, force a delete error, expect an error from Start. Without an SDK seam
 	// for "make DeleteConsumer fail with non-NotFound," shutting the
 	// server mid-cleanup is the cheapest reproduction.
-	ns, nc := natsutil.StartTestServer(t)
+	ns, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

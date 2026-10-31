@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
@@ -44,7 +45,7 @@ func putRunStatus(t *testing.T, js jetstream.JetStream, runID string,
 }
 
 func TestWorker_SkipsTasksForCancelledRuns(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -93,7 +94,7 @@ func TestWorker_SkipsTasksForCancelledRuns(t *testing.T) {
 // drain progress (#182). The bucket is opt-in via SetupAll options
 // so older deployments don't see surprise NATS writes.
 func TestWorker_WritesCancelledStatusSnapshot(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{
 			Bucket: "worker_status",
@@ -156,7 +157,7 @@ func TestWorker_WritesCancelledStatusSnapshot(t *testing.T) {
 }
 
 func TestWorker_RunningRunNotSkipped(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -200,7 +201,7 @@ func TestWorker_RunningRunNotSkipped(t *testing.T) {
 }
 
 func TestWorker_MissingRunSnapshotProceeds(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

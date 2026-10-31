@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/danmestas/dagnats/protocol"
@@ -43,7 +44,7 @@ func newJSForTest(nc *nats.Conn) (jetstream.JetStream, error) {
 // Returns the connection. The test t.Cleanup chain handles shutdown.
 func startTestEngine(t *testing.T) *nats.Conn {
 	t.Helper()
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},

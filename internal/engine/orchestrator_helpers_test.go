@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -183,7 +184,7 @@ func TestCheckLoopBoundsNoLoopConfig(t *testing.T) {
 func TestLoadRunAndDefMissingRun(t *testing.T) {
 	// Methodology: verify loadRunAndDef returns error for
 	// a run that doesn't exist in the snapshot store.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -205,7 +206,7 @@ func TestLoadRunAndDefMissingRun(t *testing.T) {
 func TestLoadRunAndDefMissingWorkflowDef(t *testing.T) {
 	// Methodology: snapshot exists but the workflow definition
 	// is not registered. loadRunAndDef should return error.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -261,7 +262,7 @@ func TestBuildTaskMsg(t *testing.T) {
 
 func TestStepSubjectRouting(t *testing.T) {
 	// Methodology: unit test for subject resolution.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -320,7 +321,7 @@ func TestFindStepDef(t *testing.T) {
 }
 
 func TestPublishReadyTasksParallel(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll: %v", err)

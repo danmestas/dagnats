@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
 )
@@ -24,7 +25,7 @@ func TestReconciler_CompletesRunWhenStepsAllDone(t *testing.T) {
 	// RunStatusRunning even though every step is Completed.
 	// IsComplete returns true; the janitor must promote the
 	// run to RunStatusCompleted on its next sweep.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -77,7 +78,7 @@ func TestReconciler_FailsRunWhenWedgedNoWork(t *testing.T) {
 	// path forward; the janitor must mark it Failed so
 	// operators see the wedge instead of letting the entry
 	// linger in workflow_runs forever.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -146,7 +147,7 @@ func TestReconciler_SkipsRecentlyCreatedRun(t *testing.T) {
 	// mid-dispatch with no Steps yet populated. The janitor
 	// must not race with dispatch; runs younger than the
 	// minimum age are left alone.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -196,7 +197,7 @@ func TestReconciler_SkipsRunWithInFlightStep(t *testing.T) {
 	// A run with any step in Pending/Queued/Running is
 	// genuinely active: a worker may complete the step at
 	// any moment. The janitor must not touch it.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -248,7 +249,7 @@ func TestReconciler_LeavesTerminalRunsAlone(t *testing.T) {
 	// touched by the janitor — re-completing or re-failing
 	// would double-decrement runsActive metrics and re-emit
 	// terminal events.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -320,7 +321,7 @@ func TestReconcilerCapWarnSuppressedAcrossCycles(t *testing.T) {
 	reconcileActiveFetchMax = 3
 	t.Cleanup(func() { reconcileActiveFetchMax = prevCap })
 
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -390,7 +391,7 @@ func TestReconcilerCapClearedEmitsInfo(t *testing.T) {
 	reconcileActiveFetchMax = 3
 	t.Cleanup(func() { reconcileActiveFetchMax = prevCap })
 
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -458,7 +459,7 @@ func TestReconcilerCapClearedEmitsInfo(t *testing.T) {
 // reconciled — the exact failure mode ListAll's lexicographic-order
 // cap could miss on a store this size.
 func TestReconcileRunningRuns_VisitsAllRunningBeyondOldListAllCap(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

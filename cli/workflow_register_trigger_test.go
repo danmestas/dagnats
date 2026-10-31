@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/api"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
@@ -56,7 +57,7 @@ const workflowWithBadEmbeddedCron = `{
 }`
 
 func TestWorkflowRegister_HonorsEmbeddedTrigger(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "triggers"}),
 	); err != nil {
@@ -111,7 +112,7 @@ func TestWorkflowRegister_HonorsEmbeddedTrigger(t *testing.T) {
 }
 
 func TestWorkflowRegister_EmbeddedTriggerIdempotent(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "triggers"}),
 	); err != nil {
@@ -170,7 +171,7 @@ const workflowWithMismatchedTriggerWorkflowID = `{
 }`
 
 func TestRegisterWorkflowWithTriggers_RejectsMismatchedWorkflowID(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "triggers"}),
 	); err != nil {
@@ -210,7 +211,7 @@ func TestRegisterWorkflowWithTriggers_RejectsMismatchedWorkflowID(t *testing.T) 
 // Verifies that an invalid trigger leaves NO state behind: workflow is not
 // registered, triggers KV is empty.
 func TestRegisterWorkflowWithTriggers_AtomicOnInvalidTrigger(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "triggers"}),
 	); err != nil {

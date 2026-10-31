@@ -40,6 +40,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -125,7 +126,7 @@ func seedTerminalNoiseForReleasePending(
 }
 
 func TestReconciler_RecoversReleasePending_SingletonLock(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -213,7 +214,7 @@ func TestReconciler_RecoversReleasePending_SingletonLock(t *testing.T) {
 }
 
 func TestReconciler_NormalTerminalRun_NeverTouchedByReleasePendingSweep(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -268,7 +269,7 @@ func TestReconciler_NormalTerminalRun_NeverTouchedByReleasePendingSweep(t *testi
 // every later run for that workflow forever, with no recovery path
 // other than this sweep.
 func TestReconciler_RecoversReleasePending_ConcurrencySlot(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "concurrency_runs"},
@@ -351,7 +352,7 @@ func TestReconciler_RecoversReleasePending_ConcurrencySlot(t *testing.T) {
 func TestReleaseAdmission_ReplayedConcurrencyReleaseDoesNotStealNewHolder(
 	t *testing.T,
 ) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "concurrency_runs"},
@@ -438,7 +439,7 @@ func TestReleaseAdmission_ReplayedConcurrencyReleaseDoesNotStealNewHolder(
 func TestReleaseAdmission_ReplayedSingletonReleaseDoesNotStealNewHolder(
 	t *testing.T,
 ) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -530,7 +531,7 @@ func TestReleaseAdmission_ReplayedSingletonReleaseDoesNotStealNewHolder(
 // call for this run's key returns the injected non-revision-mismatch
 // error every single pass -- never succeeding.
 func TestReconciler_ReleasePendingAbandonedAfterMaxAttempts(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -629,7 +630,7 @@ func TestReconciler_ReleasePendingAbandonedAfterMaxAttempts(t *testing.T) {
 // sweep must validate BEFORE calling releaseAdmission: skip, log at
 // ERROR, and count, never panic.
 func TestReconciler_ReleasePendingMalformedRunSkipped(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -679,7 +680,7 @@ func TestReconciler_ReleasePendingMalformedRunSkipped(t *testing.T) {
 // the terminal noise is owned), never by the 1,500 terminal runs
 // surrounding it.
 func TestReconciler_RecoversReleasePending_BeyondOldScanWindow(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -767,7 +768,7 @@ func TestReconciler_RecoversReleasePending_BeyondOldScanWindow(t *testing.T) {
 // would be permanently invisible to ListActive and its leaked
 // singleton lock would never be recovered.
 func TestBuildActiveIndexOnce_MigratesReleasePendingRunsOnUpgrade(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

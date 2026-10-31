@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -131,7 +132,7 @@ func publishFailureAfter(
 }
 
 func TestHTTPHandlerWorkflowFailedReturns500(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -176,7 +177,7 @@ func TestHTTPHandlerWorkflowFailedReturns500(t *testing.T) {
 }
 
 func TestHTTPHandlerWorkflowCancelledByEngineReturns503(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -222,7 +223,7 @@ func TestHTTPHandlerWorkflowCancelledByEngineReturns503(t *testing.T) {
 }
 
 func TestHTTPHandlerClientClosedReturns499(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -273,7 +274,7 @@ func TestHTTPHandlerTimeoutReturns504(t *testing.T) {
 	// already 504 on timeout (PR 2 covered this); PR 3 adds the
 	// failure-observer subscription which must NOT break the timeout
 	// path when no failure signal arrives.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -315,7 +316,7 @@ func TestHTTPHandlerTimeoutReturns504(t *testing.T) {
 // stream is replaced by a silent responder, so the publish deterministically
 // waits out the request's budget (the 500 seen on loaded CI hosts).
 func TestHTTPHandlerSlowPublishReturns504(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

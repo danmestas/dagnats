@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -28,7 +29,7 @@ func TestHandleWorkflowStarted_IdempotentForCompletedRun(t *testing.T) {
 	// After fix: a redelivered workflow.started for a run
 	// that already exists in non-Pending state is a no-op;
 	// the existing terminal state is preserved.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -123,7 +124,7 @@ func TestHandleWorkflowStarted_IdempotentForRunningRun(t *testing.T) {
 	// run — this guards against a redelivered workflow.started
 	// also overwriting state for a run that's currently
 	// in flight.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -217,7 +218,7 @@ func TestHandleStepCompleted_SkipsTerminalRun(t *testing.T) {
 	// decrementing runsActive and republishing
 	// workflow.completed. The terminal-run guard in
 	// handleStepCompleted prevents this.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -301,7 +302,7 @@ func TestRestartedOrchestratorDoesNotReplayHistory(t *testing.T) {
 	// acked by the prior instance. Pre-fix (ephemeral
 	// consumer + DeliverAllPolicy) would replay every
 	// historical event on each restart.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

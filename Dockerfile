@@ -21,15 +21,15 @@ COPY . .
 # so `dagnats --version` reports the build's git describe output.
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -trimpath \
-    -ldflags="-s -w -X github.com/danmestas/dagnats/cli.Version=${VERSION}" \
+    -ldflags="-s -w -X github.com/danmestas/dagnats/internal/buildinfo.Version=${VERSION}" \
     -o /out/dagnats ./cmd/dagnats && \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -trimpath \
-    -ldflags="-s -w -X github.com/danmestas/dagnats/cli.Version=${VERSION}" \
+    -ldflags="-s -w -X github.com/danmestas/dagnats/internal/buildinfo.Version=${VERSION}" \
     -o /out/dagnats-api ./cmd/dagnats-api && \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -trimpath \
-    -ldflags="-s -w -X github.com/danmestas/dagnats/cli.Version=${VERSION}" \
+    -ldflags="-s -w -X github.com/danmestas/dagnats/internal/buildinfo.Version=${VERSION}" \
     -o /out/dagnats-engine ./cmd/dagnats-engine
 
 # ---- runtime stage ----

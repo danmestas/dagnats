@@ -10,11 +10,12 @@ import (
 	"testing"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
 func TestBulkRunStartsMultiple(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -54,7 +55,7 @@ func TestBulkRunStartsMultiple(t *testing.T) {
 }
 
 func TestBulkRunRequiresWorkflowID(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -71,7 +72,7 @@ func TestBulkRunRequiresWorkflowID(t *testing.T) {
 }
 
 func TestBulkRunEmptyInputsError(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -88,7 +89,7 @@ func TestBulkRunEmptyInputsError(t *testing.T) {
 }
 
 func TestBulkRunValidationFailsAtomically(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -123,7 +124,7 @@ func TestBulkRunValidationFailsAtomically(t *testing.T) {
 }
 
 func TestBulkRunWorkflowNotFound(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

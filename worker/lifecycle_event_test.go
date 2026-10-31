@@ -17,6 +17,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	enginepkg "github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -76,7 +77,7 @@ func TestWorker_PublishesStepStartedBeforeHandler(t *testing.T) {
 	// on first invocation. Drain the history stream. Assert the
 	// step.started event arrives at all and carries AttemptNumber=1
 	// plus the WorkerID.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -167,7 +168,7 @@ func TestWorker_PublishStartedFailure_NaksAndRetries(t *testing.T) {
 	// connection-close trickery — the seam is a function pointer,
 	// chosen over an interface because publishStarted needs exactly
 	// one method (Ousterhout: minimum interface, deepest module).
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -269,7 +270,7 @@ func TestWorker_AttemptNumberFromEngineRetry(t *testing.T) {
 	// fires with the correct AttemptNumber. Both step.started events
 	// must appear in the history stream with distinct AttemptNumber
 	// values, proving payload.Attempt → c.attempt → AttemptNumber.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}

@@ -19,6 +19,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/nats-io/nats.go/jetstream"
@@ -26,7 +27,7 @@ import (
 
 func newDeleteRESTTestServer(t *testing.T) (*httptest.Server, *engine.SnapshotStore) {
 	t.Helper()
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -181,7 +182,7 @@ func TestRESTDeleteWorkflow_ConflictOnNonTerminalRun(t *testing.T) {
 // guard (#607) over HTTP.
 func newDeleteRESTTestServerWithTriggers(t *testing.T) (*Service, *httptest.Server) {
 	t.Helper()
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "triggers"}),
 	); err != nil {

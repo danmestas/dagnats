@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -23,7 +24,7 @@ import (
 // run already persisted through the creation path.
 func casStores(t *testing.T) (*SnapshotStore, *SnapshotStore, dag.WorkflowRun) {
 	t.Helper()
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	js, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)

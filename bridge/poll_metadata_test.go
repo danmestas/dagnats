@@ -26,6 +26,7 @@ import (
 	"github.com/danmestas/dagnats/ci"
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/danmestas/dagnats/sdk/httpclient"
@@ -94,7 +95,7 @@ func pollRawTask(t *testing.T, baseURL string) map[string]any {
 
 func newMetadataTestServer(t *testing.T) (*nats.Conn, *httptest.Server) {
 	t.Helper()
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc, natsutil.WithStoreBudget(storeBudgetBytes)); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

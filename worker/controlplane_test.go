@@ -15,7 +15,7 @@ import (
 	"testing"
 
 	"github.com/danmestas/dagnats/dag"
-	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/internal/natstest"
 )
 
 func validDef() dag.WorkflowDef {
@@ -38,7 +38,7 @@ func TestControlPlane_NewPanicsOnNilConn(t *testing.T) {
 }
 
 func TestControlPlane_NamespaceNameRejectedOnRegister(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	cp := newControlPlaneFor(nc, "owner-run", "step-1", "nonce-1")
 
 	// A def whose name carries a ':' must be rejected client-side as a
@@ -61,7 +61,7 @@ func TestControlPlane_ForgeNameRejectedClientSide(t *testing.T) {
 	// Defense-in-depth: the worker mirrors the server's validateRuntimeName
 	// so a forge attempt fails fast client-side with KindNamespace and no
 	// round-trip, instead of relying solely on the server guard.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	cp := newControlPlaneFor(nc, "owner-run", "step-1", "nonce-1")
 
 	cases := []string{
@@ -86,7 +86,7 @@ func TestControlPlane_ForgeNameRejectedClientSide(t *testing.T) {
 }
 
 func TestControlPlane_NamespaceNameRejectedOnStart(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	cp := newControlPlaneFor(nc, "owner-run", "step-1", "nonce-1")
 
 	// A name longer than the bound must be rejected before any request.
@@ -110,7 +110,7 @@ func TestControlPlane_TransportErrorWhenNoServer(t *testing.T) {
 	// No api micro service is listening on api.runtimes.register, so the
 	// bounded nc.Request times out and must surface as KindTransport,
 	// never a panic.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	cp := newControlPlaneFor(nc, "owner-run", "step-1", "nonce-1")
 
 	name, err := cp.RegisterWorkflow(

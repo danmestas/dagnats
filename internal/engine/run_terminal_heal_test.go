@@ -31,6 +31,7 @@ import (
 	"testing"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
@@ -104,7 +105,7 @@ func TestHandleWorkflowStarted_RunTerminal_SaveFailureThenRedeliveryStarts(t *te
 	// the FIRST delivery must leave NOTHING behind -- no placeholder,
 	// no partial state -- so a redelivery starts the run cleanly from
 	// scratch.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("setup: %v", err)
 	}

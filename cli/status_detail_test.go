@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
@@ -126,7 +127,7 @@ func TestFormatCountMillions(t *testing.T) {
 }
 
 func TestCollectStreamInfoIntegration(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -163,7 +164,7 @@ func TestCollectStreamInfoIntegration(t *testing.T) {
 // "Cancelled tasks skipped" line by reading worker_status KV
 // snapshots and aggregating.
 func TestPrintWorkerStatus_SumsAcrossWorkers(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{
 			Bucket: "worker_status",
@@ -218,7 +219,7 @@ func TestPrintWorkerStatus_SumsAcrossWorkers(t *testing.T) {
 // tasks yet. Avoid a confusing "Cancelled tasks skipped: 0" line
 // when there's nothing to report.
 func TestPrintWorkerStatus_SilentOnEmptyBucket(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{
 			Bucket: "worker_status",
@@ -244,7 +245,7 @@ func TestPrintWorkerStatus_SilentOnEmptyBucket(t *testing.T) {
 // is a no-op when the worker_status bucket isn't present (e.g., older
 // NATS deployments that haven't yet migrated to the bucket schema).
 func TestPrintWorkerStatus_GracefulOnMissingBucket(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -265,7 +266,7 @@ func TestPrintWorkerStatus_GracefulOnMissingBucket(t *testing.T) {
 }
 
 func TestStreamDetailsIntegration(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -450,7 +451,7 @@ func TestGroupRunsByWorkflowEmpty(t *testing.T) {
 }
 
 func TestRunBreakdownNoRuns(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}

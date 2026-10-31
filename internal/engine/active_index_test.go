@@ -41,6 +41,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -449,7 +450,7 @@ func TestActiveEntry_DeletedAtFinalization_AllThreeTerminalStatuses(t *testing.T
 		dag.RunStatusCancelled,
 	} {
 		t.Run(status.String(), func(t *testing.T) {
-			_, nc := natsutil.StartTestServer(t)
+			_, nc := natstest.StartServer(t)
 			if err := natsutil.SetupAll(nc); err != nil {
 				t.Fatalf("SetupAll: %v", err)
 			}
@@ -763,7 +764,7 @@ func TestRepairRunIndex_ConvergedStore_ZeroGETsBeyondActiveMarkers(t *testing.T)
 // entirely (0 GETs against the terminal population) because the meta
 // key is already present.
 func TestBuildActiveIndexOnce_ReviewerRepro_ConvergesAndGatesOnMetaKey(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

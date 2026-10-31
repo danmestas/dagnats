@@ -13,6 +13,7 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -20,7 +21,7 @@ import (
 
 func TestResolveRunIDFullIDPassthrough(t *testing.T) {
 	// Full 32-char IDs should be returned as-is without NATS.
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	_ = srv
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -46,7 +47,7 @@ func TestResolveRunIDFullIDPassthrough(t *testing.T) {
 }
 
 func TestResolveRunIDPrefixMatch(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	_ = srv
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -89,7 +90,7 @@ func TestResolveRunIDPrefixMatch(t *testing.T) {
 }
 
 func TestResolveRunIDAmbiguousPrefix(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	_ = srv
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -146,7 +147,7 @@ func TestResolveRunIDAmbiguousPrefix(t *testing.T) {
 }
 
 func TestResolveRunIDNoMatch(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	_ = srv
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -174,7 +175,7 @@ func TestResolveRunIDNoMatch(t *testing.T) {
 }
 
 func TestResolveRunIDLastFlag(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	_ = srv
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -229,7 +230,7 @@ func TestResolveRunIDLastFlag(t *testing.T) {
 }
 
 func TestResolveRunIDPrefixTooShort(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	_ = srv
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)

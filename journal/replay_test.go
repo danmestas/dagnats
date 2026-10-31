@@ -29,6 +29,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
@@ -42,7 +43,7 @@ func forEachDispatchSingle(
 	t.Helper()
 	for _, d := range dispatches() {
 		t.Run(d.name, func(t *testing.T) {
-			_, nc := natsutil.StartTestServer(t)
+			_, nc := natstest.StartServer(t)
 			if err := natsutil.SetupAll(nc); err != nil {
 				t.Fatalf("SetupAll: %v", err)
 			}
@@ -403,7 +404,7 @@ func TestReplay_ModelResponseReusedNotReRequested(t *testing.T) {
 }
 
 func TestReplay_IdempotencyKeyIsStableAcrossDeliveriesAndAttempts(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -452,7 +453,7 @@ func TestReplay_IdempotencyKeyIsStableAcrossDeliveriesAndAttempts(t *testing.T) 
 // left unfinished is reported interrupted. The dead worker is its own
 // handle, blocked in its tool, and is fenced when it resumes.
 func TestReplay_NewAttemptRerunsSafeCallsAndModelButKeepsUnsafeOutcomes(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -505,7 +506,7 @@ func TestReplay_NewAttemptRerunsSafeCallsAndModelButKeepsUnsafeOutcomes(t *testi
 }
 
 func TestReplay_MismatchedCallOnRecoveryIsAnError(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -541,7 +542,7 @@ func TestReplay_MismatchedCallOnRecoveryIsAnError(t *testing.T) {
 }
 
 func TestReplay_FailedModelRequestKeepsItsPosition(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -584,7 +585,7 @@ func TestReplay_FailedModelRequestKeepsItsPosition(t *testing.T) {
 // deduplication keeps working; a different call at that position is
 // a fresh one.
 func TestReplay_NewAttemptHonoursPriorUnsafeCallByContentNotPosition(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -664,7 +665,7 @@ func TestReplay_NewAttemptHonoursPriorUnsafeCallByContentNotPosition(t *testing.
 // it drops the real send. A redelivery of attempt 2 then answers
 // every call as attempt 2 first did.
 func TestReplay_FreshCallInNewAttemptSkipsPriorUnsafeKeys(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -728,7 +729,7 @@ func TestReplay_FreshCallInNewAttemptSkipsPriorUnsafeKeys(t *testing.T) {
 // sends to ops at position 0; attempt 2's model sends to dev instead.
 // The send to dev is fresh and must not reuse the send to ops's key.
 func TestReplay_OtherCallAtPriorUnsafePositionGetsItsOwnKey(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -765,7 +766,7 @@ func TestReplay_OtherCallAtPriorUnsafePositionGetsItsOwnKey(t *testing.T) {
 // unsafe outcomes are honoured, instead of the retry replaying the
 // failed attempt's results as a redelivery would.
 func TestReplay_Iteration0RetryRerunsSafeCalls(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -800,7 +801,7 @@ func TestReplay_Iteration0RetryRerunsSafeCalls(t *testing.T) {
 }
 
 func TestReplay_NonJSONToolOutputIsANamedError(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

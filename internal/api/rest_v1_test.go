@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/workertoken"
 	"github.com/danmestas/dagnats/worker"
@@ -78,7 +79,7 @@ func TestMountV1PanicsOnNilArgs(t *testing.T) {
 }
 
 func TestRESTV1ListWorkers(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -145,7 +146,7 @@ func TestRESTV1ListWorkers(t *testing.T) {
 }
 
 func TestRESTV1ListWorkersEmpty(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -201,7 +202,7 @@ func indexOf(haystack, needle string) int {
 }
 
 func TestRESTV1MethodNotAllowed(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -234,7 +235,7 @@ func TestRESTV1MethodNotAllowed(t *testing.T) {
 // exact path (Go 1.22+ ServeMux picks the most specific pattern), while
 // unrelated /v1/* paths (e.g. workers/connect) still reach the catch-all.
 func TestRESTV1MuxPrecedence(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

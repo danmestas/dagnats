@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -84,7 +85,7 @@ func (b *logBuf) Hits(substr string) int {
 }
 
 func TestHTTPHandlerLogsWarningWhenIdempotencyKVUnhealthy(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -167,7 +168,7 @@ func TestHTTPHandlerLogsWarningWhenIdempotencyKVUnhealthy(t *testing.T) {
 // emit a structured warning so the silent-replay-degradation does not
 // stay silent.
 func TestHTTPHandlerLogsWarningWhenStoreResultPutFails(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dagnatsext"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/danmestas/dagnats/worker"
@@ -270,7 +271,7 @@ func startTriggerTypeHarness(
 	t *testing.T,
 ) (*worker.Worker, string) {
 	t.Helper()
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -348,7 +349,7 @@ func TestRunTriggerTypeListCmd_EndToEnd(t *testing.T) {
 // subject even though nothing deletes a trigger type today) is not
 // resurrected into the listing, and a live, untouched entry survives.
 func TestListTriggerTypes_SkipsDeletedKey(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},

@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
@@ -123,7 +124,7 @@ func publishTask(
 }
 
 func TestLogOutLogErr_WritesLandInWriteOrder(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -193,7 +194,7 @@ func TestLogOutLogErr_WritesLandInWriteOrder(t *testing.T) {
 }
 
 func TestLogOut_SplitsOversizedWriteIntoMultipleChunks(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -257,7 +258,7 @@ func chunkSizes(chunks []protocol.LogChunk) []int {
 }
 
 func TestFail_EmitsFailedMarkerBeforeStepFailedEvent(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -342,7 +343,7 @@ type assertionError string
 func (e assertionError) Error() string { return string(e) }
 
 func TestLogOut_ExceedingStepBudgetEmitsOneTruncatedMarker(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -408,7 +409,7 @@ func TestLogOut_ExceedingStepBudgetEmitsOneTruncatedMarker(t *testing.T) {
 }
 
 func TestComplete_DrainsBufferedBytesBeforeResolution(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -475,7 +476,7 @@ func TestComplete_DrainsBufferedBytesBeforeResolution(t *testing.T) {
 // (payload.Attempt 2 is used directly) — the two numbers this test
 // asserts against.
 func TestRetry_ProducesChunksOnDistinctAttemptSubjects(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -566,7 +567,7 @@ func TestRetry_ProducesChunksOnDistinctAttemptSubjects(t *testing.T) {
 // (worker/worker.go) must still emit a "completed" marker and stop the
 // ticker even when the handler itself never resolves.
 func TestHandlerReturningNilWithoutResolving_DrainsLogLaneNoLeak(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

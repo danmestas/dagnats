@@ -13,6 +13,7 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 
 	"github.com/danmestas/dagnats/protocol"
@@ -46,7 +47,7 @@ func TestFormatRunStatus(t *testing.T) {
 }
 
 func TestCancelCommandPublishesEvent(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -161,7 +162,7 @@ func TestFormatRunStatusShowsIterations(t *testing.T) {
 }
 
 func TestRunEventsTypeFilter(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -200,7 +201,7 @@ func TestRunEventsTypeFilter(t *testing.T) {
 }
 
 func TestRunEventsStepFilter(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -587,7 +588,7 @@ func TestRunSignalJSONOutput(t *testing.T) {
 
 func TestRunStartOutputPrintsResult(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -672,7 +673,7 @@ func TestRunStartOutputPrintsResult(t *testing.T) {
 }
 
 func TestSignalCommandWritesToKV(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "signals"}))
 	if err != nil {

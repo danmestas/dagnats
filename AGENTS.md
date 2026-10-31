@@ -49,7 +49,7 @@ All persistent state lives in NATS JetStream and KV. There is no external databa
 
 - Failing test first → minimal code to pass → refactor.
 - `dag/` is pure unit tests, no NATS.
-- `internal/engine/`, `worker/` use a real embedded NATS server per test (`natsutil.StartTestServer(t)`).
+- `internal/engine/`, `worker/` use a real embedded NATS server per test (`natstest.StartServer(t)`).
 - Min 2 assertions per test (positive + negative space).
 - Bounded timeouts on every wait. No `time.Sleep` without a deadline.
 - Each test file opens with a methodology comment.

@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"testing"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -154,7 +155,7 @@ func TestPollResponseCarriesDispatchTraceContext(t *testing.T) {
 	)
 	t.Cleanup(func() { otel.SetTextMapPropagator(prev) })
 
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc, natsutil.WithStoreBudget(storeBudgetBytes))
 	if err != nil {
 		t.Fatalf("SetupAll: %v", err)
@@ -219,7 +220,7 @@ func TestPollResponseCarriesDispatchTraceContext(t *testing.T) {
 // noop tracer plus a task with no inbound trace headers must emit NO
 // traceparent/tracestate keys at all — never an empty or malformed one.
 func TestPollResponseOmitsTraceContextWhenAbsent(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc, natsutil.WithStoreBudget(storeBudgetBytes))
 	if err != nil {
 		t.Fatalf("SetupAll: %v", err)

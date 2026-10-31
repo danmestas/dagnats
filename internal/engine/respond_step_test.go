@@ -18,6 +18,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/httpenvelope"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -35,7 +36,7 @@ type respondPayloadEnvelope struct {
 
 func TestEngineRespondStepPublishesResponseWithConfiguredStatus(t *testing.T) {
 	const runID = "run-respond-happy-1"
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -92,7 +93,7 @@ func TestEngineRespondStepPublishesResponseWithConfiguredStatus(t *testing.T) {
 
 func TestEngineRespondStepDefaultsStatusAndContentType(t *testing.T) {
 	const runID = "run-respond-defaults-1"
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -143,7 +144,7 @@ func TestEngineRespondStepDefaultsStatusAndContentType(t *testing.T) {
 
 func TestEngineRespondStepHonoursBodyFromDotpath(t *testing.T) {
 	const runID = "run-respond-bodyfrom-1"
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

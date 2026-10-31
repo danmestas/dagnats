@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
@@ -42,7 +43,7 @@ func seedRun(
 }
 
 func TestFindOldestPendingRunIgnoresNonRunKeys(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -77,7 +78,7 @@ func TestFindOldestPendingRunIgnoresNonRunKeys(t *testing.T) {
 }
 
 func TestFindOldestPendingRunReturnsOldest(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -122,7 +123,7 @@ func TestFindOldestPendingRunCapDegradesLoudly(t *testing.T) {
 	pendingRunScanMax = 3
 	t.Cleanup(func() { pendingRunScanMax = prevCap })
 
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -169,7 +170,7 @@ func TestFindOldestPendingRunUnderCapFindsAllAndIsQuiet(t *testing.T) {
 	pendingRunScanMax = 100
 	t.Cleanup(func() { pendingRunScanMax = prevCap })
 
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

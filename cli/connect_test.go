@@ -7,7 +7,7 @@ package cli
 import (
 	"testing"
 
-	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/internal/natstest"
 )
 
 func TestConnectServiceFriendlyErrorOnBadURL(t *testing.T) {
@@ -39,7 +39,7 @@ func TestConnectServiceFriendlyErrorOnBadURL(t *testing.T) {
 func TestConnectServiceFriendlyErrorOnMissingBuckets(t *testing.T) {
 	// Connect to a real NATS but without SetupAll — this is the critical
 	// test. Previously this would panic with a raw stack trace.
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	defer nc.Close()
 
 	t.Setenv("NATS_URL", srv.ClientURL())

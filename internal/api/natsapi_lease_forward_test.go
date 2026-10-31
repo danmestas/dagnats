@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/lease"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -532,7 +533,7 @@ func TestLeaseForwardCorruptHolderIsInternal(t *testing.T) {
 // Stop cancels in-flight forwards instead of leaving them parked on a
 // hung owner for up to timeout_ms.
 func TestLeaseForwardStopCancelsInFlight(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

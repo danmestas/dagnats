@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -21,7 +22,7 @@ func TestPriorityAffectsPendingOrder(t *testing.T) {
 	// With concurrency=1, start two runs:
 	// run-low (offset=0) first, then run-high (offset=300).
 	// run-low should be running, run-high pending with offset.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "concurrency_runs"},
@@ -94,7 +95,7 @@ func TestPriorityAffectsPendingOrder(t *testing.T) {
 }
 
 func TestSingletonSkipMode(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -165,7 +166,7 @@ func TestSingletonSkipMode(t *testing.T) {
 }
 
 func TestSingletonCancelMode(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -36,7 +37,7 @@ type triggerEnvelope struct {
 // embedded WorkflowDef) the orchestrator must look up the registered
 // def by WorkflowID and dispatch the first task.
 func TestOrchestrator_ResolvesDefFromTriggerEnvelope(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -123,7 +124,7 @@ func TestOrchestrator_ResolvesDefFromTriggerEnvelope(t *testing.T) {
 // engine fails the run cleanly (no crash) when a trigger envelope
 // references a workflow name that has no registered definition.
 func TestOrchestrator_TriggerEnvelopeMissingWorkflowFails(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}

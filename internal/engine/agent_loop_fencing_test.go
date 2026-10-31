@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -61,7 +62,7 @@ func loopDef(name, taskType string, cfg dag.AgentLoopConfig, retry *dag.RetryPol
 // task subject. The orchestrator is the caller's to start.
 func newLoopFixture(t *testing.T, wfDef dag.WorkflowDef) loopFixture {
 	t.Helper()
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}

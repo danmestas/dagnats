@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go/jetstream"
@@ -80,7 +81,7 @@ func findWorker(
 // is claimed by the first token that registers it, and can only be
 // re-registered by that same token or by an admin caller.
 func TestConnectWorkerIDOwnershipEnforced(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -176,7 +177,7 @@ func TestConnectWorkerIDOwnershipEnforced(t *testing.T) {
 // token configured) never enforces worker_id ownership -- there is
 // no identity to enforce, so any caller may claim any worker_id.
 func TestConnectWorkerIDOwnershipDevMode(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -206,7 +207,7 @@ func TestConnectWorkerIDOwnershipDevMode(t *testing.T) {
 // entry with an empty token_id (written before #627, or by a
 // dev-mode/native worker) has no owner and is claimable by any token.
 func TestConnectWorkerIDOwnershipUnownedEntryClaimable(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -283,7 +284,7 @@ func workerPresent(
 // must leave the current entry alone rather than delete it out from
 // under its new owner.
 func TestConnectDeregisterOwnershipScoped(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -386,7 +387,7 @@ func TestConnectDeregisterOwnershipScoped(t *testing.T) {
 // every dev-mode caller is Admin, so there is no ownership to
 // enforce.
 func TestConnectDeregisterDevModeAlwaysDeletes(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -464,7 +465,7 @@ func raceConnect(baseURL, bearer, workerID string) (*http.Response, context.Canc
 // concurrently; exactly one may win (200) and every other racer must
 // see 409, with the directory entry left owned by the winner alone.
 func TestConnectConcurrentClaimExactlyOneWinner(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -570,7 +571,7 @@ func TestConnectConcurrentClaimExactlyOneWinner(t *testing.T) {
 // the package's heartbeatInterval to observe several ticks inside a
 // bounded wait instead of the real 25s cadence.
 func TestHeartbeatStopsAfterOwnershipTakeover(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -655,7 +656,7 @@ func TestHeartbeatStopsAfterOwnershipTakeover(t *testing.T) {
 // round 3 fix must not turn every heartbeat into a rejection for the
 // common, uncontested case.
 func TestHeartbeatContinuesForOwner(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

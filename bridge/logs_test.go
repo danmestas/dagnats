@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -85,7 +86,7 @@ func drainBuildLogs(
 }
 
 func TestPostLogs_ChunksLandOnBuildLogs(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -130,7 +131,7 @@ func TestPostLogs_RejectsDifferentMintedToken(t *testing.T) {
 }
 
 func TestPostLogs_BodyOverOneMiBIs413(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -152,7 +153,7 @@ func TestPostLogs_BodyOverOneMiBIs413(t *testing.T) {
 }
 
 func TestPostLogs_UnknownTaskIs404(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -193,7 +194,7 @@ func resolveLogsTest(t *testing.T, ts *httptest.Server, taskID, body string) {
 // must be the LAST message on the attempt's BUILD_LOGS subject, same
 // invariant the worker SDK already guarantees natively.
 func TestPostLogs_FailMarkerIsLastMessageOnAttemptSubject(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -231,7 +232,7 @@ func TestPostLogs_FailMarkerIsLastMessageOnAttemptSubject(t *testing.T) {
 // rejects a POST for a task that was already resolved, distinguishing
 // it from "never existed" (404) via AckMap.WasResolved.
 func TestPostLogs_AfterResolveIs409(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -254,7 +255,7 @@ func TestPostLogs_AfterResolveIs409(t *testing.T) {
 // GET /runs/{id}/logs?from=failure end to end for an HTTP-bridge-driven
 // task, mirroring the worker-SDK equivalent in internal/api/logs_test.go.
 func TestPostLogs_FromFailureWorksForBridgeWorker(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

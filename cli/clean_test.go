@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -138,7 +139,7 @@ func TestCollectTargets_NoDuplicates(t *testing.T) {
 // --- Integration tests ---
 
 func TestExecuteClean_PurgesStreamsAndBuckets(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -210,7 +211,7 @@ func TestExecuteClean_PurgesStreamsAndBuckets(t *testing.T) {
 }
 
 func TestExecuteClean_PreservesWorkflowDefs(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -246,7 +247,7 @@ func TestExecuteClean_PreservesWorkflowDefs(t *testing.T) {
 }
 
 func TestExecuteClean_AllClearsWorkflowDefs(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -278,7 +279,7 @@ func TestExecuteClean_AllClearsWorkflowDefs(t *testing.T) {
 }
 
 func TestExecuteClean_TypeOtelOnly(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -320,7 +321,7 @@ func TestExecuteClean_TypeOtelOnly(t *testing.T) {
 }
 
 func TestPurgeKVBucket_EmptyBucket(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -354,7 +355,7 @@ func TestPurgeKVBucket_EmptyBucket(t *testing.T) {
 }
 
 func TestDryRunReport_ShowsStreamInfo(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -460,7 +461,7 @@ func TestFormatCleanBytes(t *testing.T) {
 }
 
 func TestPurgeStreamBefore_PartialPurge(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -502,7 +503,7 @@ func TestPurgeStreamBefore_PartialPurge(t *testing.T) {
 }
 
 func TestPurgeStreamBefore_AllOld(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -573,7 +574,7 @@ func (w *orderedConsumerThenDelete) OrderedConsumer(
 // NOTHING and report the failure when the boundary scan hits a real
 // error rather than the idle-wait timeout.
 func TestPurgeStreamBefore_DeletedMidCheckDoesNotPurge(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -725,7 +726,7 @@ func TestSeqPurgeWarningText(t *testing.T) {
 // --- Integration tests: bulk prune (--keep / --before-seq) ---
 
 func TestExecuteSeqPurge_KeepBucketDrainsToLimit(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -786,7 +787,7 @@ func TestExecuteSeqPurge_KeepBucketDrainsToLimit(t *testing.T) {
 }
 
 func TestExecuteSeqPurge_BeforeSeqPurgesBelow(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -841,7 +842,7 @@ func TestExecuteSeqPurge_BeforeSeqPurgesBelow(t *testing.T) {
 // must skip work-queue streams (as the age path does) while still draining the
 // history stream, proving the skip is a real guard and not a no-op.
 func TestExecuteSeqPurge_SkipsWorkQueueStream(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -906,7 +907,7 @@ func TestExecuteSeqPurge_SkipsWorkQueueStream(t *testing.T) {
 }
 
 func TestSeqDryRunReport_DoesNotExecute(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -950,7 +951,7 @@ func TestSeqDryRunReport_DoesNotExecute(t *testing.T) {
 }
 
 func TestPurgeKVBucketBefore_SelectiveDelete(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -1020,7 +1021,7 @@ func TestPurgeKVBucketBefore_SelectiveDelete(t *testing.T) {
 // olderThan wrapper delegates correctly: a generous olderThan (24h)
 // must not delete anything written moments ago.
 func TestPurgeKVBucketBefore_WrapperComputesCutoff(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

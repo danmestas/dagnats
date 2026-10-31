@@ -13,6 +13,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/danmestas/dagnats/observe"
@@ -27,7 +28,7 @@ import (
 )
 
 func TestServiceRegisterWorkflow(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -53,7 +54,7 @@ func TestServiceRegisterWorkflow(t *testing.T) {
 }
 
 func TestServiceStartRun(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -75,7 +76,7 @@ func TestServiceStartRun(t *testing.T) {
 }
 
 func TestServiceGetRunStatus(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -120,7 +121,7 @@ func TestServiceGetRunStatus(t *testing.T) {
 }
 
 func TestServiceGetRunNotFound(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -133,7 +134,7 @@ func TestServiceGetRunNotFound(t *testing.T) {
 }
 
 func TestServiceListWorkflows(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -165,7 +166,7 @@ func TestServiceListWorkflows(t *testing.T) {
 // already swallow ErrNoKeysFound; this test guards the workflows
 // path against regressing to the outlier behaviour.
 func TestListWorkflows_EmptyBucket(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -183,7 +184,7 @@ func TestListWorkflows_EmptyBucket(t *testing.T) {
 }
 
 func TestServiceCancelRun(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -229,7 +230,7 @@ func TestServiceCancelRun(t *testing.T) {
 }
 
 func TestServiceSendSignal(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "signals"}),
 	)
@@ -255,7 +256,7 @@ func TestServiceSendSignal(t *testing.T) {
 }
 
 func TestServiceCreateTrigger(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "triggers"}),
 	)
@@ -290,7 +291,7 @@ func TestServiceCreateTrigger(t *testing.T) {
 }
 
 func TestServiceCreateTriggerValidation(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "triggers"}),
 	)
@@ -310,7 +311,7 @@ func TestServiceCreateTriggerValidation(t *testing.T) {
 }
 
 func TestServiceListTriggers(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "triggers"}),
 	)
@@ -345,7 +346,7 @@ func TestServiceListTriggers(t *testing.T) {
 }
 
 func TestServiceDeleteTrigger(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "triggers"}),
 	)
@@ -374,7 +375,7 @@ func TestServiceDeleteTrigger(t *testing.T) {
 }
 
 func TestServiceSetTriggerEnabled(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -444,7 +445,7 @@ func TestServiceSetTriggerEnabled(t *testing.T) {
 }
 
 func TestServiceListDeadLetters(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -478,7 +479,7 @@ func TestServiceListDeadLetters(t *testing.T) {
 }
 
 func TestServiceReplayDeadLetter(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -543,7 +544,7 @@ func TestServiceReplayDeadLetter(t *testing.T) {
 }
 
 func TestServiceListRuns(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -595,7 +596,7 @@ func TestServiceListRuns(t *testing.T) {
 }
 
 func TestServiceListRunsFilterByWorkflow(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -652,7 +653,7 @@ func TestServiceListRunsFilterByWorkflow(t *testing.T) {
 // returned slice at the caller-supplied limit. We submit more runs
 // than the limit, wait for them all to surface, then request fewer.
 func TestServiceListRunsRespectsLimit(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -729,7 +730,7 @@ func TestServiceListRunsRespectsLimit(t *testing.T) {
 // clamped at MaxRunsLimitCeiling rather than rejected. Friendlier
 // for operators who typo a big number.
 func TestServiceListRunsCeiling(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -839,7 +840,7 @@ func TestScaledFetchMax(t *testing.T) {
 }
 
 func TestServiceListRunEvents(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -879,7 +880,7 @@ func TestServiceListRunEvents(t *testing.T) {
 }
 
 func TestRegisterWorkflowInvalidDef(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -903,7 +904,7 @@ func TestRegisterWorkflowInvalidDef(t *testing.T) {
 }
 
 func TestStartRunUnknownWorkflow(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -937,7 +938,7 @@ func searchString(s, sub string) bool {
 }
 
 func TestGetWorkflowReturnsRegistered(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -970,7 +971,7 @@ func TestGetWorkflowReturnsRegistered(t *testing.T) {
 }
 
 func TestDeleteTriggerInnerRemovesKey(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -1020,7 +1021,7 @@ func TestDeleteTriggerInnerNilKV(t *testing.T) {
 }
 
 func TestListRunEventsInnerReadsHistory(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -1193,7 +1194,7 @@ func TestInjectTraceContextOnEvent(t *testing.T) {
 }
 
 func TestSendSignalNilKVError(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -1216,7 +1217,7 @@ func TestSendSignalNilKVError(t *testing.T) {
 }
 
 func TestDeleteTriggerNilKVErrorPath(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -1238,7 +1239,7 @@ func TestDeleteTriggerNilKVErrorPath(t *testing.T) {
 }
 
 func TestReplayDeadLetterNotFound(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -1257,7 +1258,7 @@ func TestReplayDeadLetterNotFound(t *testing.T) {
 }
 
 func TestListRunEventsErrorPath(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -1282,7 +1283,7 @@ func TestListRunEventsErrorPath(t *testing.T) {
 }
 
 func TestSetTriggerEnabledNilKVError(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -1304,7 +1305,7 @@ func TestSetTriggerEnabledNilKVError(t *testing.T) {
 }
 
 func TestListTriggersNilKV(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -1332,7 +1333,7 @@ func TestListTriggersNilKV(t *testing.T) {
 // could then never become non-empty, because the console is the only surface
 // that creates triggers over HTTP.
 func TestListTriggersEmptyBucket(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	// Provision the triggers bucket WITHOUT seeding it: the empty bucket is
 	// exactly the state under test. Without WithKVBuckets the service's
 	// triggerKV is nil and the interesting path is never reached.
@@ -1386,7 +1387,7 @@ func TestListTriggersEmptyBucket(t *testing.T) {
 }
 
 func TestCreateTriggerNilKVError(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -1457,7 +1458,7 @@ func TestInjectTraceContextNilHeader(t *testing.T) {
 }
 
 func TestStartRunInputValidation(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -1512,7 +1513,7 @@ func TestStartRunInputValidation(t *testing.T) {
 }
 
 func TestStartTyped(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -1547,7 +1548,7 @@ func TestStartTyped(t *testing.T) {
 }
 
 func TestServiceListWorkers(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -1628,7 +1629,7 @@ func TestServiceListWorkers(t *testing.T) {
 // until NATS gets around to purging the KV entry — which can be tens of
 // seconds past the nominal bucket TTL. Regression for #233.
 func TestServiceListWorkersFiltersStale(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -1699,7 +1700,7 @@ func TestServiceListWorkersFiltersStale(t *testing.T) {
 }
 
 func TestServiceListWorkersNoBucket(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -1718,7 +1719,7 @@ func TestServiceListWorkersNoBucket(t *testing.T) {
 }
 
 func TestStartRunIdempotency(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -1780,7 +1781,7 @@ func TestStartRunIdempotency(t *testing.T) {
 }
 
 func TestStartRunIdempotencyMissingKey(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -1815,7 +1816,7 @@ func TestGetRunResponseTraceID(t *testing.T) {
 			propagation.TraceContext{},
 		),
 	)
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -1877,7 +1878,7 @@ func TestGetRunResponseTraceID(t *testing.T) {
 }
 
 func TestGetRunResponseNoTrace(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)

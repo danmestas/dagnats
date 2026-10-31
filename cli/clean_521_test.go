@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -53,7 +54,7 @@ func makeStream(
 // task (or, on the boundary branch, hit err 10084). The message is a live
 // pending task; age-purge must skip the stream entirely and preserve it.
 func TestPurgeStreamBefore_SkipsWorkQueue(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	js, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
@@ -86,7 +87,7 @@ func TestPurgeStreamBefore_SkipsWorkQueue(t *testing.T) {
 // Fix 2: a non-work-queue (limits) stream whose messages are all older than
 // the cutoff must still be age-purged normally.
 func TestPurgeStreamBefore_LimitsPolicyStillPurges(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	js, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
@@ -120,7 +121,7 @@ func TestPurgeStreamBefore_LimitsPolicyStillPurges(t *testing.T) {
 // blew the shared clean deadline. The whole clear runs under a tight
 // deadline that a per-key loop over this many keys would strain.
 func TestPurgeKVBucket_LargeBucketFastClear(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -171,7 +172,7 @@ func TestPurgeKVBucket_LargeBucketFastClear(t *testing.T) {
 // ones over a multi-key bucket, running under a short caller deadline without
 // a shared-deadline failure (each Get/Delete gets its own budget).
 func TestPurgeKVBucketBefore_PerKeyContexts(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

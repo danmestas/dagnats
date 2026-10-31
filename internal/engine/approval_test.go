@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -137,7 +138,7 @@ func waitForApprovalToken(
 }
 
 func TestApprovalStep_TokenStoredAndEventPublished(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -191,7 +192,7 @@ func TestApprovalStep_TokenStoredAndEventPublished(t *testing.T) {
 }
 
 func TestApprovalStep_ApproveUnblocksDownstream(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -245,7 +246,7 @@ func TestApprovalStep_ApproveUnblocksDownstream(t *testing.T) {
 }
 
 func TestApprovalStep_RejectFailsWorkflow(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -305,7 +306,7 @@ func TestApprovalStep_RejectFailsWorkflow(t *testing.T) {
 }
 
 func TestApprovalStep_TimeoutFails(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -380,7 +381,7 @@ func TestApprovalStep_TimeoutFails(t *testing.T) {
 }
 
 func TestApprovalStep_DoubleApproveFails(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -610,7 +611,7 @@ func indexOf(s, sub string) int {
 }
 
 func TestApprovalStep_ZeroTimeoutReturnsError(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

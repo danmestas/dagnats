@@ -196,7 +196,7 @@ func RunAndWait(t *testing.T, svc *api.Service, workflow string, input []byte, t
 RunAndWait starts a workflow run and blocks until it reaches any terminal status \(Completed, Failed, Cancelled, Compensated, CompensateFailed\). Returns the final WorkflowRun snapshot. Fatals the test if the run does not finish within timeout.
 
 <a name="Server"></a>
-## func [Server](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/dagnatstest.go#L24>)
+## func [Server](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/dagnatstest.go#L25>)
 
 ```go
 func Server(t *testing.T) *nats.Conn

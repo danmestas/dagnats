@@ -15,13 +15,14 @@ import (
 	"testing"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestHandleWorkflowSpawn_RedeliveryKeepsAdvancedChild(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -87,7 +88,7 @@ func TestHandleWorkflowSpawn_RedeliveryKeepsAdvancedChild(t *testing.T) {
 // between the child's initial save and enqueueReady: the redelivered spawn
 // must enqueue the first step instead of skipping the existing child.
 func TestHandleWorkflowSpawn_HealsSavedButNeverEnqueuedChild(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("setup: %v", err)
 	}

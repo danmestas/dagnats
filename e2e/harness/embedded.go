@@ -6,6 +6,7 @@ package harness
 import (
 	"testing"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
 )
@@ -24,7 +25,7 @@ func (e *EmbeddedTopology) Name() string { return "embedded" }
 // Connect starts a NATS server and returns a connected client.
 func (e *EmbeddedTopology) Connect(t *testing.T) *nats.Conn {
 	t.Helper()
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	return nc
 }
 

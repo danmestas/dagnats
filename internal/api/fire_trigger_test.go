@@ -4,7 +4,7 @@ package api
 // to end against an embedded NATS server.
 //
 // Methodology:
-//   - Each test gets its own embedded server via natsutil.StartTestServer.
+//   - Each test gets its own embedded server via natstest.StartServer.
 //   - SetupAll provisions the triggers KV + TRIGGER_HISTORY stream so
 //     the publish path lands somewhere observable.
 //   - Minimum 2 assertions per test: the run id is non-empty AND the
@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/nats-io/nats.go"
@@ -28,7 +29,7 @@ import (
 // TRIGGER_HISTORY stream caught a TriggerFire row with Source=manual,
 // (3) the workflow.started event subject was published.
 func TestFireTrigger_cronSuccess(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "triggers"}),
 	); err != nil {
@@ -71,7 +72,7 @@ func TestFireTrigger_cronSuccess(t *testing.T) {
 // TestFireTrigger_webhookSuccess confirms the webhook kind is allowed
 // by the manual fire path.
 func TestFireTrigger_webhookSuccess(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "triggers"}),
 	); err != nil {
@@ -106,7 +107,7 @@ func TestFireTrigger_webhookSuccess(t *testing.T) {
 // TestFireTrigger_subjectKindRejected confirms manual fire of a
 // NATS-subject trigger returns ErrTriggerKindNotFireable.
 func TestFireTrigger_subjectKindRejected(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "triggers"}),
 	); err != nil {
@@ -138,7 +139,7 @@ func TestFireTrigger_subjectKindRejected(t *testing.T) {
 // TestFireTrigger_disabledRejected confirms a disabled trigger can't
 // be fired manually — the operator must enable it first.
 func TestFireTrigger_disabledRejected(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "triggers"}),
 	); err != nil {

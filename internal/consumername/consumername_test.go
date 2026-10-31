@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/internal/natstest"
 )
 
 // natsKVValidKeyRe mirrors nats.go's own KV key validator
@@ -262,7 +262,7 @@ func TestFilterFor_RejectsEmptyTaskType(t *testing.T) {
 // dot-prefixed sibling like "build.linux". This is the regression guard
 // for the #674 wildcard leak: the old "task.build.>" filter matched both.
 func TestFilterFor_AnchorsToOneTrailingToken(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 
 	sub, err := nc.SubscribeSync(FilterFor("build", ""))
 	if err != nil {

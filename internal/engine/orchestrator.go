@@ -627,7 +627,7 @@ const consumeStopDrainTimeout = 5 * time.Second
 // stopped touching JetStream. Without this wait, Stop() can return
 // while the goroutine is still mid-fetch, which races embedded-server
 // shutdown and store-dir removal in tests built on
-// natsutil.StartTestServer. component names the caller in the timeout
+// natstest.StartServer. component names the caller in the timeout
 // log so a hang is traceable to orchestrator vs correlator vs
 // sleep-timer.
 func waitConsumeClosed(cc jetstream.ConsumeContext, component string) {

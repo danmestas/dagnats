@@ -31,6 +31,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
@@ -128,7 +129,7 @@ func testReplayFixture(t *testing.T, path string) {
 	if fixture.Description == "" || len(fixture.Calls) == 0 {
 		t.Fatal("fixture needs a description and at least one call")
 	}
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

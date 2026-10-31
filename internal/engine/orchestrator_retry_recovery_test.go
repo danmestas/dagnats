@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -25,7 +26,7 @@ import (
 )
 
 func TestOrchestratorRetriesWithPolicy(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -103,7 +104,7 @@ func TestOrchestratorRetriesWithPolicy(t *testing.T) {
 }
 
 func TestOrchestratorExhaustsRetries(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -203,7 +204,7 @@ func TestOrchestratorExhaustsRetries(t *testing.T) {
 }
 
 func TestOrchestratorPublishesDeadLetter(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -275,7 +276,7 @@ func TestOrchestratorPublishesDeadLetter(t *testing.T) {
 }
 
 func TestOrchestratorOnFailureStep(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
@@ -362,7 +363,7 @@ func TestOrchestratorOnFailureStep(t *testing.T) {
 }
 
 func TestOrchestratorCompensationChain(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -471,7 +472,7 @@ func TestOrchestratorCompensationChain(t *testing.T) {
 }
 
 func TestNonRetriableFailureSkipsRetries(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -603,7 +604,7 @@ func TestNonRetriableFailureSkipsRetries(t *testing.T) {
 }
 
 func TestRetryAfterSchedulesExactDelay(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -700,7 +701,7 @@ func TestRetryAfterSchedulesExactDelay(t *testing.T) {
 }
 
 func TestOldStringPayloadTreatedAsRetriable(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -208,7 +209,7 @@ func TestValidateWithKVDelegatesToValidateForNonExternal(t *testing.T) {
 // handle. Bounded 5s context inside SetupAll.
 func setupTriggerTypesKV(t *testing.T) jetstream.KeyValue {
 	t.Helper()
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/protocol"
@@ -24,7 +25,7 @@ import (
 )
 
 func TestWorkerHandlesTask(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -121,7 +122,7 @@ func TestWorkerHandlerErrorPublishesStepFailedAndAcks(t *testing.T) {
 	// = retriable, the handler ran exactly once (no NAK redelivery
 	// loop), and the message was acked (no further deliveries arrive
 	// within a short window).
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -202,7 +203,7 @@ func TestWorkerWithGroupsOnlyHandlesGroupTasks(t *testing.T) {
 	// Methodology: create a worker with groups=["gpu"], publish tasks to both
 	// the gpu-specific subject and a non-group subject. Verify only the gpu
 	// task is handled.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -261,7 +262,7 @@ func TestWorkerWithGroupsOnlyHandlesGroupTasks(t *testing.T) {
 }
 
 func TestHandlePanicsOnEmptyTaskType(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	w := NewWorker(nc)
 	defer func() {
 		r := recover()
@@ -279,7 +280,7 @@ func TestHandlePanicsOnEmptyTaskType(t *testing.T) {
 }
 
 func TestHandlePanicsOnNilHandler(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	w := NewWorker(nc)
 	defer func() {
 		r := recover()
@@ -297,7 +298,7 @@ func TestHandlePanicsOnNilHandler(t *testing.T) {
 }
 
 func TestHandleRegistersHandler(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	w := NewWorker(nc)
 	w.Handle("my-task", func(ctx TaskContext) error {
 		return nil
@@ -331,7 +332,7 @@ func TestNewWorkerInstallsDefaultPropagator(t *testing.T) {
 		t.Fatalf("setup: Fields() = %v, want empty before NewWorker", fields)
 	}
 
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	NewWorker(nc)
 
 	fields := otel.GetTextMapPropagator().Fields()
@@ -542,7 +543,7 @@ func TestInjectTraceContextEmptyIDs(t *testing.T) {
 func TestWorkerNonRetryableErrorAcks(t *testing.T) {
 	// Verifies that a NonRetryableError causes Fail+Ack,
 	// not NakWithDelay. The handler is called exactly once.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -613,7 +614,7 @@ func TestWorkerNonRetryableErrorAcks(t *testing.T) {
 func TestWorkerRegistersOnStart(t *testing.T) {
 	// Methodology: Start a worker with a handler, verify it registers
 	// in the directory with correct task types and metadata.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -665,7 +666,7 @@ func TestWorkerRegistersOnStart(t *testing.T) {
 
 func TestWorkerDeregistersOnStop(t *testing.T) {
 	// Methodology: start worker, verify registered, stop, verify deregistered.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -721,7 +722,7 @@ func TestNonRetryableErrorPublishesNonRetriablePayload(t *testing.T) {
 	// subscriber's Fetch was ready, occasionally causing only one of
 	// the two events to land in the 5s window — the test then read
 	// the zero-value Event and saw `Type=""`.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

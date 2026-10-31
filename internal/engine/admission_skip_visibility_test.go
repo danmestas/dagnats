@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -39,7 +40,7 @@ func skipVisibilityWorkflowDef() dag.WorkflowDef {
 }
 
 func TestSingletonSkipPersistsVisibleTerminalRun(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -90,7 +91,7 @@ func TestSingletonSkipPersistsVisibleTerminalRun(t *testing.T) {
 }
 
 func TestSingletonSkipDoesNotEnqueueTask(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -141,7 +142,7 @@ func TestSingletonSkipDoesNotEnqueueTask(t *testing.T) {
 }
 
 func TestSingletonLockRecoversAfterHolderTerminates(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -250,7 +251,7 @@ func (f failingPutKV) Put(
 // swallowed, which would silently reproduce the #502 invisible-run bug
 // on a transient store error.
 func TestSkipSnapshotWriteFailureNaksForRedelivery(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

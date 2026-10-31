@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -55,7 +56,7 @@ func TestTaskContextImplementsAllRoles(t *testing.T) {
 func TestHandleSimpleRegistersAndExecutes(t *testing.T) {
 	// Integration: register via HandleSimple, publish a task,
 	// verify handler is called and can Complete.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -138,7 +139,7 @@ func TestLoopTaskIncludesPutStreamAndHeartbeat(t *testing.T) {
 
 func TestHandleLoopCanContinue(t *testing.T) {
 	// Integration: register via HandleLoop, verify Continue works.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -206,7 +207,7 @@ func TestHandleLoopCanContinue(t *testing.T) {
 }
 
 func TestHandleCheckpointRegistersAndExecutes(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -287,7 +288,7 @@ func TestHandleCheckpointRegistersAndExecutes(t *testing.T) {
 }
 
 func TestHandleStreamRegistersAndExecutes(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -364,7 +365,7 @@ func TestHandleStreamRegistersAndExecutes(t *testing.T) {
 }
 
 func TestHandleSignalRegistersAndExecutes(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -438,7 +439,7 @@ func TestHandleSignalRegistersAndExecutes(t *testing.T) {
 }
 
 func TestHandleSimplePanicsOnNilHandler(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	w := NewWorker(nc)
 	defer func() {
 		r := recover()
@@ -451,7 +452,7 @@ func TestHandleSimplePanicsOnNilHandler(t *testing.T) {
 }
 
 func TestHandleSimplePanicsOnEmptyTaskType(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	w := NewWorker(nc)
 	defer func() {
 		r := recover()

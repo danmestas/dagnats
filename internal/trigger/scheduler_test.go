@@ -10,13 +10,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 )
 
 func TestSchedulerTickFiresMatchingTriggers(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
 	if err != nil {
@@ -62,7 +63,7 @@ func TestSchedulerTickFiresMatchingTriggers(t *testing.T) {
 // uses a CORE NATS subscriber on `history.>`, which sees every publish
 // regardless of stream dedup.
 func TestSchedulerTickDoesNotDoubleFireWithinSameMinute(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
 	if err != nil {
@@ -129,7 +130,7 @@ func TestSchedulerTickDoesNotDoubleFireWithinSameMinute(t *testing.T) {
 // dedup is per-minute, not permanent: a later matching minute must
 // produce a new run.
 func TestSchedulerTickFiresInNextMatchingMinute(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
 	if err != nil {
@@ -193,7 +194,7 @@ func TestSchedulerTickFiresInNextMatchingMinute(t *testing.T) {
 // has elapsed because backfill ran ≥30s earlier), the minute would
 // fire twice. The in-process claimMinute guard prevents this.
 func TestSchedulerBackfillThenLiveTickNoDoubleFire(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
 	if err != nil {
@@ -362,7 +363,7 @@ func verifyWorkflowStartedEvent(
 }
 
 func TestSchedulerDeduplicationAcrossMinutes(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
 	if err != nil {
@@ -431,7 +432,7 @@ func TestSchedulerDeduplicationAcrossMinutes(t *testing.T) {
 }
 
 func TestSchedulerTimezoneSupport(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
 	if err != nil {
@@ -497,7 +498,7 @@ func TestSchedulerTimezoneSupport(t *testing.T) {
 }
 
 func TestSchedulerDisabledTrigger(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
 	if err != nil {
@@ -546,7 +547,7 @@ func TestSchedulerDisabledTrigger(t *testing.T) {
 }
 
 func TestSchedulerRemoveTrigger(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
 	if err != nil {
@@ -600,7 +601,7 @@ func TestSchedulerRemoveTrigger(t *testing.T) {
 }
 
 func TestSchedulerStartAutoTick(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
 	if err != nil {
@@ -651,7 +652,7 @@ func TestSchedulerStartAutoTick(t *testing.T) {
 }
 
 func TestSchedulerBackfillMissedRuns(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
 	if err != nil {
@@ -722,7 +723,7 @@ func TestSchedulerBackfillMissedRuns(t *testing.T) {
 }
 
 func TestSchedulerBackfillCapsAt100(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
 	if err != nil {
@@ -793,7 +794,7 @@ func TestSchedulerBackfillCapsAt100(t *testing.T) {
 }
 
 func TestSchedulerShouldFireMatchesTimezone(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
 	if err != nil {
@@ -859,7 +860,7 @@ func TestSchedulerStartStopsOnSignal(t *testing.T) {
 	// arm was unreachable. Verifying "no ticks after Start returns"
 	// would require a tick-counter test seam in the production
 	// Scheduler — that's scope creep for this test's purpose.)
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
 	if err != nil {
@@ -893,7 +894,7 @@ func TestSchedulerStartStopsOnSignal(t *testing.T) {
 }
 
 func TestSchedulerAddTriggerRejectsNilCron(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
 	if err != nil {
@@ -928,7 +929,7 @@ func TestSchedulerAddTriggerRejectsNilCron(t *testing.T) {
 }
 
 func TestSchedulerTickReturnsErrorForBadTimezone(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "trigger_state"}))
@@ -969,7 +970,7 @@ func TestSchedulerTickReturnsErrorForBadTimezone(t *testing.T) {
 }
 
 func TestSchedulerTickReturnsErrorForBadCronExpr(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "trigger_state"}))
@@ -1020,7 +1021,7 @@ func containsStr(s, substr string) bool {
 }
 
 func TestSchedulerBackfillNoLastRun(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
 	if err != nil {
@@ -1065,7 +1066,7 @@ func TestSchedulerBackfillNoLastRun(t *testing.T) {
 }
 
 func TestSchedulerBackfillCorruptedLastRun(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
 	if err != nil {
@@ -1113,7 +1114,7 @@ func TestSchedulerBackfillCorruptedLastRun(t *testing.T) {
 }
 
 func TestSchedulerBackfillBadTimezone(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
 	if err != nil {
@@ -1162,7 +1163,7 @@ func TestSchedulerBackfillBadTimezone(t *testing.T) {
 }
 
 func TestSchedulerBackfillSkipsNoBackfillTriggers(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(natsutil.KVConfig{Bucket: "trigger_state"}))
 	if err != nil {

@@ -11,12 +11,13 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
 )
 
 func TestNATSAPIRegisterAndStartRun(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 
 	orch := engine.NewOrchestrator(nc)
@@ -94,7 +95,7 @@ func TestNATSAPIRegisterAndStartRun(t *testing.T) {
 }
 
 func TestNewNATSAPIPanicsNilSvc(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	defer func() {
 		r := recover()
 		if r == nil {
@@ -105,7 +106,7 @@ func TestNewNATSAPIPanicsNilSvc(t *testing.T) {
 }
 
 func TestNewNATSAPIPanicsNilNC(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 	defer func() {
@@ -118,7 +119,7 @@ func TestNewNATSAPIPanicsNilNC(t *testing.T) {
 }
 
 func TestNATSAPIStartCreatesSubscriptions(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 	natsAPI := NewNATSAPI(svc, nc, "1.0.0")
@@ -163,7 +164,7 @@ func TestNATSAPIStartCreatesSubscriptions(t *testing.T) {
 }
 
 func TestNATSAPIHandleRegisterInvalidJSON(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 	natsAPI := NewNATSAPI(svc, nc, "1.0.0")
@@ -205,7 +206,7 @@ func TestNATSAPIHandleRegisterInvalidJSON(t *testing.T) {
 }
 
 func TestNATSAPIHandleStartRunInvalidJSON(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 	natsAPI := NewNATSAPI(svc, nc, "1.0.0")
@@ -248,7 +249,7 @@ func TestNATSAPIHandleStartRunInvalidJSON(t *testing.T) {
 }
 
 func TestNATSAPIHandleGetRunNotFound(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 	natsAPI := NewNATSAPI(svc, nc, "1.0.0")
@@ -293,7 +294,7 @@ func TestNATSAPIHandleGetRunNotFound(t *testing.T) {
 // service behaviorally -- a live request succeeds before Stop, and the
 // same request times out after Stop -- without reaching into internals.
 func TestNATSAPIStopDrainsService(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
 	natsAPI := NewNATSAPI(svc, nc, "1.0.0")

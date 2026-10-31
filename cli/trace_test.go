@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/observe/spanread"
 	"github.com/nats-io/nats.go/jetstream"
@@ -186,7 +187,7 @@ func TestBuildSearchSubject(t *testing.T) {
 // --- Integration test ---
 
 func TestCollectRunSpansIntegration(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	_ = srv
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
@@ -298,7 +299,7 @@ func TestCollectRunSpansIntegration(t *testing.T) {
 // Next() retrying forever (nats.go v1.53.1's unbounded MaxResetAttempts
 // default), hanging CollectRunSpans instead of returning an error.
 func TestCollectRunSpansDeletedStreamReturnsWithinBound(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -340,7 +341,7 @@ func TestCollectRunSpansDeletedStreamReturnsWithinBound(t *testing.T) {
 }
 
 func TestCollectRunSpansBuildTree(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	_ = srv
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
@@ -440,7 +441,7 @@ func TestCollectRunSpansBuildTree(t *testing.T) {
 
 func TestTraceViewOutputIntegration(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -514,7 +515,7 @@ func TestTraceViewOutputIntegration(t *testing.T) {
 }
 
 func TestTraceSearchIntegration(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	_ = srv
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)

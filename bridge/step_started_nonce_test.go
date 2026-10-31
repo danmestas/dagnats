@@ -15,13 +15,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestPollStepStartedCarriesDispatchNonce(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc, natsutil.WithStoreBudget(storeBudgetBytes))
 	if err != nil {
 		t.Fatalf("SetupAll: %v", err)

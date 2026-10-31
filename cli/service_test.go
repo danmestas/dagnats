@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
@@ -106,7 +107,7 @@ func TestRunServiceCmd_UnknownSubcommand(t *testing.T) {
 // Drives the full CLI surface: env-var → NATS connect → KV read →
 // table render.
 func TestRunServiceListCmd_EndToEnd(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	srvURL := srv.ClientURL()
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
@@ -152,7 +153,7 @@ func TestRunServiceListCmd_EndToEnd(t *testing.T) {
 // TestRunServiceListCmd_EmptyBucket verifies the empty-state message
 // when no services are registered.
 func TestRunServiceListCmd_EmptyBucket(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	srvURL := srv.ClientURL()
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
@@ -184,7 +185,7 @@ func TestRunServiceListCmd_EmptyBucket(t *testing.T) {
 
 // TestRunServiceListCmd_JSON verifies the --json output path.
 func TestRunServiceListCmd_JSON(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	srvURL := srv.ClientURL()
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)

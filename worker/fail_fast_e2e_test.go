@@ -21,6 +21,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	enginepkg "github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -33,7 +34,7 @@ func TestFailFast_GenericErrorRetriesUntilExhausted(t *testing.T) {
 	// engine sees step.failed (retriable), increments Attempts,
 	// schedules retries via dag.CalculateDelay, and finally lands on
 	// Failed once MaxAttempts is hit.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -124,7 +125,7 @@ func TestFailFast_GenericErrorThenSuccess(t *testing.T) {
 	// Mixed-success path: the generic-error path must produce the same
 	// final correctness as a typed Fail call. The engine schedules each
 	// retry via the backoff machinery; the third attempt completes.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -206,7 +207,7 @@ func TestFailFast_NoPolicyFailsOnce(t *testing.T) {
 	// to Failed with exactly one handler invocation. The negative space
 	// is "no infinite NAK loop" — under the bug, calls would have grown
 	// unbounded as JetStream redelivered the NAK'd message.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

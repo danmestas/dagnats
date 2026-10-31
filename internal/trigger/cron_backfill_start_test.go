@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
@@ -22,7 +23,7 @@ import (
 // TestCronFireRecordsLastRun: a successful tick records the fired minute,
 // and a trigger that did not fire records nothing.
 func TestCronFireRecordsLastRun(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -61,7 +62,7 @@ func TestCronFireRecordsLastRun(t *testing.T) {
 // back, Start replays the three missed minutes of a backfill:true trigger
 // and none of an otherwise identical backfill:false one.
 func TestServiceStartBackfillsMissedFires(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

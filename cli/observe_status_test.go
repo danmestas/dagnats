@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -280,7 +281,7 @@ func TestCollectSidecarStatusFromHealth(t *testing.T) {
 // --- Integration test: TELEMETRY stream info ---
 
 func TestObserveStatusTelemetryIntegration(t *testing.T) {
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -305,7 +306,7 @@ func TestObserveStatusTelemetryIntegration(t *testing.T) {
 }
 
 func TestObserveStatusTelemetryNoStream(t *testing.T) {
-	srv, _ := natsutil.StartTestServer(t)
+	srv, _ := natstest.StartServer(t)
 	// Do NOT call SetupAll — stream does not exist.
 
 	ts := collectTelemetryStatus(srv.ClientURL())
@@ -341,7 +342,7 @@ func TestObserveStatusNATSDisconnected(t *testing.T) {
 
 func TestObserveStatusJSONIntegration(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -387,7 +388,7 @@ func TestObserveStatusJSONIntegration(t *testing.T) {
 
 func TestObserveStatusHumanOutputIntegration(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
-	srv, nc := natsutil.StartTestServer(t)
+	srv, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

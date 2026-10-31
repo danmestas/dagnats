@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/auditkv"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -23,7 +24,7 @@ import (
 // TestHealthCluster_Standalone verifies the standalone mode response when
 // no cluster routes are configured. Asserts mode=standalone, ok=true, 200.
 func TestHealthCluster_Standalone(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestHealthCluster_Standalone(t *testing.T) {
 // actually form). Smoke-tests the cluster branch — asserts mode=cluster,
 // expected_peers=2, and HTTP 503 (degraded since quorum will not form).
 func TestHealthCluster_ClusterShape(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -131,7 +132,7 @@ func fakeMembership() (ClusterMembership, error) {
 // bucket natsutil provisions is absent from the report, so the health
 // lists cannot silently go stale again.
 func TestHealthCluster_ReportsEveryProvisionedStream(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -158,7 +159,7 @@ func TestHealthCluster_ReportsEveryProvisionedStream(t *testing.T) {
 // exists and does not call it unavailable on a node that has none
 // (dagnats-api runs without a console).
 func TestHealthCluster_ReportsAuditBucket(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -188,7 +189,7 @@ func TestHealthCluster_ReportsAuditBucket(t *testing.T) {
 // the derived up/peer counts come from the membership source, not from
 // the configured route count.
 func TestHealthCluster_Membership(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -215,7 +216,7 @@ func TestHealthCluster_Membership(t *testing.T) {
 // TestHealthCluster_MembershipError verifies a failing membership source
 // degrades the report to 503 instead of reporting optimistic numbers.
 func TestHealthCluster_MembershipError(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -232,7 +233,7 @@ func TestHealthCluster_MembershipError(t *testing.T) {
 // TestNATSAPI_ClusterHealth verifies the same report is served over the
 // micro control API at api.cluster.health.
 func TestNATSAPI_ClusterHealth(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -260,7 +261,7 @@ func TestNATSAPI_ClusterHealth(t *testing.T) {
 // cluster still has quorum, and a per-node load-balancer health check
 // must not drain survivors because one node's unreplicated asset is gone.
 func TestHealthCluster_UnreplicatedAssetDegradedNot503(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

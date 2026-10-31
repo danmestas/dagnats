@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/danmestas/dagnats/sdk/httpclient"
@@ -55,7 +56,7 @@ func installRealPropagator(t *testing.T) {
 func TestSDKPollDecodesDispatchTraceContext(t *testing.T) {
 	installRealPropagator(t)
 
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc, natsutil.WithStoreBudget(storeBudgetBytes))
 	if err != nil {
 		t.Fatalf("SetupAll: %v", err)
@@ -153,7 +154,7 @@ func TestSDKPollLeavesTraceFieldsEmptyWhenAbsent(t *testing.T) {
 	// wrong reason.
 	installRealPropagator(t)
 
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc, natsutil.WithStoreBudget(storeBudgetBytes))
 	if err != nil {
 		t.Fatalf("SetupAll: %v", err)

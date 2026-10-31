@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/inputs"
-	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/journal"
 )
 
@@ -214,7 +214,7 @@ func TestHandleTypedRegistersHandler(t *testing.T) {
 	}
 	// Use HandleTyped on a real Worker to verify it wires
 	// through to the handlers map correctly.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	w := NewWorker(nc)
 	HandleTyped(w, "adder",
 		func(
@@ -243,7 +243,7 @@ func TestHandleTypedRegistersHandler(t *testing.T) {
 }
 
 func TestHandleTypedPanicsOnNilFn(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	w := NewWorker(nc)
 	defer func() {
 		r := recover()
@@ -256,7 +256,7 @@ func TestHandleTypedPanicsOnNilFn(t *testing.T) {
 }
 
 func TestHandleTypedPanicsOnEmptyTaskType(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	w := NewWorker(nc)
 	defer func() {
 		r := recover()

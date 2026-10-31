@@ -12,12 +12,13 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestDeleteWorkflowRemovesDefinition(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -54,7 +55,7 @@ func TestDeleteWorkflowRemovesDefinition(t *testing.T) {
 }
 
 func TestDeleteWorkflowNonexistent(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -74,7 +75,7 @@ func TestDeleteWorkflowNonexistent(t *testing.T) {
 }
 
 func TestDeleteWorkflowDoesNotTouchRunHistory(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}
@@ -125,7 +126,7 @@ func TestDeleteWorkflowDoesNotTouchRunHistory(t *testing.T) {
 // snapshots in workflow_defs forever every time a workflow was
 // deleted and never re-registered under the same name.
 func TestDeleteWorkflowRemovesVersionKeys(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
 	}

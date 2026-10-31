@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -104,7 +105,7 @@ func provisionWithoutTriggerTypes(t *testing.T, nc *nats.Conn) {
 }
 
 func TestTriggerMicroDiscoverableWhenTriggerTypesPresent(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	setupWithTriggerTypes(t, nc)
 	svc, err := NewTriggerService(nc, "1.2.3")
 	if err != nil {
@@ -130,7 +131,7 @@ func TestTriggerMicroDiscoverableWhenTriggerTypesPresent(t *testing.T) {
 }
 
 func TestTriggerMicroAbsentWhenTriggerTypesMissing(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	provisionWithoutTriggerTypes(t, nc)
 
 	svc, err := NewTriggerService(nc, "1.2.3")
@@ -155,7 +156,7 @@ func TestTriggerMicroAbsentWhenTriggerTypesMissing(t *testing.T) {
 }
 
 func TestTriggerMicroStopDrainsService(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	setupWithTriggerTypes(t, nc)
 	svc, err := NewTriggerService(nc, "1.0.0")
 	if err != nil {

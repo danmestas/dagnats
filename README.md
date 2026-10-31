@@ -180,7 +180,7 @@ make test
 go test ./... -timeout 600s
 ```
 
-Tests use real embedded NATS servers (no mocks). Each test gets its own server via `natsutil.StartTestServer(t)`. The full suite takes ~5 minutes locally (worker package ~75s, engine ~45s, e2e harness ~80s).
+Tests use real embedded NATS servers (no mocks). Each test gets its own server via `natstest.StartServer(t)`. The full suite takes ~5 minutes locally (worker package ~75s, engine ~45s, e2e harness ~80s).
 
 ## Console
 

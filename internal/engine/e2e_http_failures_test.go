@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/trigger"
 	"github.com/danmestas/dagnats/protocol"
@@ -33,7 +34,7 @@ import (
 // has one normal step that completes successfully but never publishes
 // to ResponseSubject — the client must time out, NOT hang forever.
 func TestE2EHTTPHandlerNoRespondStepTimesOut(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -82,7 +83,7 @@ func TestE2EHTTPHandlerNoRespondStepTimesOut(t *testing.T) {
 // This covers the integration of the failure observer + history
 // stream.
 func TestE2EHTTPHandlerEngineFailedReturns500(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

@@ -3,7 +3,7 @@
 // method (ADR-017 / #321).
 //
 // Methodology: integration tests with a real embedded NATS server.
-// Each test stands up a fresh server via natsutil.StartTestServer so
+// Each test stands up a fresh server via natstest.StartServer so
 // state cannot leak between tests. Asserts cover both positive
 // (round-trip) and negative (last-write-wins) space.
 package worker
@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -21,7 +22,7 @@ import (
 // provisions the `services` KV bucket with the expected configuration
 // (no TTL, History=1). Catches accidental drift in the bucket spec.
 func TestServicesBucketExistsAtBoot(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -64,7 +65,7 @@ func TestServicesBucketExistsAtBoot(t *testing.T) {
 // Put → Get cycle through the KV with Name and Description intact
 // and RegisteredAt stamped by RegisterService.
 func TestServiceDef_Roundtrip(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -123,7 +124,7 @@ func TestServiceDef_Roundtrip(t *testing.T) {
 // idempotency contract — callers must be able to re-register on every
 // worker boot without conflict handling.
 func TestRegisterService_LastWriteWins(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -186,7 +187,7 @@ func TestRegisterService_LastWriteWins(t *testing.T) {
 // guard on empty Name. Per TigerStyle, invariant violations panic
 // rather than returning errors callers will likely ignore.
 func TestRegisterService_EmptyNamePanics(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -222,7 +223,7 @@ func TestRegisterService_EmptyNamePanics(t *testing.T) {
 // the listing. Application code never deletes a service entry today,
 // but ListServices must not depend on that staying true.
 func TestListServices_SkipsDeletedKey(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -274,7 +275,7 @@ func TestListServices_SkipsDeletedKey(t *testing.T) {
 // Callers (the CLI) print "no services" on this state and would
 // otherwise have to special-case the bootstrap window.
 func TestListServices_EmptyBucket(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

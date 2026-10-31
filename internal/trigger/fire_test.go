@@ -1,6 +1,6 @@
 // trigger/fire_test.go
 // Methodology: integration tests with embedded NATS
-// (natsutil.StartTestServer) plus an in-memory OTel span recorder
+// (natstest.StartServer) plus an in-memory OTel span recorder
 // installed via otel.SetTracerProvider — the save/set/restore
 // pattern from observe/propagation_test.go's installPropagator,
 // extended to also swap the TracerProvider so recorded spans can be
@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
@@ -123,7 +124,7 @@ func attrString(
 // scheduler's own setup) and returns a ready TracingPublisher.
 func newTestPublisher(t *testing.T) *natsutil.TracingPublisher {
 	t.Helper()
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "trigger_state"},

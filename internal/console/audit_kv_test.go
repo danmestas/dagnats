@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/auditkv"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -27,7 +28,7 @@ import (
 // console_audit bucket, and returns js + kv for direct manipulation.
 func newAuditTestKV(t *testing.T) (jetstream.JetStream, jetstream.KeyValue) {
 	t.Helper()
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

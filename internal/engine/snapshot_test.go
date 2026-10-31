@@ -11,12 +11,13 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestSnapshotWriteAndRead(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	js, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatalf("jetstream.New failed: %v", err)
@@ -57,7 +58,7 @@ func TestSnapshotWriteAndRead(t *testing.T) {
 }
 
 func TestSnapshotLoadNotFound(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	js, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatalf("jetstream.New failed: %v", err)
@@ -77,7 +78,7 @@ func TestSnapshotLoadNotFound(t *testing.T) {
 }
 
 func TestSnapshotUpdate(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	js, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatalf("jetstream.New failed: %v", err)
@@ -115,7 +116,7 @@ func TestSnapshotUpdate(t *testing.T) {
 }
 
 func TestSnapshotListActiveEmpty(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	js, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatalf("jetstream.New failed: %v", err)
@@ -141,7 +142,7 @@ func TestSnapshotListActiveEmpty(t *testing.T) {
 }
 
 func TestSnapshotListActiveOnlyNonTerminal(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	js, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatalf("jetstream.New failed: %v", err)
@@ -193,7 +194,7 @@ func TestSnapshotListActiveOnlyNonTerminal(t *testing.T) {
 // state. Methodology: real embedded NATS, no mocks.
 func newListStore(t *testing.T) *SnapshotStore {
 	t.Helper()
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	js, err := jetstream.New(nc)
 	if err != nil {
 		t.Fatalf("jetstream.New failed: %v", err)

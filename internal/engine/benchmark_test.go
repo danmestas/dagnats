@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -19,7 +20,7 @@ import (
 // PublishMsg with no trace-context injection. Numbers from this
 // run are what the wrapper overhead is measured against.
 func BenchmarkPublishRaw(b *testing.B) {
-	_, nc := natsutil.StartTestServer(b)
+	_, nc := natstest.StartServer(b)
 	if err := natsutil.SetupAll(nc); err != nil {
 		b.Fatalf("SetupAll: %v", err)
 	}
@@ -47,7 +48,7 @@ func BenchmarkPublishRaw(b *testing.B) {
 // call on every iteration. The wrapper's overhead target is <5%
 // vs the raw baseline.
 func BenchmarkPublishWrapped(b *testing.B) {
-	_, nc := natsutil.StartTestServer(b)
+	_, nc := natstest.StartServer(b)
 	if err := natsutil.SetupAll(nc); err != nil {
 		b.Fatalf("SetupAll: %v", err)
 	}

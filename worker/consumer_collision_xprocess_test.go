@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go/jetstream"
@@ -31,7 +32,7 @@ func TestCrossProcessCollision_DifferentFilter_Panics(t *testing.T) {
 	// durable, different filters — without the precheck,
 	// CreateOrUpdateConsumer would silently mutate the FilterSubject and
 	// corrupt routing.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -86,7 +87,7 @@ func TestCrossProcessCollision_SameFilter_NoPanic(t *testing.T) {
 	// Negative-space test: same durable name AND same filter subject.
 	// CreateOrUpdateConsumer is idempotent in this case; the helper must
 	// not flag this as a collision.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -135,7 +136,7 @@ func TestCrossProcessCollision_SameFilter_NoPanic(t *testing.T) {
 func TestCrossProcessCollision_EmptyStream_NoPanic(t *testing.T) {
 	// Negative-space test: no pre-existing consumers. Helper must scan,
 	// find nothing, and let subscribePullConsumer proceed.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -180,7 +181,7 @@ func TestCrossProcessCollision_EmptyStream_NoPanic(t *testing.T) {
 // delete and recreate with the new "*"-anchored filter — not a
 // cross-type collision.
 func TestCrossProcessCollision_LegacyFilter_AutoUpgrades(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -265,7 +266,7 @@ func TestCrossProcessCollision_LegacyFilter_AutoUpgrades(t *testing.T) {
 // mutated — proving neither call panicked or corrupted state even
 // though at most one of them performed the actual deletion.
 func TestUpgradeLegacyDurable_ConcurrentCallsDeleteAtMostOnce(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -337,7 +338,7 @@ func TestUpgradeLegacyDurable_ConcurrentCallsDeleteAtMostOnce(t *testing.T) {
 // delete — and both workers' consumers genuinely receive dispatched
 // work off the one shared durable.
 func TestCrossProcessCollision_UpgradedDurable_MultipleWorkersConsume(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

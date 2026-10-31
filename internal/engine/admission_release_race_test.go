@@ -24,12 +24,13 @@ import (
 	"testing"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestReleaseSingletonLock_RevisionGuardsAgainstReclaim(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -113,7 +114,7 @@ func (f *fakeDeleteErrKV) Delete(
 // debt mechanism record and later retry it -- silently swallowing it
 // would leak the lock with no recovery path at all.
 func TestReleaseSingletonLock_ClassifiesDeleteErrors(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/danmestas/dagnats/cli"
 	"github.com/danmestas/dagnats/internal/api"
+	"github.com/danmestas/dagnats/internal/buildinfo"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go"
@@ -50,7 +51,7 @@ func main() {
 	}
 	defer telShutdown(context.Background())
 	svc := api.NewService(nc)
-	natsAPI := api.NewNATSAPI(svc, nc, cli.Version)
+	natsAPI := api.NewNATSAPI(svc, nc, buildinfo.Version)
 	natsAPI.Start()
 	// Must stay registered AFTER `defer nc.Close()` above: LIFO ordering
 	// makes this run FIRST, so micro drains while the connection is still

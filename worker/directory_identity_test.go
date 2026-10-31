@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -23,7 +24,7 @@ import (
 func TestWorkerRegistrationCarriesIdentity(t *testing.T) {
 	start := time.Now()
 
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -92,7 +93,7 @@ func TestWorkerRegistrationCarriesIdentity(t *testing.T) {
 // Directory.Register directly rather than waiting for the production
 // 30s heartbeat tick — same code path, no production seam needed.
 func TestWorkerRegistrationLastSeenUpdates(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -169,7 +170,7 @@ func TestWorkerRegistrationRecordsGroups(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, nc := natsutil.StartTestServer(t)
+			_, nc := natstest.StartServer(t)
 			if err := natsutil.SetupAll(nc); err != nil {
 				t.Fatalf("SetupAll: %v", err)
 			}

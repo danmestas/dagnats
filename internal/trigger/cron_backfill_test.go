@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go"
 )
@@ -23,7 +24,7 @@ import (
 // TestRegisterDoesNotFireWhenBackfillFalse registers a Sunday-noon cron
 // on a Friday and asserts no workflow.started event appears within 2s.
 func TestRegisterDoesNotFireWhenBackfillFalse(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "triggers"},
@@ -108,7 +109,7 @@ func TestRegisterDoesNotFireWhenBackfillFalse(t *testing.T) {
 // non-empty last_run_at seeded in trigger_state KV, a trigger with
 // Backfill=false must not replay any missed fires.
 func TestBackfillTriggerSkipsWhenBackfillFalse(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "trigger_state"},
@@ -177,7 +178,7 @@ func TestBackfillTriggerSkipsWhenBackfillFalse(t *testing.T) {
 // does not over-correct: with Backfill=true and a non-empty last_run_at,
 // missed fires must still replay.
 func TestRegisterWithBackfillTrueStillBackfills(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc,
 		natsutil.WithKVBuckets(
 			natsutil.KVConfig{Bucket: "trigger_state"},

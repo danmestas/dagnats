@@ -9,12 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
 func TestWorkerDirectoryRegister(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -58,7 +59,7 @@ func TestWorkerDirectoryRegister(t *testing.T) {
 }
 
 func TestWorkerDirectoryDeregister(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -106,7 +107,7 @@ func TestWorkerDirectoryDeregister(t *testing.T) {
 }
 
 func TestWorkerDirectoryListEmpty(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -132,7 +133,7 @@ func TestWorkerDirectoryListEmpty(t *testing.T) {
 func TestWorkerDirectoryTTLExpiry(t *testing.T) {
 	// This test verifies that entries expire after the 60s TTL.
 	// We mock this by checking that stale entries don't appear in List.
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -200,7 +201,7 @@ func TestNewDirectoryPanicsOnNilJS(t *testing.T) {
 // promptly when a worker dies (the bucket TTL is best-effort and may
 // lag a worker's death by tens of seconds). Regression for #233.
 func TestDirectoryListFiltersStaleEntries(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -277,7 +278,7 @@ func TestDirectoryListFiltersStaleEntries(t *testing.T) {
 }
 
 func TestRegisterPanicsOnEmptyWorkerID(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -309,7 +310,7 @@ func TestRegisterPanicsOnEmptyWorkerID(t *testing.T) {
 }
 
 func TestRegisterPanicsOnEmptyTaskTypes(t *testing.T) {
-	_, nc := natsutil.StartTestServer(t)
+	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc)
 	if err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
