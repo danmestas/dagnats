@@ -224,6 +224,8 @@ type Worker struct {
 	// heartbeat of a handler still running then stops, so its message
 	// redelivers to a live worker instead of staying held by this one.
 	abandoned chan struct{}
+	// heartbeatMax caps one task's automatic heartbeat (WithHeartbeatMax).
+	heartbeatMax time.Duration
 	// autoHeartbeatOff is a test seam (withoutAutoHeartbeat) that models
 	// a frozen process: a handler that blocks then sends no heartbeat.
 	autoHeartbeatOff bool
@@ -417,6 +419,7 @@ func NewWorker(
 		cancelledTasksSkipped: skipped,
 		logChunkFailures:      logChunkFail,
 		drainTimeout:          defaultDrainTimeout,
+		heartbeatMax:          DefaultHeartbeatMax,
 		stopping:              make(chan struct{}),
 		abandoned:             make(chan struct{}),
 	}
@@ -1031,9 +1034,7 @@ func (w *Worker) createElasticConsumer(
 		},
 	)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"consume elastic group %s: %w", groupName, err,
-		)
+		return nil, w.leaveElasticGroup(ctx, groupName, err)
 	}
 
 	slog.Info("elastic consumer group joined",
@@ -1043,6 +1044,27 @@ func (w *Worker) createElasticConsumer(
 	)
 
 	return cc, nil
+}
+
+// leaveElasticGroup removes this worker from groupName after consuming
+// failed: still a member, it would hold partitions nothing consumes.
+// Returns consumeErr joined with any failure to leave.
+func (w *Worker) leaveElasticGroup(
+	ctx context.Context, groupName string, consumeErr error,
+) error {
+	if groupName == "" {
+		panic("leaveElasticGroup: groupName must not be empty")
+	}
+	if consumeErr == nil {
+		panic("leaveElasticGroup: consumeErr must not be nil")
+	}
+	_, leaveErr := pcgroups.DeleteMembers(
+		ctx, w.js, "TASK_QUEUES", groupName, []string{w.workerID},
+	)
+	return errors.Join(
+		fmt.Errorf("consume elastic group %s: %w", groupName, consumeErr),
+		leaveErr,
+	)
 }
 
 // heartbeatLoop re-registers the worker every 30s to refresh the
@@ -1345,12 +1367,13 @@ func (w *Worker) handleMessage(l lane, msg jetstream.Msg) {
 	if l.handler == nil {
 		panic("handleMessage: handler must not be nil")
 	}
-	key, fresh := w.running.claim(msg)
-	if !fresh {
-		skipRunning(l.taskType, key)
+	c, v := w.running.claim(msg, time.Now())
+	if v != verdictRun {
+		skipDelivery(l.taskType, msg, c, v)
 		return
 	}
-	defer w.running.release(key)
+	tracked := &ackTracker{Msg: msg}
+	defer w.releaseClaim(l, tracked, c)
 	// Register this call with handlerWG before doing any work so Stop()
 	// can drain it (#498). If the worker is already draining, bail out
 	// without Add-ing — NAK (not Ack) so the message redelivers to a
@@ -1361,7 +1384,20 @@ func (w *Worker) handleMessage(l lane, msg jetstream.Msg) {
 		return
 	}
 	defer w.handlerWG.Done()
-	w.runMessage(l, msg)
+	w.runMessage(l, tracked, c)
+}
+
+// releaseClaim ends c once its delivery is settled. An acked message is
+// remembered for two AckWaits: long enough to catch a delivery queued
+// behind the run and a redelivery after a lost ack.
+func (w *Worker) releaseClaim(l lane, tracked *ackTracker, c claim) {
+	if tracked == nil {
+		panic("releaseClaim: tracked must not be nil")
+	}
+	if l.ackWait <= 0 {
+		panic("releaseClaim: ackWait must be positive")
+	}
+	w.running.release(c, tracked.acked.Load(), 2*l.ackWait, time.Now())
 }
 
 // decodeTask unmarshals msg's payload and screens out tasks of cancelled
@@ -1404,7 +1440,7 @@ func (w *Worker) decodeTask(
 // runMessage executes one task whose handlerWG slot the caller holds:
 // inline from handleMessage, or on its own goroutine from
 // dispatchConcurrent.
-func (w *Worker) runMessage(l lane, msg jetstream.Msg) {
+func (w *Worker) runMessage(l lane, msg jetstream.Msg, c claim) {
 	if msg == nil {
 		panic("runMessage: msg must not be nil")
 	}
@@ -1437,7 +1473,7 @@ func (w *Worker) runMessage(l lane, msg jetstream.Msg) {
 		return
 	}
 
-	progress := w.startProgress(msg, l.ackWait)
+	progress := w.startProgress(msg, l, tc, c)
 	// The deferred stop covers a panicking handler; Pause stops the
 	// ticker itself before its NAK, and the explicit stop below precedes
 	// every Ack and NAK settleMessage sends.

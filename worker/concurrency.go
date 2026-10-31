@@ -1,6 +1,8 @@
 package worker
 
 import (
+	"time"
+
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -94,20 +96,21 @@ func (w *Worker) dispatchConcurrent(
 	if w.stopping == nil {
 		panic("dispatchConcurrent: worker not built by NewWorker")
 	}
-	key, fresh := w.running.claim(msg)
-	if !fresh {
-		skipRunning(l.taskType, key)
+	c, v := w.running.claim(msg, time.Now())
+	if v != verdictRun {
+		skipDelivery(l.taskType, msg, c, v)
 		return
 	}
+	tracked := &ackTracker{Msg: msg}
 	select {
 	case slots <- struct{}{}:
 	case <-w.stopping:
-		w.running.release(key)
+		w.releaseClaim(l, tracked, c)
 		_ = msg.Nak()
 		return
 	}
 	if !w.beginHandler() {
-		w.running.release(key)
+		w.releaseClaim(l, tracked, c)
 		<-slots
 		_ = msg.Nak()
 		return
@@ -115,7 +118,7 @@ func (w *Worker) dispatchConcurrent(
 	go func() {
 		defer func() { <-slots }()
 		defer w.handlerWG.Done()
-		defer w.running.release(key)
-		w.runMessage(l, msg)
+		defer w.releaseClaim(l, tracked, c)
+		w.runMessage(l, tracked, c)
 	}()
 }

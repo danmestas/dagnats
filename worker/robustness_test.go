@@ -176,11 +176,13 @@ func TestGuard_SkipsRedeliveryWhileRunning(t *testing.T) {
 }
 
 // recordingMsg logs InProgress and Ack calls, in order, then forwards
-// them to the real message.
+// them to the real message. ackHold keeps Ack open after it records, so
+// a ticker still running at the moment of the ack records after it.
 type recordingMsg struct {
 	jetstream.Msg
-	mu     sync.Mutex
-	events []string
+	mu      sync.Mutex
+	events  []string
+	ackHold time.Duration
 }
 
 func (m *recordingMsg) record(event string) {
@@ -202,6 +204,7 @@ func (m *recordingMsg) InProgress() error {
 
 func (m *recordingMsg) Ack() error {
 	m.record("ack")
+	time.Sleep(m.ackHold)
 	return m.Msg.Ack()
 }
 
@@ -239,7 +242,9 @@ func fetchOneTask(
 func TestHeartbeat_StopsBeforeAck(t *testing.T) {
 	nc, js := startConcurrencyServer(t)
 	publishConcurrencyTask(t, js, "probe.tick", "run-tick")
-	msg := &recordingMsg{Msg: fetchOneTask(t, js, "probe.tick")}
+	msg := &recordingMsg{
+		Msg: fetchOneTask(t, js, "probe.tick"), ackHold: robustAckWait,
+	}
 	var runs atomic.Int64
 	w := NewWorker(nc)
 	handler := countingHandler(&runs, 2*robustAckWait)
@@ -247,7 +252,7 @@ func TestHeartbeat_StopsBeforeAck(t *testing.T) {
 
 	w.runMessage(lane{
 		taskType: "probe.tick", handler: handler, ackWait: robustAckWait,
-	}, msg)
+	}, msg, claim{})
 	settled := msg.snapshot()
 	time.Sleep(robustAckWait)
 	later := msg.snapshot()
@@ -280,7 +285,7 @@ func TestHeartbeat_StopsBeforePauseNak(t *testing.T) {
 
 	w.runMessage(lane{
 		taskType: "probe.pause", handler: handler, ackWait: robustAckWait,
-	}, msg)
+	}, msg, claim{})
 	events := msg.snapshot()
 
 	if len(events) < 2 || events[len(events)-1] != "nak" {
@@ -320,4 +325,157 @@ func TestHeartbeat_ManualHeartbeatStillWorks(t *testing.T) {
 	case <-time.After(concurrencyWaitBound):
 		t.Fatal("handler never heartbeat")
 	}
+}
+
+// awaitRuns waits for runs to reach want, failing after bound.
+func awaitRuns(t *testing.T, runs *atomic.Int64, want int64, bound time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(bound)
+	for runs.Load() < want && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if n := runs.Load(); n != want {
+		t.Fatalf("handler ran %d times within %s, want %d", n, bound, want)
+	}
+}
+
+// hangFirst returns a handler whose first run hangs until release and
+// whose later runs complete at once.
+func hangFirst(runs *atomic.Int64, release <-chan struct{}) HandlerFunc {
+	return func(tc TaskContext) error {
+		if runs.Add(1) == 1 {
+			select {
+			case <-release:
+			case <-time.After(4 * concurrencyWaitBound):
+			}
+			return nil
+		}
+		return tc.Complete([]byte(`"done"`))
+	}
+}
+
+// TestHeartbeat_CapLetsAHungHandlerRedeliver: past WithHeartbeatMax the
+// worker stops heartbeating and stops treating the hung run as running,
+// so the AckWait redelivery runs in the second slot.
+func TestHeartbeat_CapLetsAHungHandlerRedeliver(t *testing.T) {
+	nc, js := startConcurrencyServer(t)
+	var runs atomic.Int64
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	w := NewWorker(nc, WithHeartbeatMax(robustAckWait+robustAckWait/2))
+	w.Handle("probe.hung", hangFirst(&runs, release),
+		WithAckWait(robustAckWait), WithConcurrency(2))
+	if err := w.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer w.Stop()
+
+	publishConcurrencyTask(t, js, "probe.hung", "run-hung")
+	awaitRuns(t, &runs, 1, concurrencyWaitBound)
+	awaitRuns(t, &runs, 2, concurrencyWaitBound)
+}
+
+// TestHeartbeat_StopsWhenTheRunIsCancelled: a handler that ignores its
+// cancelled context must not keep its message alive.
+func TestHeartbeat_StopsWhenTheRunIsCancelled(t *testing.T) {
+	nc, js := startConcurrencyServer(t)
+	publishConcurrencyTask(t, js, "probe.cancel", "run-cancel")
+	msg := &recordingMsg{Msg: fetchOneTask(t, js, "probe.cancel")}
+	w := NewWorker(nc)
+	handler := func(tc TaskContext) error {
+		time.Sleep(3 * robustAckWait)
+		return nil
+	}
+	w.Handle("probe.cancel", handler)
+	go func() {
+		time.Sleep(robustAckWait + robustAckWait/10)
+		msg.record("cancel")
+		w.cancels.cancelRun("run-cancel")
+	}()
+
+	w.runMessage(lane{
+		taskType: "probe.cancel", handler: handler, ackWait: robustAckWait,
+	}, msg, claim{})
+	events := msg.snapshot()
+
+	before, after := 0, 0
+	seenCancel := false
+	for _, event := range events {
+		switch {
+		case event == "cancel":
+			seenCancel = true
+		case event == "progress" && seenCancel:
+			after++
+		case event == "progress":
+			before++
+		}
+	}
+	if !seenCancel || before < 1 {
+		t.Fatalf("events = %v, want progress before a cancel", events)
+	}
+	// One InProgress may already be in flight as the cancel lands.
+	if after > 1 {
+		t.Fatalf("events = %v, want the heartbeat to stop at the cancel", events)
+	}
+}
+
+// TestGuard_SkipsADeliveryQueuedBehindTheRun: in a lane of one a
+// redelivery made during the run waits in the client until the run has
+// acked; it must not run again then.
+func TestGuard_SkipsADeliveryQueuedBehindTheRun(t *testing.T) {
+	nc, js := startConcurrencyServer(t)
+	var runs atomic.Int64
+	w := NewWorker(nc)
+	w.Handle("probe.queued", func(tc TaskContext) error {
+		if runs.Add(1) == 1 {
+			reply := tc.(*taskContext).msg.Reply()
+			if err := nc.Publish(reply, []byte("-NAK")); err != nil {
+				return err
+			}
+		}
+		time.Sleep(robustAckWait + robustAckWait/2)
+		return tc.Complete([]byte(`"done"`))
+	}, WithAckWait(robustAckWait))
+	if err := w.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer w.Stop()
+
+	publishConcurrencyTask(t, js, "probe.queued", "run-queued")
+	if got := awaitCompletedOutput(t, nc, "run-queued"); got != `"done"` {
+		t.Fatalf("completed output = %s, want \"done\"", got)
+	}
+	time.Sleep(2 * robustAckWait)
+	if n := runs.Load(); n != 1 {
+		t.Fatalf("handler ran %d times, want 1", n)
+	}
+	awaitConsumerSettled(t, js, "probe.queued")
+}
+
+// TestHeartbeat_StopAbandoningAHandlerLetsItRedeliver: once Stop's drain
+// times out, the stopped worker's heartbeat must not keep the task from
+// the next worker.
+func TestHeartbeat_StopAbandoningAHandlerLetsItRedeliver(t *testing.T) {
+	nc, js := startConcurrencyServer(t)
+	var runs atomic.Int64
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	handler := hangFirst(&runs, release)
+	first := NewWorker(nc)
+	first.drainTimeout = 100 * time.Millisecond
+	first.Handle("probe.abandon", handler, WithAckWait(robustAckWait))
+	if err := first.Start(); err != nil {
+		t.Fatalf("Start first: %v", err)
+	}
+	publishConcurrencyTask(t, js, "probe.abandon", "run-abandon")
+	awaitRuns(t, &runs, 1, concurrencyWaitBound)
+	first.Stop()
+
+	second := NewWorker(nc)
+	second.Handle("probe.abandon", handler, WithAckWait(robustAckWait))
+	if err := second.Start(); err != nil {
+		t.Fatalf("Start second: %v", err)
+	}
+	defer second.Stop()
+	awaitRuns(t, &runs, 2, concurrencyWaitBound)
 }

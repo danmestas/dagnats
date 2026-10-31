@@ -13,9 +13,9 @@ JetStream delivers each task message with an **AckWait** deadline. If the worker
 
 While any handler runs, the worker calls `msg.InProgress()` every half AckWait, using the AckWait of the consumer that delivered the task (including a `WithAckWait` override). The ticker stops when the handler returns, before the worker acks or NAKs the message, and `Pause` stops it before its delayed NAK, so the pause keeps its full delay.
 
-Because the worker keeps the message alive for as long as the handler runs, AckWait no longer bounds a hung handler. The step's timeout does: the engine fails the attempt when it passes (see [Timeouts](/docs/reliability/timeouts)). Give a step that may hang a `Timeout`.
+The heartbeat also stops when the run is cancelled, when `Stop` gives up on a handler after its 30-second drain, and at a cap: one hour per task by default, set with `worker.NewWorker(nc, worker.WithHeartbeatMax(d))`. Past the cap the worker logs a warning naming the task and lets AckWait redeliver it, so a hung handler is retried as before. A step's `Timeout`, when it has one, fails a hung attempt sooner (see [Timeouts](/docs/reliability/timeouts)). Set the cap above the longest handler you run.
 
-If a redelivery of a task arrives while the same task is still running in this worker (a `WithConcurrency` lane can receive one), the worker skips it without acking or NAKing it. The running handler's result settles the message.
+A worker does not run the same task message twice at once. A redelivery that arrives while the message is still running here (a `WithConcurrency` lane can receive one) is skipped without an ack or NAK; the running handler's result settles the message. A redelivery that reaches the worker within two AckWaits after it acked the message (one that queued behind the run in a lane of one, or one sent because the ack was lost) is acked without running. A message the worker NAK'd, such as by `Pause`, runs again as usual. The check is per worker: it does not stop a redelivery that goes to another worker.
 
 ## Manual Heartbeat
 
