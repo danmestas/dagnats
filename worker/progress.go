@@ -15,7 +15,7 @@ import (
 const DefaultHeartbeatMax = time.Hour
 
 // WithHeartbeatMax caps how long the automatic heartbeat keeps one
-// task's message alive. A step's timeout is optional, so without a cap a
+// task's message alive, for every task type without WithMaxRunTime. A step's timeout is optional, so without a cap a
 // hung handler in a live process would hold its task forever; past the
 // cap the worker stops heartbeating, logs a warning, and the task
 // redelivers after AckWait. Set it above the longest handler you run.
@@ -30,6 +30,50 @@ func WithHeartbeatMax(d time.Duration) WorkerOption {
 		}
 		w.heartbeatMax = d
 	}
+}
+
+// MaxRunTimeMax bounds WithMaxRunTime.
+const MaxRunTimeMax = 30 * 24 * time.Hour
+
+// WithMaxRunTime overrides, for one task type, how long the automatic
+// heartbeat keeps a task alive (the worker default is WithHeartbeatMax).
+// Give it to handlers that legitimately run long; a long wait is better
+// spent in ctx.Pause(name, d), which holds no worker while it waits.
+// Panics unless 0 < d <= MaxRunTimeMax.
+func WithMaxRunTime(d time.Duration) HandlerOption {
+	if d <= 0 {
+		panic("WithMaxRunTime: d must be positive")
+	}
+	if d > MaxRunTimeMax {
+		panic("WithMaxRunTime: d must be <= MaxRunTimeMax")
+	}
+	return func(w *Worker, taskType string) {
+		if w == nil {
+			panic("WithMaxRunTime: w must not be nil")
+		}
+		if taskType == "" {
+			panic("WithMaxRunTime: taskType must not be empty")
+		}
+		if w.handlerMaxRunTime == nil {
+			w.handlerMaxRunTime = make(map[string]time.Duration)
+		}
+		w.handlerMaxRunTime[taskType] = d
+	}
+}
+
+// maxRunTime is taskType's heartbeat cap: its WithMaxRunTime, else the
+// worker's WithHeartbeatMax.
+func (w *Worker) maxRunTime(taskType string) time.Duration {
+	if taskType == "" {
+		panic("maxRunTime: taskType must not be empty")
+	}
+	if d, ok := w.handlerMaxRunTime[taskType]; ok {
+		return d
+	}
+	if w.heartbeatMax <= 0 {
+		panic("maxRunTime: heartbeatMax must be positive")
+	}
+	return w.heartbeatMax
 }
 
 // withoutAutoHeartbeat turns the automatic heartbeat off, so a test can
@@ -90,12 +134,13 @@ func (w *Worker) startProgress(
 		close(p.done)
 		return p
 	}
+	maxRunTime := w.maxRunTime(l.taskType)
 	ends := progressEnds{
-		ctx: tc.ctx, abandoned: w.abandoned, max: w.heartbeatMax,
+		ctx: tc.ctx, abandoned: w.abandoned, max: maxRunTime,
 		atMax: func() {
-			slog.Warn("task outlived the heartbeat cap; it will redeliver",
+			slog.Warn("task outlived its max run time; it will redeliver",
 				"task_type", l.taskType, "run_id", tc.runID,
-				"step_id", tc.stepID, "heartbeat_max", w.heartbeatMax)
+				"step_id", tc.stepID, "max_run_time", maxRunTime)
 			w.running.forget(c)
 		},
 	}

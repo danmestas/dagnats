@@ -224,8 +224,10 @@ type Worker struct {
 	// heartbeat of a handler still running then stops, so its message
 	// redelivers to a live worker instead of staying held by this one.
 	abandoned chan struct{}
-	// heartbeatMax caps one task's automatic heartbeat (WithHeartbeatMax).
-	heartbeatMax time.Duration
+	// heartbeatMax caps one task's automatic heartbeat (WithHeartbeatMax);
+	// handlerMaxRunTime holds per-task WithMaxRunTime overrides.
+	heartbeatMax      time.Duration
+	handlerMaxRunTime map[string]time.Duration
 	// autoHeartbeatOff is a test seam (withoutAutoHeartbeat) that models
 	// a frozen process: a handler that blocks then sends no heartbeat.
 	autoHeartbeatOff bool

@@ -479,3 +479,39 @@ func TestHeartbeat_StopAbandoningAHandlerLetsItRedeliver(t *testing.T) {
 	defer second.Stop()
 	awaitRuns(t, &runs, 2, concurrencyWaitBound)
 }
+
+// TestHeartbeat_MaxRunTimeOverridesTheWorkerDefault: a handler with
+// WithMaxRunTime keeps heartbeating past a lower worker default, then
+// is freed at its own cap.
+func TestHeartbeat_MaxRunTimeOverridesTheWorkerDefault(t *testing.T) {
+	nc, js := startConcurrencyServer(t)
+	var runs atomic.Int64
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	w := NewWorker(nc, WithHeartbeatMax(robustAckWait))
+	w.Handle("probe.long", hangFirst(&runs, release),
+		WithAckWait(robustAckWait), WithConcurrency(2),
+		WithMaxRunTime(4*robustAckWait))
+	if err := w.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer w.Stop()
+
+	publishConcurrencyTask(t, js, "probe.long", "run-long")
+	awaitRuns(t, &runs, 1, concurrencyWaitBound)
+	// The worker default would free it at 1 s and redeliver by 2 s.
+	time.Sleep(3 * robustAckWait)
+	if n := runs.Load(); n != 1 {
+		t.Fatalf("handler ran %d times before its own max run time, want 1", n)
+	}
+	awaitRuns(t, &runs, 2, concurrencyWaitBound)
+}
+
+func TestWithMaxRunTime_Bounds(t *testing.T) {
+	expectPanic(t, "WithMaxRunTime: d must be positive", func() {
+		WithMaxRunTime(0)
+	})
+	expectPanic(t, "WithMaxRunTime: d must be <= MaxRunTimeMax", func() {
+		WithMaxRunTime(MaxRunTimeMax + time.Second)
+	})
+}
