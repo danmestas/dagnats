@@ -106,13 +106,13 @@ func (w *Worker) dispatchConcurrent(
 	case slots <- struct{}{}:
 	case <-w.stopping:
 		w.releaseClaim(l, tracked, c)
-		_ = msg.Nak()
+		l.park.parkOrNak(msg)
 		return
 	}
 	if !w.beginHandler() {
 		w.releaseClaim(l, tracked, c)
 		<-slots
-		_ = msg.Nak()
+		l.park.parkOrNak(msg)
 		return
 	}
 	go func() {

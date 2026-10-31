@@ -224,6 +224,10 @@ type Worker struct {
 	// stopping closes once the consumers stop, so a consume callback
 	// waiting for a WithConcurrency slot gives up instead of outliving Stop.
 	stopping chan struct{}
+	// lanes are the jetstream consumers Stop drains; laneReleases
+	// counts the goroutines NAKing what each lane parked meanwhile.
+	lanes        []drainingLane
+	laneReleases sync.WaitGroup
 	// abandoned closes when Stop's drain times out. The automatic
 	// heartbeat of a handler still running then stops, so its message
 	// redelivers to a live worker instead of staying held by this one.
@@ -677,8 +681,8 @@ func (w *Worker) registerDirectory() {
 // subscribeTask creates JetStream subscriptions for a single task
 // type. When groups are configured, subscribes per-group. Also
 // subscribes to the sticky subject for worker-affinity routing.
-// Each consumer joins w.stoppers as soon as it exists, so a later
-// failure's Stop ends it.
+// Each consumer joins w.lanes (elastic ones w.stoppers) as soon as it
+// exists, so a later failure's Stop ends it.
 func (w *Worker) subscribeTask(
 	taskType string, handler HandlerFunc,
 ) error {
@@ -693,25 +697,21 @@ func (w *Worker) subscribeTask(
 	}
 	if len(w.groups) > 0 {
 		for _, group := range w.groups {
-			cc, err := w.subscribePullConsumer(taskType, group, handler)
-			if err != nil {
+			if _, err := w.subscribePullConsumer(
+				taskType, group, handler,
+			); err != nil {
 				return err
 			}
-			w.stoppers = append(w.stoppers, cc)
 		}
 		return nil
 	}
-	cc, err := w.subscribePullConsumer(taskType, "", handler)
-	if err != nil {
+	if _, err := w.subscribePullConsumer(taskType, "", handler); err != nil {
 		return err
 	}
-	w.stoppers = append(w.stoppers, cc)
 	// Sticky subscription on STICKY_TASKS stream (separate from
 	// TASK_QUEUES to avoid work queue filter conflict). Missing
 	// stream is fine.
-	if stickyCC := w.createStickyConsumer(taskType, handler); stickyCC != nil {
-		w.stoppers = append(w.stoppers, stickyCC)
-	}
+	w.createStickyConsumer(taskType, handler)
 	return nil
 }
 
@@ -823,7 +823,7 @@ func (w *Worker) subscribePullConsumer(
 		)
 	}
 
-	l := lane{taskType: taskType, handler: handler, ackWait: ackWait}
+	l := lane{taskType: taskType, handler: handler, ackWait: ackWait, park: &lanePark{}}
 	cc, err := cons.Consume(
 		w.messageHandler(l),
 		jetstream.ConsumeErrHandler(consumeErrHandler(durable)),
@@ -831,6 +831,7 @@ func (w *Worker) subscribePullConsumer(
 	if err != nil {
 		return nil, fmt.Errorf("consume %s: %w", durable, err)
 	}
+	w.trackLane(cc, l.park)
 	return cc, nil
 }
 
@@ -966,6 +967,7 @@ func (w *Worker) createStickyConsumer(
 	}
 	l := lane{
 		taskType: taskType, handler: handler, ackWait: info.Config.AckWait,
+		park: &lanePark{},
 	}
 	cc, err := cons.Consume(
 		w.messageHandler(l),
@@ -974,6 +976,7 @@ func (w *Worker) createStickyConsumer(
 	if err != nil {
 		return nil
 	}
+	w.trackLane(cc, l.park)
 	return cc
 }
 
@@ -1030,6 +1033,11 @@ func (w *Worker) createElasticConsumer(
 		)
 	}
 
+	// TODO: an elastic lane has no park, so a delivery it turns away
+	// during Stop is NAK'd at once and can redeliver to this member's
+	// own still-open pull, then strand until AckWait. pcgroups' Stop only
+	// cancels a context and its consume context reports no Closed, so
+	// there is no drain to wait on until the library exposes one.
 	l := lane{taskType: taskType, handler: handler, ackWait: elasticAckWait}
 	cc, err := pcgroups.ElasticConsume(
 		ctx, w.js, "TASK_QUEUES", groupName,
@@ -1120,6 +1128,15 @@ func (w *Worker) beginHandler() bool {
 // Stop unsubscribes all active subscriptions. Safe to call after
 // Start. Idempotent — repeat calls are no-ops, which makes
 // kill-mid-test patterns + t.Cleanup safe.
+//
+// Messages a consumer had buffered but not started are NAK'd once that
+// consumer's subscription has drained, so they redeliver to a live
+// worker rather than wait out AckWait. Draining costs a flush round
+// trip per consumer, and a consumer running a task inline drains only
+// when that task returns. Stop waits at most the drain timeout plus
+// laneCloseGrace for that. A parked message gets no InProgress, so
+// with a WithAckWait shorter than that wait the server may redeliver
+// it before the NAK.
 func (w *Worker) Stop() {
 	if w.handlers == nil {
 		panic("Worker.Stop: worker not initialized")
@@ -1183,15 +1200,18 @@ func (w *Worker) Stop() {
 		}
 		w.stopConsumers()
 		w.awaitHandlers()
+		// Bounded: each release goroutine waits at most drainTimeout plus
+		// laneCloseGrace.
+		w.laneReleases.Wait()
 	})
 }
 
-// stopConsumers ends every consumer, then releases consume callbacks
-// waiting for a WithConcurrency slot. Stopping first makes it less likely
-// that a waiter's NAK hands the message straight back to this stopping
-// Worker; it does not rule it out, because nats.go unsubscribes the pull
-// on its own goroutine after Stop returns. A message redelivered here is
-// NAK'd again by the next waiter or left to AckWait, so it is not lost.
+// stopConsumers drains every jetstream lane and stops the rest, then
+// releases consume callbacks waiting for a WithConcurrency slot. Drain,
+// unlike Stop, hands the messages nats.go already buffered to the
+// callback, which parks them because draining is set. releaseLanes NAKs
+// each lane's parked messages once its pull is gone from the server,
+// while running handlers still drain.
 func (w *Worker) stopConsumers() {
 	if w.stopping == nil {
 		panic("stopConsumers: worker not built by NewWorker")
@@ -1199,10 +1219,28 @@ func (w *Worker) stopConsumers() {
 	if !w.draining {
 		panic("stopConsumers: draining must be set first")
 	}
+	for _, l := range w.lanes {
+		l.consume.Drain()
+	}
 	for _, s := range w.stoppers {
 		s.Stop()
 	}
 	close(w.stopping)
+	w.releaseLanes()
+}
+
+// effectiveDrainTimeout is the handler drain bound Stop uses: the
+// configured drainTimeout, or defaultDrainTimeout when unset. The lane
+// releases derive their bound from it too, so the two cannot drift.
+func (w *Worker) effectiveDrainTimeout() time.Duration {
+	timeout := w.drainTimeout
+	if timeout <= 0 {
+		timeout = defaultDrainTimeout
+	}
+	if timeout <= 0 {
+		panic("effectiveDrainTimeout: timeout must be positive")
+	}
+	return timeout
 }
 
 // awaitHandlers waits for in-flight handleMessage calls to finish before
@@ -1220,13 +1258,7 @@ func (w *Worker) awaitHandlers() {
 		w.handlerWG.Wait()
 		close(done)
 	}()
-	timeout := w.drainTimeout
-	if timeout <= 0 {
-		timeout = defaultDrainTimeout
-	}
-	if timeout <= 0 {
-		panic("awaitHandlers: timeout must be positive")
-	}
+	timeout := w.effectiveDrainTimeout()
 	select {
 	case <-done:
 	case <-time.After(timeout):
@@ -1383,11 +1415,11 @@ func (w *Worker) handleMessage(l lane, msg jetstream.Msg) {
 	defer w.releaseClaim(l, tracked, c)
 	// Register this call with handlerWG before doing any work so Stop()
 	// can drain it (#498). If the worker is already draining, bail out
-	// without Add-ing — NAK (not Ack) so the message redelivers to a
-	// live worker, or to this same worker after restart, instead of
-	// being silently dropped.
+	// without Add-ing, and park the message for a NAK once this lane's
+	// pull has drained, so it redelivers to a live worker instead of
+	// bouncing back here or being silently dropped.
 	if !w.beginHandler() {
-		_ = msg.Nak()
+		l.park.parkOrNak(msg)
 		return
 	}
 	defer w.handlerWG.Done()

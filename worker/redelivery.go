@@ -16,6 +16,8 @@ type lane struct {
 	taskType string
 	handler  HandlerFunc
 	ackWait  time.Duration
+	// park holds what the lane turns away during Stop; nil NAKs at once.
+	park *lanePark
 }
 
 // deliveryKey names one stream message. Sequences are per stream, and a

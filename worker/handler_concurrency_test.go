@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -512,5 +513,293 @@ func TestWithConcurrency_StopReleasesSlotWaiter(t *testing.T) {
 	}
 	if peak := gauge.peak.Load(); peak != 2 {
 		t.Fatalf("peak in-flight handlers = %d, want 2", peak)
+	}
+}
+
+// drainSignalLane stands in for a jetstream ConsumeContext: Closed fires
+// only when the test says the lane's subscription has drained.
+type drainSignalLane struct {
+	jetstream.ConsumeContext
+	closed chan struct{}
+}
+
+func (l *drainSignalLane) Stop()                   {}
+func (l *drainSignalLane) Drain()                  {}
+func (l *drainSignalLane) Closed() <-chan struct{} { return l.closed }
+
+// nakRecordingMsg records each Nak on naks instead of sending it.
+type nakRecordingMsg struct {
+	jetstream.Msg
+	naks chan struct{}
+}
+
+func (m *nakRecordingMsg) Nak() error {
+	m.naks <- struct{}{}
+	return nil
+}
+
+// TestStopNaksParkedOnlyAfterLaneDrains pins the ordering behind
+// StopReleasesSlotWaiter: a delivery a lane turned away during Stop is
+// NAK'd only once that lane's subscription has drained. A NAK sent while
+// the pull is still open hands the redelivery straight back to the
+// stopping Worker. A delivery turned away after the release is NAK'd at
+// once, since nothing would release it later.
+func TestStopNaksParkedOnlyAfterLaneDrains(t *testing.T) {
+	nc, _ := startConcurrencyServer(t)
+	w := NewWorker(nc)
+	consume := &drainSignalLane{closed: make(chan struct{})}
+	park := &lanePark{}
+	w.trackLane(consume, park)
+	parked := &nakRecordingMsg{naks: make(chan struct{}, 1)}
+	park.parkOrNak(parked)
+
+	stopped := make(chan struct{})
+	go func() {
+		w.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-parked.naks:
+		t.Fatal("parked delivery NAK'd while its lane's pull was still open")
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(consume.closed)
+	select {
+	case <-parked.naks:
+	case <-time.After(concurrencyWaitBound):
+		t.Fatal("parked delivery not NAK'd after its lane drained")
+	}
+	select {
+	case <-stopped:
+	case <-time.After(concurrencyWaitBound):
+		t.Fatal("Stop did not return")
+	}
+
+	late := &nakRecordingMsg{naks: make(chan struct{}, 1)}
+	park.parkOrNak(late)
+	select {
+	case <-late.naks:
+	default:
+		t.Fatal("delivery turned away after release was parked, not NAK'd")
+	}
+}
+
+// TestStop_RegistersEveryJetstreamLane pins that the lanes Stop drains
+// are the consumers Start really creates: the pull consumer plus the
+// sticky consumer, or one pull consumer per group (groups take no
+// sticky consumer).
+func TestStop_RegistersEveryJetstreamLane(t *testing.T) {
+	nc, _ := startConcurrencyServer(t)
+	plain := NewWorker(nc)
+	plain.Handle("probe.count", func(tc TaskContext) error { return nil },
+		WithConcurrency(2))
+	plain.Start()
+	defer plain.Stop()
+	if got := len(plain.lanes); got != 2 {
+		t.Fatalf("plain worker lanes = %d, want 2 (pull + sticky)", got)
+	}
+	grouped := NewWorker(nc, WithGroups("a", "b", "c"))
+	grouped.Handle("probe.count", func(tc TaskContext) error { return nil })
+	grouped.Start()
+	defer grouped.Stop()
+	if got := len(grouped.lanes); got != 3 {
+		t.Fatalf("grouped worker lanes = %d, want 3 (one per group)", got)
+	}
+	if len(plain.stoppers) != 0 || len(grouped.stoppers) != 0 {
+		t.Fatal("a jetstream lane was registered as a plain stopper")
+	}
+}
+
+// TestStop_BacklogRedeliversPromptly: six tasks reach the stopping
+// Worker's client buffer while only n can run. Stop must hand every one
+// of the 6-n waiting in the buffer to a live worker well inside AckWait
+// (5 minutes), each redelivered exactly once, so a draining NAK never
+// loops back through this Worker burning delivery attempts. Above n = 1
+// that happens while the held handlers still run; at n = 1 the buffer
+// sits behind the inline handler, so it happens once that returns.
+func TestStop_BacklogRedeliversPromptly(t *testing.T) {
+	for _, n := range []int{1, 2} {
+		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
+			runStopBacklog(t, n)
+		})
+	}
+}
+
+func runStopBacklog(t *testing.T, n int) {
+	const total = 6
+	nc, js := startConcurrencyServer(t)
+	var gauge inflightGauge
+	var mixed atomic.Int64
+	started := make(chan string, total)
+	release := make(chan struct{})
+	var opts []HandlerOption
+	if n > 1 {
+		opts = append(opts, WithConcurrency(n))
+	}
+	stopping := NewWorker(nc)
+	stopping.Handle("probe.backlog",
+		blockingHandler(&gauge, started, release, &mixed), opts...)
+	stopping.Start()
+	for i := range total {
+		publishConcurrencyTask(t, js, "probe.backlog", fmt.Sprintf("run-b%d", i))
+	}
+	held := awaitStarts(t, started, n)
+	awaitAckPending(t, js, consumerNameFor("probe.backlog", ""), total)
+
+	stopped := make(chan struct{})
+	go func() {
+		stopping.Stop()
+		close(stopped)
+	}()
+	took := make(chan string, total)
+	live := NewWorker(nc)
+	live.Handle("probe.backlog", func(tc TaskContext) error {
+		took <- tc.RunID()
+		return tc.Complete([]byte(`"ok"`))
+	}, WithConcurrency(total))
+	live.Start()
+	defer live.Stop()
+	if n == 1 {
+		close(release)
+	}
+	got := awaitStarts(t, took, total-n)
+	if n > 1 {
+		close(release)
+	}
+	for _, run := range got {
+		if slices.Contains(held, run) {
+			t.Fatalf("live worker took %s, which was still running", run)
+		}
+	}
+	select {
+	case <-stopped:
+	case <-time.After(concurrencyWaitBound):
+		t.Fatal("Stop did not return after handlers were released")
+	}
+	assertDeliveredOnce(t, js, consumerNameFor("probe.backlog", ""), total, total-n)
+}
+
+// TestStop_DrainingNakDoesNotLoop: Stop sets draining before it drains
+// the consumers, with a directory round trip between, so a delivery can
+// reach an idle callback while the pull is still live. NAK'd then, it
+// redelivers to the same callback, which NAKs it again, burning delivery
+// attempts until the pull ends. The test holds that window open by
+// setting draining itself: the delivery must be delivered once, parked,
+// and redelivered once to a live worker after Stop drains the lane.
+func TestStop_DrainingNakDoesNotLoop(t *testing.T) {
+	for _, n := range []int{1, 2} {
+		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
+			runDrainingNak(t, n)
+		})
+	}
+}
+
+func runDrainingNak(t *testing.T, n int) {
+	nc, js := startConcurrencyServer(t)
+	var opts []HandlerOption
+	if n > 1 {
+		opts = append(opts, WithConcurrency(n))
+	}
+	stopping := NewWorker(nc)
+	stopping.Handle("probe.loop", func(tc TaskContext) error {
+		return tc.Complete([]byte(`"stopping"`))
+	}, opts...)
+	stopping.Start()
+	stopping.drainMu.Lock()
+	stopping.draining = true
+	stopping.drainMu.Unlock()
+	publishConcurrencyTask(t, js, "probe.loop", "run-loop")
+	name := consumerNameFor("probe.loop", "")
+	awaitAckPending(t, js, name, 1)
+	time.Sleep(300 * time.Millisecond)
+	if got := taskConsumerInfo(t, js, name).Delivered.Consumer; got != 1 {
+		t.Fatalf("deliveries while draining = %d, want 1: the NAK looped", got)
+	}
+
+	took := make(chan string, 1)
+	live := NewWorker(nc)
+	live.Handle("probe.loop", func(tc TaskContext) error {
+		took <- tc.RunID()
+		return tc.Complete([]byte(`"ok"`))
+	})
+	live.Start()
+	defer live.Stop()
+	stopping.Stop()
+	awaitStarts(t, took, 1)
+	assertDeliveredOnce(t, js, name, 1, 1)
+}
+
+// TestStop_LaneReleaseSharesDrainBound: an unset drainTimeout falls
+// back to defaultDrainTimeout for the handler drain, and the lane
+// releases must wait on that same bound, not on zero plus the grace.
+func TestStop_LaneReleaseSharesDrainBound(t *testing.T) {
+	nc, _ := startConcurrencyServer(t)
+	w := NewWorker(nc)
+	w.drainTimeout = 0
+	if got := w.effectiveDrainTimeout(); got != defaultDrainTimeout {
+		t.Fatalf("drain bound = %v, want %v", got, defaultDrainTimeout)
+	}
+	if got, want := w.laneReleaseWait(), defaultDrainTimeout+laneCloseGrace; got != want {
+		t.Fatalf("lane release wait = %v, want %v", got, want)
+	}
+	w.drainTimeout = 3 * time.Second
+	if got, want := w.laneReleaseWait(), 3*time.Second+laneCloseGrace; got != want {
+		t.Fatalf("lane release wait = %v, want %v", got, want)
+	}
+}
+
+// taskConsumerInfo reads a TASK_QUEUES consumer's state.
+func taskConsumerInfo(
+	t *testing.T, js jetstream.JetStream, name string,
+) *jetstream.ConsumerInfo {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), concurrencyWaitBound)
+	defer cancel()
+	cons, err := js.Consumer(ctx, "TASK_QUEUES", name)
+	if err != nil {
+		t.Fatalf("consumer %s: %v", name, err)
+	}
+	info, err := cons.Info(ctx)
+	if err != nil {
+		t.Fatalf("consumer %s info: %v", name, err)
+	}
+	return info
+}
+
+// awaitAckPending waits until the consumer has handed out want messages,
+// so every task sits in the Worker's client buffer before Stop.
+func awaitAckPending(t *testing.T, js jetstream.JetStream, name string, want int) {
+	t.Helper()
+	const polls_max = 250
+	for range polls_max {
+		if taskConsumerInfo(t, js, name).NumAckPending == want {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("consumer %s never had %d messages out", name, want)
+}
+
+// assertDeliveredOnce checks the consumer delivered each of total tasks
+// once, plus exactly one redelivery for each of redelivered, and that
+// none is left unacked.
+func assertDeliveredOnce(
+	t *testing.T, js jetstream.JetStream, name string, total, redelivered int,
+) {
+	t.Helper()
+	const polls_max = 250
+	var info *jetstream.ConsumerInfo
+	for range polls_max {
+		info = taskConsumerInfo(t, js, name)
+		if info.NumAckPending == 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if info.NumAckPending != 0 {
+		t.Fatalf("%d tasks still unacked after Stop", info.NumAckPending)
+	}
+	if got, want := info.Delivered.Consumer, uint64(total+redelivered); got != want {
+		t.Fatalf("deliveries = %d, want %d: a NAK looped back", got, want)
 	}
 }
