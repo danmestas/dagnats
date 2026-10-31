@@ -424,14 +424,12 @@ func (s *Server) startConfigWatcher() error {
 	if err != nil {
 		return fmt.Errorf("jetstream.New: %w", err)
 	}
-	kvCtx, cancel := context.WithTimeout(
-		context.Background(), 5*time.Second)
-	defer cancel()
-	wfKV, err := js.KeyValue(kvCtx, "workflow_defs")
+	// BindKeyValue bounds each lookup and the retries itself.
+	wfKV, err := natsutil.BindKeyValue(context.Background(), js, "workflow_defs")
 	if err != nil {
 		return fmt.Errorf("workflow_defs KV: %w", err)
 	}
-	trKV, err := js.KeyValue(kvCtx, "triggers")
+	trKV, err := natsutil.BindKeyValue(context.Background(), js, "triggers")
 	if err != nil {
 		return fmt.Errorf("triggers KV: %w", err)
 	}

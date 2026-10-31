@@ -161,18 +161,18 @@ func NewServiceWithLimits(
 		)
 	}
 	ctx := context.Background()
-	defKV, err := js.KeyValue(ctx, "workflow_defs")
+	defKV, err := natsutil.BindKeyValue(ctx, js, "workflow_defs")
 	if err != nil {
 		panic(
 			"NewServiceWithLimits: workflow_defs bucket not found: " +
 				err.Error(),
 		)
 	}
-	triggerKV, _ := js.KeyValue(ctx, "triggers")
-	signalKV, _ := js.KeyValue(ctx, "signals")
-	scheduledKV, _ := js.KeyValue(ctx, "scheduled_runs")
-	idempotencyKV, _ := js.KeyValue(
-		ctx, "idempotency_keys",
+	triggerKV, _ := natsutil.BindKeyValue(ctx, js, "triggers")
+	signalKV, _ := natsutil.BindKeyValue(ctx, js, "signals")
+	scheduledKV, _ := natsutil.BindKeyValue(ctx, js, "scheduled_runs")
+	idempotencyKV, _ := natsutil.BindKeyValue(
+		ctx, js, "idempotency_keys",
 	)
 	m := otel.Meter("dagnats/api")
 	reqCount, _ := m.Int64Counter("api.requests")

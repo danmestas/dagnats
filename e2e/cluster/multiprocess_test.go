@@ -325,18 +325,42 @@ func earlyExitCheck(nodes []*node) func() error {
 	}
 }
 
-// formCluster starts the nodes and waits until the first reports all
-// three members with a meta leader, relaunching on fresh ports (bounded)
-// if a node dies right after start.
+// clusterFormed accepts a report showing all three members and a meta
+// leader.
+func clusterFormed(b healthBody, status int) bool {
+	return status == http.StatusOK && b.NodesUp == nodeCount &&
+		len(b.Members) == nodeCount && b.Leader != ""
+}
+
+// waitAllFormed waits for every node's own /health/cluster to report the
+// formed cluster. The first node alone is not enough: its count of nodes
+// up comes from the NATS routes, which a peer opens before its dagnats
+// components start, so a peer that then dies in startup still counts. A
+// node's HTTP listener opens only after its startup completes.
+func waitAllFormed(nodes []*node) (healthBody, error) {
+	deadline := time.Now().Add(formTimeout)
+	var formed healthBody
+	for i, n := range nodes {
+		body, err := waitHealth(n.httpAddr, time.Until(deadline),
+			clusterFormed, earlyExitCheck(nodes))
+		if err != nil {
+			return body, err
+		}
+		if i == 0 {
+			formed = body
+		}
+	}
+	return formed, nil
+}
+
+// formCluster starts the nodes and waits until each reports all three
+// members with a meta leader, relaunching on fresh ports (bounded) if a
+// node dies right after start.
 func formCluster(t *testing.T, bin string) []*node {
 	t.Helper()
 	for attempt := 1; attempt <= startAttemptsMax; attempt++ {
 		nodes := launchNodes(t, bin)
-		formed, err := waitHealth(nodes[0].httpAddr, formTimeout,
-			func(b healthBody, status int) bool {
-				return status == http.StatusOK && b.NodesUp == nodeCount &&
-					len(b.Members) == nodeCount && b.Leader != ""
-			}, earlyExitCheck(nodes))
+		formed, err := waitAllFormed(nodes)
 		if err == nil {
 			if formed.Mode != "cluster" || formed.NodesExpected != nodeCount {
 				t.Fatalf("unexpected formed report: %+v", formed)
