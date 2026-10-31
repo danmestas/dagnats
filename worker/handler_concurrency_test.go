@@ -514,3 +514,68 @@ func TestWithConcurrency_StopReleasesSlotWaiter(t *testing.T) {
 		t.Fatalf("peak in-flight handlers = %d, want 2", peak)
 	}
 }
+
+// closingLane stands in for a concurrent lane's ConsumeContext: Closed
+// fires only when the test says the subscription is gone.
+type closingLane struct{ closed chan struct{} }
+
+func (l *closingLane) Stop()                   {}
+func (l *closingLane) Closed() <-chan struct{} { return l.closed }
+
+// nakRecordingMsg records each Nak on naks instead of sending it.
+type nakRecordingMsg struct {
+	jetstream.Msg
+	naks chan struct{}
+}
+
+func (m *nakRecordingMsg) Nak() error {
+	m.naks <- struct{}{}
+	return nil
+}
+
+// TestStopNaksParkedOnlyAfterSlotLaneCloses pins the ordering behind
+// StopReleasesSlotWaiter: a delivery a concurrent lane turned away
+// during Stop is NAK'd only once that lane's subscription is gone. A
+// NAK sent while the pull is still open hands the redelivery straight
+// back to the stopping Worker, whose client then drops it, stranding the
+// task until AckWait. A delivery turned away after the parked set is
+// released is NAK'd at once, since nothing would release it later.
+func TestStopNaksParkedOnlyAfterSlotLaneCloses(t *testing.T) {
+	nc, _ := startConcurrencyServer(t)
+	w := NewWorker(nc)
+	lane := &closingLane{closed: make(chan struct{})}
+	w.stoppers = append(w.stoppers, lane)
+	w.slotLanes = append(w.slotLanes, lane)
+	parked := &nakRecordingMsg{naks: make(chan struct{}, 1)}
+	w.parkOrNak(parked)
+
+	stopped := make(chan struct{})
+	go func() {
+		w.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-parked.naks:
+		t.Fatal("parked delivery NAK'd while its lane's pull was still open")
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(lane.closed)
+	select {
+	case <-parked.naks:
+	case <-time.After(concurrencyWaitBound):
+		t.Fatal("parked delivery not NAK'd after its lane closed")
+	}
+	select {
+	case <-stopped:
+	case <-time.After(concurrencyWaitBound):
+		t.Fatal("Stop did not return")
+	}
+
+	late := &nakRecordingMsg{naks: make(chan struct{}, 1)}
+	w.parkOrNak(late)
+	select {
+	case <-late.naks:
+	default:
+		t.Fatal("delivery turned away after release was parked, not NAK'd")
+	}
+}

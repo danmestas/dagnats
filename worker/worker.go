@@ -224,6 +224,11 @@ type Worker struct {
 	// stopping closes once the consumers stop, so a consume callback
 	// waiting for a WithConcurrency slot gives up instead of outliving Stop.
 	stopping chan struct{}
+	// slotLanes are the stoppers of WithConcurrency lanes that report
+	// when their subscription ends; Stop waits on them before NAKing
+	// the deliveries those lanes parked in stopPark.
+	slotLanes []interface{ Closed() <-chan struct{} }
+	stopPark  stopPark
 	// abandoned closes when Stop's drain times out. The automatic
 	// heartbeat of a handler still running then stops, so its message
 	// redelivers to a live worker instead of staying held by this one.
@@ -697,7 +702,7 @@ func (w *Worker) subscribeTask(
 			if err != nil {
 				return err
 			}
-			w.stoppers = append(w.stoppers, cc)
+			w.addStopper(taskType, cc)
 		}
 		return nil
 	}
@@ -705,12 +710,12 @@ func (w *Worker) subscribeTask(
 	if err != nil {
 		return err
 	}
-	w.stoppers = append(w.stoppers, cc)
+	w.addStopper(taskType, cc)
 	// Sticky subscription on STICKY_TASKS stream (separate from
 	// TASK_QUEUES to avoid work queue filter conflict). Missing
 	// stream is fine.
 	if stickyCC := w.createStickyConsumer(taskType, handler); stickyCC != nil {
-		w.stoppers = append(w.stoppers, stickyCC)
+		w.addStopper(taskType, stickyCC)
 	}
 	return nil
 }
@@ -750,9 +755,28 @@ func (w *Worker) subscribeElastic(
 		if err != nil {
 			return err
 		}
-		w.stoppers = append(w.stoppers, cc)
+		w.addStopper(taskType, cc)
 	}
 	return nil
+}
+
+// addStopper records a consumer for Stop. A WithConcurrency lane whose
+// consumer reports when its subscription ends also joins slotLanes, so
+// Stop can wait for it before NAKing what the lane parked. An elastic
+// member's context does not report it, so its parked deliveries are
+// NAK'd once the other lanes have closed.
+func (w *Worker) addStopper(taskType string, s interface{ Stop() }) {
+	if taskType == "" {
+		panic("addStopper: taskType must not be empty")
+	}
+	if s == nil {
+		panic("addStopper: stopper must not be nil")
+	}
+	w.stoppers = append(w.stoppers, s)
+	closer, reportsClose := s.(interface{ Closed() <-chan struct{} })
+	if reportsClose && w.handlerConcurrency[taskType] > 1 {
+		w.slotLanes = append(w.slotLanes, closer)
+	}
 }
 
 // subscribePullConsumer attaches a worker to a durable JetStream pull
@@ -1187,11 +1211,11 @@ func (w *Worker) Stop() {
 }
 
 // stopConsumers ends every consumer, then releases consume callbacks
-// waiting for a WithConcurrency slot. Stopping first makes it less likely
-// that a waiter's NAK hands the message straight back to this stopping
-// Worker; it does not rule it out, because nats.go unsubscribes the pull
-// on its own goroutine after Stop returns. A message redelivered here is
-// NAK'd again by the next waiter or left to AckWait, so it is not lost.
+// waiting for a WithConcurrency slot. Those waiters park their delivery
+// rather than NAK it: nats.go unsubscribes the pull on its own goroutine
+// after Stop returns, so a NAK sent now could hand the message straight
+// back to this Worker's dying pull. releaseParked NAKs them once the
+// lanes' subscriptions are gone, while running handlers still drain.
 func (w *Worker) stopConsumers() {
 	if w.stopping == nil {
 		panic("stopConsumers: worker not built by NewWorker")
@@ -1203,6 +1227,7 @@ func (w *Worker) stopConsumers() {
 		s.Stop()
 	}
 	close(w.stopping)
+	w.releaseParked()
 }
 
 // awaitHandlers waits for in-flight handleMessage calls to finish before

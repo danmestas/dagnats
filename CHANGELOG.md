@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`make build-release` names artifacts after the `v*` release tag.** With the lake module's own `lake/v*` tag on the same commit, `git describe --tags` returned `lake/v0.1.0`, so `VERSION` broke the tarball paths. The Makefile's version lookups now match `v*` only.
 - **`TestWatchTriggers_BoundedCatchUp` no longer times out on a loaded machine.** It wrote 10,001 KV entries and read 10,000 back one round trip at a time, so its wall time grew with CPU starvation until the 30s insert deadline ran out. The catch-up cap is now a per-Worker field defaulting to 10,000, and the test proves the cap with 11 entries and a cap of 10.
+- **A `WithConcurrency` task waiting for a slot reaches a live worker when its Worker stops.** Stop NAK'd the waiting delivery while the stopping Worker's pull could still be open on the server. The redelivery could then go back to that pull, where nats.go dropped it, and the task sat until AckWait (5 minutes by default). Stop now holds such deliveries until the concurrent lanes' subscriptions have ended and the server has processed the unsubscribes, then NAKs them while running handlers are still draining.
 
 ## [0.0.38] - 2026-10-31
 
