@@ -106,6 +106,7 @@ func (b *Bridge) handleResolve(
 		return
 	}
 	if endsClaim(req.Action) {
+		loaded := msg
 		unlock, ok := b.lockClaimEnd(taskID)
 		if !ok {
 			http.Error(w, "task not found", http.StatusNotFound)
@@ -113,8 +114,9 @@ func (b *Bridge) handleResolve(
 		}
 		defer unlock()
 		// The claim may have been released between the first Load and the
-		// lock; what is left is the one this resolve holds the lock for.
-		if msg, claimingTokenID, ok = b.ackMap.LoadWithTokenID(taskID); !ok {
+		// lock, and the task redelivered to a new claim under the same id:
+		// only the delivery this resolve loaded may be ended by it.
+		if msg, claimingTokenID, ok = b.ackMap.LoadWithTokenID(taskID); !ok || msg != loaded {
 			http.Error(w, "task not found", http.StatusNotFound)
 			return
 		}

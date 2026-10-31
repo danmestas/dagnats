@@ -339,3 +339,81 @@ func TestReleaseOnDisconnect_CompleteRacingDropNeverBoth(t *testing.T) {
 		})
 	}
 }
+
+// A resolve queued behind a release must not end the redelivery that
+// replaced its claim under the same task id: it answers 404, the new
+// delivery is untouched and its worker can still complete it.
+func TestReleaseOnDisconnect_StaleResolveDoesNotEndRedelivery(t *testing.T) {
+	for _, journaled := range []bool{false, true} {
+		name := "plain"
+		if journaled {
+			name = "journal"
+		}
+		t.Run(name, func(t *testing.T) {
+			rig := newJournalRig(t)
+			b, ts := rig.front(t)
+			const runID = "run-stale"
+			publishEcho(t, rig, runID)
+			openConn(t, ts, b, "", "w1")
+			_, _, first := pollAs(t, ts, "", "w1", 3000)
+			if len(first) != 1 {
+				t.Fatal("no task")
+			}
+			taskID := first[0].TaskID
+			if journaled {
+				if status, body := resolveBody(t, ts, taskID,
+					`{"action":"journal.append","type":"entry","data":{}}`); status != 200 {
+					t.Fatalf("append: %d %s", status, body)
+				}
+			}
+			oldMsg, _ := b.ackMap.Load(taskID)
+			held := b.ackMap.ResolveLock(taskID)
+			held.Lock() // stands for the release in flight
+
+			aStatus := make(chan int, 1)
+			go func() {
+				status, _ := resolveBody(t, ts, taskID, `{"action":"complete","output":{"a":1}}`)
+				aStatus <- status
+			}()
+			time.Sleep(300 * time.Millisecond) // A has loaded the claim and waits on the lock
+
+			ref := claimRef{taskID: taskID, msg: oldMsg, mu: held}
+			if !b.ackMap.takeUnresolved(ref) {
+				t.Fatal("release found no claim")
+			}
+			if err := oldMsg.Nak(); err != nil {
+				t.Fatalf("nak: %v", err)
+			}
+			_, _, second := pollAs(t, ts, "", "", 8000)
+			if len(second) != 1 || second[0].Delivered < 2 {
+				t.Fatalf("redelivery = %+v, want the Nak'd task", second)
+			}
+			newMsg, ok := b.ackMap.Load(taskID)
+			if !ok || newMsg == oldMsg {
+				t.Fatal("the redelivery did not replace the claim")
+			}
+			held.Unlock()
+
+			select {
+			case status := <-aStatus:
+				if status != http.StatusNotFound {
+					t.Fatalf("stale complete = %d, want 404", status)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("stale complete did not return")
+			}
+			if cur, ok := b.ackMap.Load(taskID); !ok || cur != newMsg {
+				t.Fatal("the stale resolve disturbed the new delivery's claim")
+			}
+			if n := countHistory(t, rig.nc, runID, protocol.EventStepCompleted); n != 0 {
+				t.Fatalf("%d step.completed events from the stale resolve, want 0", n)
+			}
+			if status, body := resolveBody(t, ts, taskID, `{"action":"complete","output":{"b":1}}`); status != 200 {
+				t.Fatalf("new delivery complete: %d %s", status, body)
+			}
+			if n := countHistory(t, rig.nc, runID, protocol.EventStepCompleted); n != 1 {
+				t.Fatalf("%d step.completed events, want 1", n)
+			}
+		})
+	}
+}
