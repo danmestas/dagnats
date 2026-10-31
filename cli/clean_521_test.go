@@ -194,18 +194,35 @@ func TestPurgeKVBucketBefore_PerKeyContexts(t *testing.T) {
 			t.Fatalf("Put old %d: %v", i, err)
 		}
 	}
-	time.Sleep(60 * time.Millisecond)
+	// The server stamps a later write with a later time; the sleep keeps
+	// the stamps distinct on a coarse clock.
+	time.Sleep(2 * time.Millisecond)
 	if _, err := kv.Put(seedCtx, "fresh", []byte("new")); err != nil {
 		t.Fatalf("Put fresh: %v", err)
 	}
+	fresh, err := kv.Get(seedCtx, "fresh")
+	if err != nil {
+		t.Fatalf("Get fresh: %v", err)
+	}
+	newestOld, err := kv.Get(seedCtx, fmt.Sprintf("old-%d", oldCount-1))
+	if err != nil {
+		t.Fatalf("Get newest old: %v", err)
+	}
+	if !newestOld.Created().Before(fresh.Created()) {
+		t.Fatalf("old stamp %v not before fresh %v", newestOld.Created(), fresh.Created())
+	}
 
-	// A short caller deadline: the per-key contexts are independent of it.
+	// The cutoff is the fresh key's own stamp, read from the server: a
+	// cutoff taken from the local clock minus a short window let a slow
+	// run age the fresh key past it, and the purge deleted it.
+	// purgeKVBucketBefore's duration-to-cutoff step is covered in
+	// clean_test.go.
 	ctx, cancel := context.WithTimeout(
 		context.Background(), 5*time.Second,
 	)
 	defer cancel()
-	if err := purgeKVBucketBefore(ctx, kv, 30*time.Millisecond); err != nil {
-		t.Fatalf("purgeKVBucketBefore: %v", err)
+	if err := purgeKVBucketBeforeCutoff(ctx, kv, fresh.Created()); err != nil {
+		t.Fatalf("purgeKVBucketBeforeCutoff: %v", err)
 	}
 
 	// Positive: the fresh key survives.
@@ -217,8 +234,10 @@ func TestPurgeKVBucketBefore_PerKeyContexts(t *testing.T) {
 		t.Fatalf("fresh value = %q, want new", string(entry.Value()))
 	}
 
-	// Negative: an old key was deleted.
-	if _, err := kv.Get(seedCtx, "old-0"); err == nil {
-		t.Fatal("old-0 should have been deleted")
+	// Negative: the oldest and the newest old keys were deleted.
+	for _, key := range []string{"old-0", fmt.Sprintf("old-%d", oldCount-1)} {
+		if _, err := kv.Get(seedCtx, key); err == nil {
+			t.Fatalf("%s should have been deleted", key)
+		}
 	}
 }
