@@ -1,8 +1,6 @@
 package worker
 
 import (
-	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -108,13 +106,13 @@ func (w *Worker) dispatchConcurrent(
 	case slots <- struct{}{}:
 	case <-w.stopping:
 		w.releaseClaim(l, tracked, c)
-		w.parkOrNak(msg)
+		l.park.parkOrNak(msg)
 		return
 	}
 	if !w.beginHandler() {
 		w.releaseClaim(l, tracked, c)
 		<-slots
-		w.parkOrNak(msg)
+		l.park.parkOrNak(msg)
 		return
 	}
 	go func() {
@@ -123,93 +121,4 @@ func (w *Worker) dispatchConcurrent(
 		defer w.releaseClaim(l, tracked, c)
 		w.runMessage(l, tracked, c)
 	}()
-}
-
-// stopParkedMax bounds the deliveries Stop holds back. It matches the
-// server's default MaxAckPending, the most one consumer can have out
-// unacked; past it a delivery is NAK'd at once, as before parking.
-const stopParkedMax = 1000
-
-// slotLaneCloseWait bounds how long Stop waits for the concurrent lanes'
-// subscriptions to end before it NAKs what they parked anyway.
-const slotLaneCloseWait = 5 * time.Second
-
-// stopPark holds the deliveries concurrent lanes turned away during Stop.
-type stopPark struct {
-	mu       sync.Mutex
-	msgs     []jetstream.Msg
-	released bool
-}
-
-// parkOrNak holds msg for releaseParked instead of NAKing it now. A NAK
-// while this Worker's pull is still open on the server can redeliver
-// the message straight back to it, and nats.go drops what reaches a
-// stopped consumer, stranding the task until AckWait. Once the park is
-// released, or full, msg is NAK'd at once.
-func (w *Worker) parkOrNak(msg jetstream.Msg) {
-	if msg == nil {
-		panic("parkOrNak: msg must not be nil")
-	}
-	p := &w.stopPark
-	p.mu.Lock()
-	if !p.released && len(p.msgs) < stopParkedMax {
-		p.msgs = append(p.msgs, msg)
-		p.mu.Unlock()
-		return
-	}
-	p.mu.Unlock()
-	_ = msg.Nak()
-}
-
-// releaseParked NAKs the parked deliveries once the server no longer
-// holds a pull from any concurrent lane, so each redelivery goes to a
-// live Worker. A concurrent lane's callback never blocks once stopping
-// is closed, so its subscription ends and Closed fires without waiting
-// on handlers. The flush makes the server process the unsubscribes
-// before the NAKs that follow.
-func (w *Worker) releaseParked() {
-	if w.nc == nil {
-		panic("releaseParked: nc must not be nil")
-	}
-	if w.stopping == nil {
-		panic("releaseParked: worker not built by NewWorker")
-	}
-	if !w.awaitSlotLanesClosed() {
-		slog.Warn("worker.Stop: concurrent lane did not close in time; " +
-			"NAKing parked deliveries anyway")
-	}
-	if err := w.nc.FlushTimeout(slotLaneCloseWait); err != nil {
-		slog.Warn("worker.Stop: flush before NAKing parked deliveries failed",
-			"error", err)
-	}
-	p := &w.stopPark
-	p.mu.Lock()
-	msgs := p.msgs
-	p.msgs = nil
-	p.released = true
-	p.mu.Unlock()
-	for _, msg := range msgs {
-		_ = msg.Nak()
-	}
-}
-
-// awaitSlotLanesClosed reports whether every concurrent lane's
-// subscription ended within slotLaneCloseWait.
-func (w *Worker) awaitSlotLanesClosed() bool {
-	if !w.draining {
-		panic("awaitSlotLanesClosed: draining must be set first")
-	}
-	if len(w.slotLanes) > len(w.stoppers) {
-		panic("awaitSlotLanesClosed: every slot lane must be a stopper")
-	}
-	deadline := time.NewTimer(slotLaneCloseWait)
-	defer deadline.Stop()
-	for _, l := range w.slotLanes {
-		select {
-		case <-l.Closed():
-		case <-deadline.C:
-			return false
-		}
-	}
-	return true
 }

@@ -35,7 +35,7 @@ func TestNewWorkerDefaultTelemetry(t *testing.T) {
 
 	// Stop must succeed without error.
 	w.Stop()
-	if len(w.stoppers) == 0 {
+	if len(w.lanes) == 0 {
 		t.Fatal(
 			"expected at least one consume context after Start",
 		)
