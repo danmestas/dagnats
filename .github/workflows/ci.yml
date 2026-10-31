@@ -216,6 +216,12 @@ jobs:
         # its query guards (the row cap) never run on CI.
         run: cd cmd/dagnats-mcp-duckdb && CGO_ENABLED=1 go vet ./... && CGO_ENABLED=1 go test ./... -count=1
 
+      - name: Test lake module
+        if: steps.filter.outputs.code == 'true'
+        # A nested module the root `go test ./...` skips. The library is pure Go; CGO is for
+        # the test-only DuckDB reader that proves the Parquet it writes.
+        run: cd lake && CGO_ENABLED=1 go vet ./... && CGO_ENABLED=1 go test ./... -count=1
+
       - name: Assert main dagnats binary is CGO-free
         if: steps.filter.outputs.code == 'true'
         # The main dagnats binary must stay pure-Go even after #188
