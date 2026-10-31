@@ -166,3 +166,33 @@ func TestAppend_RefusesWrongTypeNamingTheColumn(t *testing.T) {
 		t.Fatalf("nil is NULL and must be accepted: %v", err)
 	}
 }
+
+func TestFlush_StemCollisionIsAnErrorNotARetry(t *testing.T) {
+	root := t.TempDir()
+	writer := newTestWriter(t, root)
+	first := flushRows(t, writer, testRow(1, 1), testRow(2, 1))
+	record := strings.TrimSuffix(first[0].Path, ".parquet") + ".json"
+	forged := strings.Replace(mustRead(t, record), first[0].Digest, strings.Repeat("0", 64), 1)
+	if err := os.WriteFile(record, []byte(forged), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []Row{testRow(1, 1), testRow(2, 1)} {
+		if err := writer.Append(row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := writer.Flush()
+	if err == nil || !strings.Contains(err.Error(), "stem collision") ||
+		!strings.Contains(err.Error(), first[0].Digest) {
+		t.Fatalf("err = %v, want a collision naming both digests", err)
+	}
+}
+
+func mustRead(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}

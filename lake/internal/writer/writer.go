@@ -195,6 +195,11 @@ func (w *Writer) flushPartition(dt string, rows []Row) (lake.Commit, error) {
 	stem := "part-" + hex.EncodeToString(digest[:8])
 	dir := lake.PartitionDir(w.cfg.Root, w.cfg.Program, w.cfg.Table, dt)
 	existing, err := lake.ReadCommit(filepath.Join(dir, stem+".json"))
+	fullDigest := hex.EncodeToString(digest[:])
+	if err == nil && existing.Digest != fullDigest {
+		return lake.Commit{}, fmt.Errorf("lake: %s is committed with digest %s, batch has %s: "+
+			"stem collision", stem, existing.Digest, fullDigest)
+	}
 	if err == nil {
 		if _, statErr := os.Stat(filepath.Join(dir, existing.Part)); statErr == nil {
 			existing.Dt, existing.Path = dt, filepath.Join(dir, existing.Part)
@@ -205,7 +210,7 @@ func (w *Writer) flushPartition(dt string, rows []Row) (lake.Commit, error) {
 	if err != nil {
 		return lake.Commit{}, err
 	}
-	return w.writeParts(dir, stem, hex.EncodeToString(digest[:]), dt, rows, data)
+	return w.writeParts(dir, stem, fullDigest, dt, rows, data)
 }
 
 func (w *Writer) writeParts(
