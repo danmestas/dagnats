@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"log/slog"
 	"net/http"
@@ -296,7 +297,7 @@ func (b *Bridge) authorize(header string) (workertoken.Claims, bool) {
 	}
 	bearer, hasBearer := strings.CutPrefix(header, "Bearer ")
 	if hasBearer &&
-		subtle.ConstantTimeCompare([]byte(bearer), []byte(b.token)) == 1 {
+		tokensEqual(bearer, b.token) {
 		return workertoken.Claims{Admin: true}, true
 	}
 	if b.tokenStore != nil && hasBearer {
@@ -306,4 +307,16 @@ func (b *Bridge) authorize(header string) (workertoken.Claims, bool) {
 		}
 	}
 	return workertoken.Claims{}, false
+}
+
+// tokensEqual compares digests so the time taken does not depend on the
+// length of either value; the bridge token is reachable without the API
+// token on the worker routes.
+func tokensEqual(presented, want string) bool {
+	if want == "" {
+		panic("tokensEqual: want must not be empty")
+	}
+	got := sha256.Sum256([]byte(presented))
+	expected := sha256.Sum256([]byte(want))
+	return subtle.ConstantTimeCompare(got[:], expected[:]) == 1
 }

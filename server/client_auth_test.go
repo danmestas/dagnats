@@ -5,6 +5,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -314,27 +315,28 @@ func TestAPITokenGate_BridgeWorkerToken(t *testing.T) {
 	}
 }
 
-// The whole server again: with an API token set, a bridge worker that
-// presents the bridge's own token still polls, and the API token still
-// guards everything else. Removing bridgeWorkerAuth from startHTTP fails
-// this test with a 401 on the poll.
-func TestServer_APITokenAdmitsBridgeWorkerToken(t *testing.T) {
-	t.Setenv("DAGNATS_BRIDGE_TOKEN", "bridge-admin")
+// startGatedServer runs a whole server with an API token and the given
+// bridge token ("" is bridge dev mode) and returns it with a request
+// helper that reports the status of one call.
+func startGatedServer(
+	t *testing.T, bridgeToken string,
+) (*Server, func(method, path, auth, body string) int) {
+	t.Helper()
+	t.Setenv("DAGNATS_BRIDGE_TOKEN", bridgeToken)
 	cfg := testConfig(t)
 	cfg.APITokenFile = writeSecret(t, "server-token")
 	srv := New(cfg)
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Run() }()
-	defer func() {
+	t.Cleanup(func() {
 		srv.Stop()
 		select {
 		case <-errCh:
 		case <-time.After(20 * time.Second):
-			t.Fatal("Run() did not return within 20s")
+			t.Error("Run() did not return within 20s")
 		}
-	}()
+	})
 	httpAddr := waitHTTPAddr(t, srv)
-
 	status := func(method, path, auth, body string) int {
 		req, err := http.NewRequest(method, "http://"+httpAddr+path, strings.NewReader(body))
 		if err != nil {
@@ -351,14 +353,66 @@ func TestServer_APITokenAdmitsBridgeWorkerToken(t *testing.T) {
 		resp.Body.Close()
 		return resp.StatusCode
 	}
-	poll := `{"task_types":["echo"],"timeout_ms":100}`
-	if got := status(http.MethodPost, "/v1/tasks/poll", "Bearer bridge-admin", poll); got != http.StatusOK {
+	return srv, status
+}
+
+// mintWorkerToken mints a worker token scoped to prefixes on srv's store.
+func mintWorkerToken(t *testing.T, srv *Server, prefixes ...string) string {
+	t.Helper()
+	if srv.tokenStore == nil {
+		t.Fatal("server has no token store")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, bearer, err := srv.tokenStore.Mint(ctx, "worker-a", prefixes, nil, "tester")
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	return bearer
+}
+
+const echoPoll = `{"task_types":["echo"],"timeout_ms":100}`
+
+// The whole server again: with an API token set, a bridge worker that
+// presents the bridge's own token still polls, and the API token still
+// guards everything else. Removing bridgeWorkerAuth from startHTTP fails
+// this test with a 401 on the poll.
+func TestServer_APITokenAdmitsBridgeWorkerToken(t *testing.T) {
+	_, status := startGatedServer(t, "bridge-admin")
+	if got := status(http.MethodPost, "/v1/tasks/poll", "Bearer bridge-admin", echoPoll); got != http.StatusOK {
 		t.Errorf("poll with the bridge token: %d, want 200", got)
 	}
-	if got := status(http.MethodPost, "/v1/tasks/poll", "", poll); got != http.StatusUnauthorized {
+	if got := status(http.MethodPost, "/v1/tasks/poll", "", echoPoll); got != http.StatusUnauthorized {
 		t.Errorf("poll without a token: %d, want 401", got)
 	}
 	if got := status(http.MethodGet, "/workflows", "Bearer bridge-admin", ""); got != http.StatusUnauthorized {
 		t.Errorf("/workflows with the bridge token: %d, want 401", got)
+	}
+}
+
+// A minted worker token passes the gate and keeps its task-type scope
+// behind it: its own type polls, another type is refused by the bridge.
+func TestServer_APITokenAdmitsScopedWorkerToken(t *testing.T) {
+	srv, status := startGatedServer(t, "bridge-admin")
+	bearer := "Bearer " + mintWorkerToken(t, srv, "echo")
+	if got := status(http.MethodPost, "/v1/tasks/poll", bearer, echoPoll); got != http.StatusOK {
+		t.Errorf("poll of its own type: %d, want 200", got)
+	}
+	other := `{"task_types":["deploy"],"timeout_ms":100}`
+	if got := status(http.MethodPost, "/v1/tasks/poll", bearer, other); got != http.StatusForbidden {
+		t.Errorf("poll of another type: %d, want 403", got)
+	}
+}
+
+// In bridge dev mode the bridge accepts nothing through the gate, so a
+// minted token is refused and only the API token reaches the bridge.
+func TestServer_APITokenGuardsDevModeBridge(t *testing.T) {
+	srv, status := startGatedServer(t, "")
+	bearer := "Bearer " + mintWorkerToken(t, srv, "echo")
+	if got := status(http.MethodPost, "/v1/tasks/poll", bearer, echoPoll); got != http.StatusUnauthorized {
+		t.Errorf("minted token in dev mode: %d, want 401", got)
+	}
+	if got := status(http.MethodPost, "/v1/tasks/poll", "Bearer server-token", echoPoll); got != http.StatusOK {
+		t.Errorf("API token in dev mode: %d, want 200", got)
 	}
 }
