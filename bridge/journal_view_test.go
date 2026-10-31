@@ -16,7 +16,9 @@ package bridge
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
@@ -160,4 +162,31 @@ func jsonUint(v uint64) string {
 		panic(err)
 	}
 	return string(data)
+}
+
+func TestBridgeJournalViewAnswersTheFence(t *testing.T) {
+	rig := newJournalRig(t)
+	b1, ts1 := rig.front(t)
+	_, ts2 := rig.front(t)
+	const runID, stepID = "run-jviewfence", "step-jviewfence"
+	rig.publish(t, protocol.TaskPayload{RunID: runID, StepID: stepID, DispatchNonce: "n1"})
+	task1 := pollOne(t, ts1)
+	resolveView(t, ts1, task1)
+	msg, ok := b1.ackMap.Load(task1)
+	if !ok {
+		t.Fatal("first bridge lost the claim")
+	}
+	if err := msg.Nak(); err != nil {
+		t.Fatalf("nak: %v", err)
+	}
+	task2 := pollOne(t, ts2)
+	resolveView(t, ts2, task2)
+
+	status, body := resolveBody(t, ts1, task1, `{"action":"journal.view"}`)
+	if status != http.StatusConflict || !strings.Contains(body, `"fenced"`) {
+		t.Fatalf("fenced view = %d %s, want 409 fenced", status, body)
+	}
+	if again := resolveView(t, ts2, task2); len(again.Records) != 1 {
+		t.Fatalf("successor view = %+v, want the first claim only", again.Records)
+	}
 }

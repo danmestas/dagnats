@@ -520,6 +520,25 @@ func (j *Journal) recordedModelResponse(call int) ([]byte, bool) {
 	return nil, false
 }
 
+// Resync checks, without writing, that no other claim has fenced this
+// one since its last record, and returns ErrFenced if one has. A caller
+// about to act on its view of the journal without appending (the
+// bridge's journal.view) uses it to learn of the fence now rather than
+// on its next append.
+func (j *Journal) Resync(ctx context.Context) error {
+	if ctx == nil {
+		panic("journal.Resync: ctx must not be nil")
+	}
+	if j.task.Delivered < 1 {
+		panic("journal.Resync: journal must hold a claim")
+	}
+	defer j.enter("Resync")()
+	if err := j.bind(ctx); err != nil {
+		return err
+	}
+	return j.resync(ctx)
+}
+
 // resync brings the writer's view of the tail up to date without
 // writing: an unmoved tail or a newer record of its own claim (an
 // append whose acknowledgement was lost) is fine, a record from

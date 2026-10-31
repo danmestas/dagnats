@@ -385,7 +385,8 @@ type journalViewResponse struct {
 }
 
 // resolveJournalView claims the journal if needed and returns the
-// view the claim was opened with. It does not change as the task
+// view the claim was opened with, or the fence when another claim has
+// since replaced this one. The view does not change as the task
 // appends: replay matches against what was recorded before the claim.
 func (b *Bridge) resolveJournalView(
 	ctx context.Context, taskID, tokenID string, msg jetstream.Msg, w http.ResponseWriter,
@@ -398,6 +399,11 @@ func (b *Bridge) resolveJournalView(
 	}
 	return b.withJournal(ctx, taskID, tokenID, msg, w,
 		func(j *journal.Journal) (any, error) {
+			// The view never appends, so without this a fenced claim
+			// would read as live until the client's next append.
+			if err := j.Resync(ctx); err != nil {
+				return nil, err
+			}
 			task := j.Task()
 			records := j.Records()
 			if records == nil {
