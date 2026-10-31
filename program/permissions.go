@@ -121,8 +121,8 @@ func taskQueuePublish(taskTypes []string) []string {
 }
 
 // stickyPublish grants the SDK's optional worker-affinity consumer on
-// STICKY_TASKS. It is ephemeral with a generated (NUID) name, so the
-// name token of next and ack is a wildcard: a program that learned a
+// STICKY_TASKS. It is durable with a random name, so the name token of
+// next and ack is a wildcard: a program that learned a
 // sibling's sticky consumer name could pull from it. Names are not
 // listable (no CONSUMER.LIST or NAMES on STICKY_TASKS), which is the
 // whole gate. The create filter "sticky.<type>.<worker id>.>" is pinned
