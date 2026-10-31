@@ -83,6 +83,7 @@ func TestFlush_DurabilityOrdering(t *testing.T) {
 	// synced before the commit record is written; the commit is synced the same way.
 	steps := []string{
 		"syncdir deliveries", "syncdir notify", "syncdir " + filepath.Base(root),
+		"syncdir " + filepath.Base(filepath.Dir(root)),
 		"write " + part + ".parquet", "sync " + part + ".parquet", "rename " + part + ".parquet",
 		"syncdir " + dt,
 		"write " + part + ".json", "sync " + part + ".json", "rename " + part + ".json",

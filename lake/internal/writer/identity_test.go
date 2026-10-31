@@ -4,6 +4,8 @@
 package writer
 
 import (
+	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -36,20 +38,18 @@ func TestFlush_BatchOrderDoesNotChangeNameOrBytes(t *testing.T) {
 	}
 }
 
-func TestFlush_NameDoesNotDependOnEncodedBytes(t *testing.T) {
+func TestFlush_NameFollowsContent(t *testing.T) {
 	first := newTestWriter(t, t.TempDir())
 	second := newTestWriter(t, t.TempDir())
 	changed := testRow(2, 1)
-	changed.Payload = `{"id":"a much longer payload"}`
+	changed.Payload = `{"id":"a different event"}`
 	a := flushRows(t, first, testRow(1, 1), testRow(2, 1))
 	b := flushRows(t, second, testRow(1, 1), changed)
-	if a[0].Part != b[0].Part || a[0].Bytes == b[0].Bytes {
-		t.Fatalf("same identity must keep its name whatever the bytes: %+v vs %+v", a[0], b[0])
+	if a[0].Part == b[0].Part || a[0].Digest == b[0].Digest || a[0].Digest == "" {
+		t.Fatalf("different content must not share a name: %+v vs %+v", a[0], b[0])
 	}
-	third := newTestWriter(t, t.TempDir())
-	c := flushRows(t, third, testRow(1, 1), testRow(3, 1))
-	if c[0].Part == a[0].Part {
-		t.Fatal("a different sequence range must be a different part")
+	if a[0].SeqMin != b[0].SeqMin || a[0].SeqMax != b[0].SeqMax {
+		t.Fatal("test premise: both batches cover the same seq range")
 	}
 }
 
@@ -72,17 +72,78 @@ func TestFlush_RetryOfCommittedIdentityIsNoOp(t *testing.T) {
 	}
 }
 
-func TestFlush_SameIdentityWithOtherRowCountIsRefused(t *testing.T) {
-	writer := newTestWriter(t, t.TempDir())
+func TestFlush_DifferentBatchOverSameRangeIsKeptAndReported(t *testing.T) {
+	root := t.TempDir()
+	writer := newTestWriter(t, root)
 	flushRows(t, writer, testRow(1, 1), testRow(3, 1))
-	for _, row := range []Row{testRow(1, 1), testRow(2, 1), testRow(3, 1)} {
+	reset := testRow(2, 1)
+	reset.EventID = "after-reset"
+	flushRows(t, writer, testRow(1, 1), reset, testRow(3, 1))
+	listing, err := lake.ListCommitted(root, "notify", "deliveries")
+	if err != nil || len(listing.Commits) != 2 {
+		t.Fatalf("listing = %+v, %v; want both batches committed", listing, err)
+	}
+	if len(listing.Overlaps) != 1 {
+		t.Fatalf("overlaps = %+v, want 1", listing.Overlaps)
+	}
+	if listing.Commits[0].Rows+listing.Commits[1].Rows != 5 {
+		t.Fatalf("rows %d+%d: a batch was dropped", listing.Commits[0].Rows, listing.Commits[1].Rows)
+	}
+}
+
+func TestFlush_RetryRewritesAMissingPart(t *testing.T) {
+	root := t.TempDir()
+	writer := newTestWriter(t, root)
+	first := flushRows(t, writer, testRow(1, 1), testRow(2, 1))
+	if err := os.Remove(first[0].Path); err != nil {
+		t.Fatal(err)
+	}
+	retry := flushRows(t, writer, testRow(1, 1), testRow(2, 1))
+	if retry[0].Part != first[0].Part {
+		t.Fatalf("retry changed the name: %s vs %s", retry[0].Part, first[0].Part)
+	}
+	listing, err := lake.ListCommitted(root, "notify", "deliveries")
+	if err != nil || len(listing.Commits) != 1 || len(listing.Rejected) != 0 {
+		t.Fatalf("listing = %+v, %v; want one healthy commit", listing, err)
+	}
+}
+
+// failingDir makes MkdirAll fail for one date directory, as a full disk would.
+type failingDir struct {
+	osOps
+	fail string
+}
+
+func (f *failingDir) MkdirAll(path string) error {
+	if f.fail != "" && strings.HasSuffix(path, f.fail) {
+		return errors.New("injected mkdir failure")
+	}
+	return f.osOps.MkdirAll(path)
+}
+
+func TestFlush_FailedDateDoesNotPoisonTheBuffer(t *testing.T) {
+	root := t.TempDir()
+	ops := &failingDir{fail: "dt=2026-10-01"}
+	writer, err := newWriter(testConfig(root), ops)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []Row{testRow(1, 1), testRow(2, 2)} {
 		if err := writer.Append(row); err != nil {
 			t.Fatal(err)
 		}
 	}
-	_, err := writer.Flush()
-	if err == nil || !strings.Contains(err.Error(), "committed with 2 rows") {
-		t.Fatalf("err = %v, want a row-count refusal", err)
+	commits, err := writer.Flush()
+	if err == nil || len(commits) != 1 || commits[0].Dt != "2026-10-02" {
+		t.Fatalf("Flush = %+v, %v; want the healthy date committed and an error", commits, err)
+	}
+	ops.fail = ""
+	commits, err = writer.Flush()
+	if err != nil || len(commits) != 1 || commits[0].Dt != "2026-10-01" {
+		t.Fatalf("retry = %+v, %v; want the failed date committed", commits, err)
+	}
+	if writer.buffered != 0 {
+		t.Fatalf("buffered = %d after both flushed", writer.buffered)
 	}
 }
 

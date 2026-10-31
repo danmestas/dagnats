@@ -65,7 +65,8 @@ func ensurePartition(ops fileOps, partition string) error {
 	}
 	table := filepath.Dir(partition)
 	program := filepath.Dir(table)
-	for _, dir := range []string{table, program, filepath.Dir(program)} {
+	root := filepath.Dir(program)
+	for _, dir := range []string{table, program, root, filepath.Dir(root)} {
 		if err := ops.SyncDir(dir); err != nil {
 			return fmt.Errorf("lake: sync dir %s: %w", dir, err)
 		}

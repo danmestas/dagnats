@@ -10,11 +10,12 @@ package writer
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -34,7 +35,7 @@ type Config struct {
 	Root    string
 	Program string
 	Table   string
-	Stream  string // identity of every part; required
+	Stream  string // recorded in every commit and hashed into part names; required
 	Schema  lake.Schema
 
 	// BufferedRowsMax bounds Append; zero means PartRowsMax. It may not exceed PartRowsMax, so a
@@ -44,8 +45,8 @@ type Config struct {
 
 // Row is one event. Values maps declared column names to Go values of the column's type (nil is
 // NULL, an absent name is NULL); a value of another type, or an undeclared name, is an error.
-// StreamSeq is the event's position in its stream, at least 1: a part is named from the sequence
-// range it covers.
+// StreamSeq is the event's position in its stream, at least 1: commit records carry the sequence
+// range so readers can detect two parts covering the same messages.
 type Row struct {
 	EventID   string
 	EventTime time.Time // UTC date of this time picks the dt partition
@@ -54,9 +55,10 @@ type Row struct {
 	Values    map[string]any
 }
 
-// Writer buffers rows per event date and writes them as parts named by identity, not by content:
-// a part is (program, table, stream, date, first seq, last seq, schema version), so a retry of a
-// batch lands on the same name whatever the encoder produced. Not safe for concurrent use.
+// Writer buffers rows per event date and writes them as parts named by a digest of the batch's
+// content (not of the encoded Parquet bytes, so an encoder upgrade keeps names), so a true retry
+// lands on the same name and different content never replaces committed data. Not safe for
+// concurrent use.
 type Writer struct {
 	cfg      Config
 	ops      fileOps
@@ -130,9 +132,9 @@ func (w *Writer) Append(row Row) error {
 }
 
 // Flush writes every buffered date as a part, then its commit record. A date whose write fails
-// stays buffered, as do later ones, so a retry produces the same parts; the commits made before
-// the failure are returned with the error. A batch whose identity is already committed with the
-// same row count is returned as is and not rewritten.
+// stays buffered and does not stop the other dates; the commits made are returned with the joined
+// errors, and a later Flush retries what is left. A batch whose digest is already committed is a
+// retry of the same content: its commit is returned, and its part is rewritten only if missing.
 func (w *Writer) Flush() ([]lake.Commit, error) {
 	dts := make([]string, 0, len(w.buffers))
 	for dt := range w.buffers {
@@ -140,58 +142,75 @@ func (w *Writer) Flush() ([]lake.Commit, error) {
 	}
 	sort.Strings(dts)
 	var commits []lake.Commit
+	var failures []error
 	for _, dt := range dts {
 		commit, err := w.flushPartition(dt, w.buffers[dt])
 		if err != nil {
-			return commits, err
+			failures = append(failures, fmt.Errorf("dt=%s: %w", dt, err))
+			continue
 		}
 		commits = append(commits, commit)
 		w.buffered -= len(w.buffers[dt])
 		delete(w.buffers, dt)
 	}
-	return commits, nil
+	return commits, errors.Join(failures...)
 }
 
-// partStem names a part from its identity.
-func (w *Writer) partStem(dt string, seqMin, seqMax int64) string {
+// batchDigest hashes what makes a batch the same batch: where it is written and, for each row in
+// sequence order, its seq, event id and payload, length-prefixed so fields cannot run together.
+func (w *Writer) batchDigest(dt string, rows []Row) [sha256.Size]byte {
 	hash := sha256.New()
-	for _, field := range []string{
-		w.cfg.Program, w.cfg.Table, w.cfg.Stream, dt, strconv.FormatInt(seqMin, 10),
-		strconv.FormatInt(seqMax, 10), strconv.Itoa(w.cfg.Schema.Version),
-	} {
+	put := func(field string) {
+		var length [8]byte
+		binary.BigEndian.PutUint64(length[:], uint64(len(field)))
+		hash.Write(length[:])
 		hash.Write([]byte(field))
-		hash.Write([]byte{0})
 	}
-	return "part-" + hex.EncodeToString(hash.Sum(nil)[:8])
+	for _, field := range []string{
+		w.cfg.Program, w.cfg.Table, w.cfg.Stream, dt, strconv.Itoa(w.cfg.Schema.Version),
+	} {
+		put(field)
+	}
+	for _, row := range rows {
+		put(strconv.FormatInt(row.StreamSeq, 10))
+		put(row.EventID)
+		put(row.Payload)
+	}
+	var sum [sha256.Size]byte
+	copy(sum[:], hash.Sum(nil))
+	return sum
 }
 
 func (w *Writer) flushPartition(dt string, rows []Row) (lake.Commit, error) {
 	if len(rows) == 0 || len(rows) > PartRowsMax {
 		panic("lake: flushPartition needs 1.." + strconv.Itoa(PartRowsMax) + " rows")
 	}
-	sort.SliceStable(rows, func(i, j int) bool { return rows[i].StreamSeq < rows[j].StreamSeq })
-	seqMin, seqMax := rows[0].StreamSeq, rows[len(rows)-1].StreamSeq
-	stem := w.partStem(dt, seqMin, seqMax)
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].StreamSeq != rows[j].StreamSeq {
+			return rows[i].StreamSeq < rows[j].StreamSeq
+		}
+		return rows[i].EventID < rows[j].EventID
+	})
+	digest := w.batchDigest(dt, rows)
+	stem := "part-" + hex.EncodeToString(digest[:8])
 	dir := lake.PartitionDir(w.cfg.Root, w.cfg.Program, w.cfg.Table, dt)
 	existing, err := lake.ReadCommit(filepath.Join(dir, stem+".json"))
-	switch {
-	case err == nil && existing.Rows == len(rows):
-		existing.Dt, existing.Path = dt, filepath.Join(dir, existing.Part)
-		return existing, nil
-	case err == nil:
-		return lake.Commit{}, fmt.Errorf("lake: %s is committed with %d rows, batch has %d",
-			stem, existing.Rows, len(rows))
-	case !errors.Is(err, fs.ErrNotExist):
-		return lake.Commit{}, err
+	if err == nil {
+		if _, statErr := os.Stat(filepath.Join(dir, existing.Part)); statErr == nil {
+			existing.Dt, existing.Path = dt, filepath.Join(dir, existing.Part)
+			return existing, nil
+		}
 	}
 	data, err := w.enc.encode(rows, w.cfg.Schema.Version)
 	if err != nil {
 		return lake.Commit{}, err
 	}
-	return w.writeParts(dir, stem, dt, rows, data)
+	return w.writeParts(dir, stem, hex.EncodeToString(digest[:]), dt, rows, data)
 }
 
-func (w *Writer) writeParts(dir, stem, dt string, rows []Row, data []byte) (lake.Commit, error) {
+func (w *Writer) writeParts(
+	dir, stem, digest, dt string, rows []Row, data []byte,
+) (lake.Commit, error) {
 	if err := ensurePartition(w.ops, dir); err != nil {
 		return lake.Commit{}, err
 	}
@@ -204,7 +223,7 @@ func (w *Writer) writeParts(dir, stem, dt string, rows []Row, data []byte) (lake
 		}
 	}
 	commit := lake.Commit{
-		Part: stem + ".parquet", Rows: len(rows), Bytes: len(data), Stream: w.cfg.Stream,
+		Part: stem + ".parquet", Digest: digest, Rows: len(rows), Bytes: len(data), Stream: w.cfg.Stream,
 		SeqMin: rows[0].StreamSeq, SeqMax: rows[len(rows)-1].StreamSeq,
 		SchemaVersion: w.cfg.Schema.Version, WrittenAt: w.now().UTC(),
 		Dt: dt, Path: filepath.Join(dir, stem+".parquet"),

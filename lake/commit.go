@@ -16,10 +16,12 @@ import (
 const ListedCommitsMax = 1 << 20
 
 // Commit is the record written after a part. A reader trusts a part only through its commit.
-// Stream, SeqMin and SeqMax are the part's identity: the writer names the part from them, so two
-// committed parts of one stream must never cover overlapping sequence ranges.
+// The writer names a part from Digest, a hash of the batch's content, so a true retry lands on
+// the same name. Two committed parts of one stream covering overlapping sequence ranges hold
+// different content (a stream reset or purge, or a bug); ListCommitted reports them as Overlaps.
 type Commit struct {
-	Part          string    `json:"part"` // file name, part-<identity hash>.parquet
+	Part          string    `json:"part"` // file name, part-<digest prefix>.parquet
+	Digest        string    `json:"digest"`
 	Rows          int       `json:"rows"`
 	Bytes         int       `json:"bytes"`
 	Stream        string    `json:"stream"`
