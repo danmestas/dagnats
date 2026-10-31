@@ -28,6 +28,14 @@ const (
 	testClusterFormTime    = 15 * time.Second
 	testClusterQuorumTTL   = 30 * time.Second
 	placementProbeInterval = 250 * time.Millisecond
+
+	// testClusterListenWait bounds how long a started node may take to
+	// bind its listeners; a failed bind is reported at once, so the
+	// bound only matters on a loaded runner.
+	testClusterListenWait = 10 * time.Second
+	// testClusterStartAttemptsMax bounds the starts on fresh ports when
+	// another process takes an allocated port before its node binds it.
+	testClusterStartAttemptsMax = 3
 )
 
 // testClusterMaxStoreBytes pins each cluster node's JetStream store budget
@@ -50,21 +58,7 @@ func StartTestCluster(t *testing.T, n int) *nats.Conn {
 			n, minTestClusterNodes, maxTestClusterNodes))
 	}
 
-	// Allocate all 2n ports in a single batch: allocateFreePorts holds
-	// every listener in the batch open until all ports are chosen, so
-	// one batch guarantees client and cluster ports never collide. Two
-	// separate batches let the OS hand the second call a port the
-	// first call had just closed and freed, silently overlapping a
-	// node's client port with another node's cluster port. That
-	// collision broke one of the two listeners on bind, forming the
-	// cluster subtly wrong and causing an intermittent
-	// TestCluster_HealthyClusterFastSetup / SetupAll flake.
-	allPorts := allocateFreePorts(t, 2*n)
-	clientPorts := allPorts[:n]
-	clusterPorts := allPorts[n:]
-	routesByNode := buildClusterRoutes(t, clusterPorts)
-	servers := startClusterNodes(t, clientPorts, clusterPorts, routesByNode)
-
+	servers := startClusterWithRetry(t, n, allocateFreePorts)
 	t.Cleanup(func() { shutdownClusterServers(servers) })
 
 	for i, ns := range servers {
@@ -76,8 +70,7 @@ func StartTestCluster(t *testing.T, n int) *nats.Conn {
 	waitForRoutesMeshed(t, servers, n)
 	waitForJetStreamLeader(t, servers)
 
-	url := fmt.Sprintf("nats://127.0.0.1:%d", clientPorts[0])
-	nc, err := nats.Connect(url)
+	nc, err := nats.Connect(servers[0].ClientURL())
 	if err != nil {
 		t.Fatalf("connect to peer 0: %v", err)
 	}
@@ -109,6 +102,99 @@ func buildClusterRoutes(t *testing.T, clusterPorts []int) [][]*url.URL {
 	return routes
 }
 
+// startClusterWithRetry starts n nodes on freshly allocated ports and
+// retries on new ports when a node fails to bind one. The allocator is
+// injected so a test can hand it a port that is already taken.
+func startClusterWithRetry(
+	t *testing.T, n int, allocate func(*testing.T, int) []int,
+) []*natsserver.Server {
+	t.Helper()
+	if allocate == nil {
+		panic("startClusterWithRetry: allocate must not be nil")
+	}
+	var servers []*natsserver.Server
+	var err error
+	for attempt := 1; attempt <= testClusterStartAttemptsMax; attempt++ {
+		servers, err = tryStartCluster(t, n, allocate)
+		if err == nil {
+			return servers
+		}
+		t.Logf("cluster start attempt %d: %v", attempt, err)
+	}
+	t.Fatalf("cluster never started in %d attempts: %v", testClusterStartAttemptsMax, err)
+	return nil
+}
+
+// tryStartCluster starts the nodes and waits for each to bind its
+// client and route listeners. On failure it shuts every node down so
+// the caller can retry on new ports.
+func tryStartCluster(
+	t *testing.T, n int, allocate func(*testing.T, int) []int,
+) ([]*natsserver.Server, error) {
+	t.Helper()
+	// Allocate all 2n ports in a single batch: allocateFreePorts holds
+	// every listener in the batch open until all ports are chosen, so
+	// one batch guarantees client and cluster ports never collide. Two
+	// separate batches let the OS hand the second call a port the
+	// first call had just closed and freed, silently overlapping a
+	// node's client port with another node's cluster port.
+	allPorts := allocate(t, 2*n)
+	if len(allPorts) != 2*n {
+		panic(fmt.Sprintf("tryStartCluster: allocated %d ports, want %d", len(allPorts), 2*n))
+	}
+	clientPorts := allPorts[:n]
+	clusterPorts := allPorts[n:]
+	routesByNode := buildClusterRoutes(t, clusterPorts)
+	servers, fatals := startClusterNodes(t, clientPorts, clusterPorts, routesByNode)
+	for i, server := range servers {
+		if err := waitListening(server, fatals[i]); err != nil {
+			shutdownClusterServers(servers)
+			return nil, err
+		}
+	}
+	return servers, nil
+}
+
+// fatalLog is a node's logger. Logging stays off except for Fatalf,
+// which nats-server calls when it cannot bind a listener and then
+// carries on half started; with no logger the failure is invisible.
+type fatalLog struct{ messages chan string }
+
+func (l *fatalLog) Fatalf(format string, v ...any) {
+	select {
+	case l.messages <- fmt.Sprintf(format, v...):
+	default: // the first failure is the one that matters
+	}
+}
+
+func (*fatalLog) Noticef(string, ...any) {}
+func (*fatalLog) Warnf(string, ...any)   {}
+func (*fatalLog) Errorf(string, ...any)  {}
+func (*fatalLog) Debugf(string, ...any)  {}
+func (*fatalLog) Tracef(string, ...any)  {}
+
+// waitListening returns once the node has bound its client and route
+// listeners, or with the failure it logged, within testClusterListenWait.
+func waitListening(server *natsserver.Server, fatal *fatalLog) error {
+	if server == nil || fatal == nil {
+		panic("waitListening: server and fatal must not be nil")
+	}
+	deadline := time.Now().Add(testClusterListenWait)
+	for time.Now().Before(deadline) {
+		select {
+		case message := <-fatal.messages:
+			return fmt.Errorf("server %s: %s", server.Name(), message)
+		default:
+		}
+		if server.Addr() != nil && server.ClusterAddr() != nil {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return fmt.Errorf("server %s did not bind its listeners within %s",
+		server.Name(), testClusterListenWait)
+}
+
 // startClusterNodes constructs and starts each NATS server in the
 // cluster. Routes are placed on Options (not ClusterOpts) per the
 // nats-server v2.12 API, matching server/nats.go startNATS.
@@ -116,10 +202,11 @@ func startClusterNodes(
 	t *testing.T,
 	clientPorts, clusterPorts []int,
 	routesByNode [][]*url.URL,
-) []*natsserver.Server {
+) ([]*natsserver.Server, []*fatalLog) {
 	t.Helper()
 	n := len(clientPorts)
 	servers := make([]*natsserver.Server, n)
+	fatals := make([]*fatalLog, n)
 	for i := 0; i < n; i++ {
 		opts := &natsserver.Options{
 			Host:       "127.0.0.1",
@@ -146,10 +233,12 @@ func startClusterNodes(
 		if err != nil {
 			t.Fatalf("NewServer node %d: %v", i, err)
 		}
+		fatals[i] = &fatalLog{messages: make(chan string, 1)}
+		ns.SetLogger(fatals[i], false, false)
 		ns.Start()
 		servers[i] = ns
 	}
-	return servers
+	return servers, fatals
 }
 
 // shutdownClusterServers stops servers in reverse start order so

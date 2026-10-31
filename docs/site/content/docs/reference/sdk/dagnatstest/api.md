@@ -205,7 +205,7 @@ func Server(t *testing.T) *nats.Conn
 Server starts an embedded NATS server with JetStream and all required streams/KV buckets provisioned. Returns the connected client. Server and connection are cleaned up automatically when the test ends.
 
 <a name="StartTestCluster"></a>
-## func [StartTestCluster](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/cluster.go#L46>)
+## func [StartTestCluster](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/cluster.go#L54>)
 
 ```go
 func StartTestCluster(t *testing.T, n int) *nats.Conn

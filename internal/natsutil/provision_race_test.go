@@ -110,19 +110,7 @@ func assertAnsweredQuickly(t *testing.T, label string, result raceResult) {
 func startRaceCluster(t *testing.T) (jetstream.JetStream, jetstream.JetStream) {
 	t.Helper()
 	const nodeCount = 3
-	clusterPorts := make([]int, nodeCount)
-	for i := range clusterPorts {
-		clusterPorts[i] = reservePort(t)
-	}
-	servers := make([]*natsserver.Server, nodeCount)
-	for i := range servers {
-		servers[i] = startRaceNode(t, i, clusterPorts)
-	}
-	for _, server := range servers {
-		if !server.ReadyForConnections(10 * time.Second) {
-			t.Fatalf("server %s not ready", server.Name())
-		}
-	}
+	servers := startRaceNodesWith(t, nodeCount, reservePort)
 	jsFirst := raceJetStream(t, servers[0].ClientURL())
 	jsSecond := raceJetStream(t, servers[0].ClientURL())
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -134,7 +122,102 @@ func startRaceCluster(t *testing.T) (jetstream.JetStream, jetstream.JetStream) {
 	return jsFirst, jsSecond
 }
 
-func startRaceNode(t *testing.T, index int, clusterPorts []int) *natsserver.Server {
+// raceListenWait bounds how long a started node may take to bind its
+// client and route listeners; a failed bind is reported at once.
+const raceListenWait = 10 * time.Second
+
+// raceStartAttemptsMax bounds the starts on fresh ports when another
+// process takes a reserved route port before its node binds it.
+const raceStartAttemptsMax = 3
+
+// startRaceNodesWith starts the nodes on reserved route ports, retrying
+// on fresh ports when a node cannot bind its route port. nats-server
+// then calls Fatalf and serves clients without a route listener, which
+// with logging off is otherwise invisible until readiness times out.
+func startRaceNodesWith(
+	t *testing.T, nodeCount int, reserve func(*testing.T) int,
+) []*natsserver.Server {
+	t.Helper()
+	if nodeCount < 1 || reserve == nil {
+		panic("startRaceNodesWith: need nodes and a reserve func")
+	}
+	var err error
+	for attempt := 1; attempt <= raceStartAttemptsMax; attempt++ {
+		var servers []*natsserver.Server
+		servers, err = tryStartRaceNodes(t, nodeCount, reserve)
+		if err == nil {
+			return servers
+		}
+		t.Logf("race cluster start attempt %d: %v", attempt, err)
+	}
+	t.Fatalf("race cluster never started in %d attempts: %v", raceStartAttemptsMax, err)
+	return nil
+}
+
+func tryStartRaceNodes(
+	t *testing.T, nodeCount int, reserve func(*testing.T) int,
+) ([]*natsserver.Server, error) {
+	t.Helper()
+	clusterPorts := make([]int, nodeCount)
+	for i := range clusterPorts {
+		clusterPorts[i] = reserve(t)
+	}
+	servers := make([]*natsserver.Server, nodeCount)
+	fatals := make([]*raceFatalLog, nodeCount)
+	for i := range servers {
+		servers[i], fatals[i] = startRaceNode(t, i, clusterPorts)
+	}
+	for i, server := range servers {
+		if err := waitRaceListening(server, fatals[i]); err != nil {
+			for _, started := range servers {
+				started.Shutdown()
+			}
+			return nil, err
+		}
+	}
+	return servers, nil
+}
+
+// raceFatalLog is a node's logger: silent except for Fatalf, which
+// nats-server calls when it cannot bind a listener.
+type raceFatalLog struct{ messages chan string }
+
+func (l *raceFatalLog) Fatalf(format string, v ...any) {
+	select {
+	case l.messages <- fmt.Sprintf(format, v...):
+	default: // the first failure is the one that matters
+	}
+}
+
+func (*raceFatalLog) Noticef(string, ...any) {}
+func (*raceFatalLog) Warnf(string, ...any)   {}
+func (*raceFatalLog) Errorf(string, ...any)  {}
+func (*raceFatalLog) Debugf(string, ...any)  {}
+func (*raceFatalLog) Tracef(string, ...any)  {}
+
+func waitRaceListening(server *natsserver.Server, fatal *raceFatalLog) error {
+	if server == nil || fatal == nil {
+		panic("waitRaceListening: server and fatal must not be nil")
+	}
+	deadline := time.Now().Add(raceListenWait)
+	for time.Now().Before(deadline) {
+		select {
+		case message := <-fatal.messages:
+			return fmt.Errorf("server %s: %s", server.Name(), message)
+		default:
+		}
+		if server.Addr() != nil && server.ClusterAddr() != nil {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return fmt.Errorf("server %s did not bind its listeners within %s",
+		server.Name(), raceListenWait)
+}
+
+func startRaceNode(
+	t *testing.T, index int, clusterPorts []int,
+) (*natsserver.Server, *raceFatalLog) {
 	t.Helper()
 	var routes []*url.URL
 	for peer, port := range clusterPorts {
@@ -160,9 +243,11 @@ func startRaceNode(t *testing.T, index int, clusterPorts []int) *natsserver.Serv
 	if err != nil {
 		t.Fatalf("new server %d: %v", index, err)
 	}
+	fatal := &raceFatalLog{messages: make(chan string, 1)}
+	server.SetLogger(fatal, false, false)
 	server.Start()
 	t.Cleanup(server.Shutdown)
-	return server
+	return server, fatal
 }
 
 func raceJetStream(t *testing.T, clientURL string) jetstream.JetStream {
