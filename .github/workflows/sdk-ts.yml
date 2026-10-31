@@ -1,0 +1,93 @@
+name: SDK TypeScript
+
+# The @dagnats/bridge client in sdk/ts (#851). Its integration tests run
+# against a real in-process dagnats dev server built from this repo, so the
+# job needs Go as well as Node, and it reruns when the bridge, the journal
+# or the server change as well as when sdk/ts does. The job is path-filtered
+# with `paths:` like race.yml; ci.yml's API-based filter exists because its
+# `test` check is required and must always report, which this one is not.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sdk/ts/**'
+      - 'scripts/pack-sdk-ts.sh'
+      - Makefile
+      - 'bridge/**'
+      - 'journal/**'
+      - 'protocol/**'
+      - 'server/**'
+      - go.mod
+      - go.sum
+      - '.github/workflows/sdk-ts.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'sdk/ts/**'
+      - 'scripts/pack-sdk-ts.sh'
+      - Makefile
+      - 'bridge/**'
+      - 'journal/**'
+      - 'protocol/**'
+      - 'server/**'
+      - go.mod
+      - go.sum
+      - '.github/workflows/sdk-ts.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  sdk-ts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    name: sdk-ts (node ${{ matrix.node }})
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.19.0', '24']
+    defaults:
+      run:
+        working-directory: sdk/ts
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: sdk/ts/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Pack and import the release asset
+        # The script `make build-release` runs, then the tarball is installed
+        # into an empty directory and imported on its own.
+        run: |
+          ../../scripts/pack-sdk-ts.sh 0.0.0-ci "$RUNNER_TEMP/pack"
+          mkdir "$RUNNER_TEMP/consumer"
+          cd "$RUNNER_TEMP/consumer"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund "$RUNNER_TEMP/pack/dagnats-bridge-0.0.0-ci.tgz"
+          node --input-type=module -e '
+            import { BridgeClient, isTerminal } from "@dagnats/bridge";
+            import { Journal, BridgeLog } from "@dagnats/bridge/journal";
+            if (typeof BridgeClient !== "function" || typeof Journal !== "function" || typeof BridgeLog !== "function" || typeof isTerminal !== "function") process.exit(1);
+          '
+          test -f node_modules/@dagnats/bridge/LICENSE
+
+      - name: Test
+        # pretest builds the Go dev server the integration tests start.
+        run: npm test

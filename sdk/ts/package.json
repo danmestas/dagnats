@@ -1,0 +1,37 @@
+{
+  "name": "@dagnats/bridge",
+  "version": "0.0.0",
+  "private": false,
+  "description": "TypeScript client for the dagnats HTTP bridge, with the ADR-026 agent journal replay rules.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    },
+    "./package.json": "./package.json",
+    "./journal": {
+      "types": "./dist/journal/index.d.ts",
+      "default": "./dist/journal/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
+    "pretest": "go build -o test/.bin/devserver ./test/devserver",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --test-concurrency=1 'test/**/*.test.ts'"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "typescript": "5.9.3"
+  }
+}

@@ -33,11 +33,17 @@ type pollRequest struct {
 
 // pollResponse is a single task returned from a poll.
 type pollResponse struct {
-	TaskID    string `json:"task_id"`
+	TaskID string `json:"task_id"`
+	// TaskType is the type the worker polled this task under; a poll
+	// may name several, so the item says which one it came from.
+	TaskType  string `json:"task_type"`
 	RunID     string `json:"run_id"`
 	StepID    string `json:"step_id"`
 	Iteration int    `json:"iteration,omitempty"`
 	Attempt   int    `json:"attempt,omitempty"`
+	// DispatchNonce is the claim's dispatch identity, read by the same
+	// resolveDispatch the journal claim uses so the two cannot differ.
+	DispatchNonce string `json:"dispatch_nonce,omitempty"`
 	// Delivered and StreamSeq are this delivery's identity, the values
 	// the bridge's journal claim for it carries: a client finds its own
 	// claim by them and tells a redelivery or a resend from the
@@ -315,6 +321,7 @@ func (b *Bridge) fetchSlice(
 	for msg := range fetchResult.Messages() {
 		resp, ok := b.processPolledMsg(ctx, msg)
 		if ok {
+			resp.TaskType = taskType
 			tasks = append(tasks, resp)
 		}
 	}
@@ -652,6 +659,11 @@ func (b *Bridge) processPolledMsg(
 		return pollResponse{}, false
 	}
 	span.SetAttributes(attribute.Int("attempt", attemptNumber))
+	dispatch, err := resolveDispatch(msg)
+	if err != nil {
+		nakPolledMsg(dispatchCtx, msg, "resolve dispatch", err, span)
+		return pollResponse{}, false
+	}
 	err = b.publishStepStarted(
 		dispatchCtx, payload.RunID, payload.StepID, attemptNumber,
 		payload.DispatchNonce,
@@ -672,6 +684,7 @@ func (b *Bridge) processPolledMsg(
 		StepID:        payload.StepID,
 		Iteration:     payload.Iteration,
 		Attempt:       attemptNumber,
+		DispatchNonce: dispatch.nonce,
 		Delivered:     delivered,
 		StreamSeq:     streamSeq,
 		Input:         payload.Input,

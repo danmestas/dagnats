@@ -147,7 +147,8 @@ build-release: clean ## Build cross-platform release binaries + tarballs into ./
 	    rm -rf "$${pkgdir}"; \
 	  fi; \
 	done
-	@cd $(DIST) && for f in *.tar.gz *.zip; do \
+	./scripts/pack-sdk-ts.sh "$(VERSION)" "$(DIST)"
+	@cd $(DIST) && for f in *.tar.gz *.zip *.tgz; do \
 	  if [ -f "$$f" ]; then shasum -a 256 "$$f"; fi; \
 	done > SHA256SUMS
 	@echo "" && echo "Built artifacts:" && ls -lh $(DIST)/

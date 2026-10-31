@@ -75,8 +75,12 @@ Response:
 [
     {
         "task_id": "abc123.step-1",
+        "task_type": "extract-text",
         "run_id": "abc123",
         "step_id": "step-1",
+        "delivered": 1,
+        "stream_seq": 42,
+        "dispatch_nonce": "9f2c1e",
         "input": {"url": "https://example.com/doc.pdf"},
         "metadata": {"team": "docs"},
         "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
@@ -84,7 +88,7 @@ Response:
 ]
 ```
 
-`iteration` and `attempt` appear only when they are non-zero. `input`, `metadata`, `traceparent` and `tracestate` are omitted when empty.
+`task_type` is the type the task was polled under, since one poll can name several. `dispatch_nonce` is the dispatch identity the task's journal claim carries, and is omitted when the dispatch had none. `iteration` and `attempt` appear only when they are non-zero. `input`, `metadata`, `traceparent` and `tracestate` are omitted when empty.
 
 The `timeout_ms` field controls how long the bridge waits for a task before returning empty. Maximum is 60 seconds. The poll returns as soon as any task is available, with up to `max_tasks` of them, rather than waiting to fill the batch. A poll whose client disconnects, or whose server is stopping, ends within about a second.
 
@@ -118,7 +122,7 @@ Resolves a polled task. The `action` field determines behavior:
 | `fail` | Publishes step.failed with `error` and a `failure_type` |
 | `continue` | Requests another iteration of an agent loop, with `output` as the next input |
 | `pause` | Saves `checkpoint`, NAKs for `duration_ms` (1 to 3,600,000) so the task comes back |
-| `checkpoint` | Saves `data` to the checkpoints KV and extends the claim |
+| `checkpoint` | Buffers `data` as the task's loop state for the next `continue`, and extends the claim |
 | `heartbeat` | Extends the claim with nothing else |
 | `stream` | Publishes `data` to `stream.{run_id}.{step_id}` for live consumers and extends the claim |
 | `send_signal` | Writes `data` to the signal `name` of run `run_id` |
@@ -129,7 +133,11 @@ Resolves a polled task. The `action` field determines behavior:
 
 A journal step can be fenced: when the task is redelivered to another poller, the first worker's next action answers `409` with `"code":"fenced"` and it must stop. `410` (`stale`, `committed` or `restart_limit`) means the task is finished. See the [wire protocol](/docs/reference/wire-protocol).
 
+Every journal record (`model.response`, `tool.intent`, `tool.result`, `entry`) is a single NATS message, so it must fit the server's `max_payload` (1 MiB by default, configurable up to 8 MiB). An append over it fails with `413 {"code":"record_too_large","max_bytes":N}` and writes nothing; the claim stays usable, so a worker can append a smaller record. A `model.response` or `tool.result` that large has to be trimmed or stored elsewhere before it is journaled.
+
 The bridge also guards a journal step against a crash loop, as the Go SDK does ([ADR-028](/docs/architecture)). When a worker claims an iteration and dies without writing anything, the next delivery claims it again, and so on. A claim that finds 5 earlier claims on the iteration with no journal record between them fails the step with `restart_limit` and answers `410 {"code":"restart_limit"}`; the task is acknowledged and the step's retry policy takes over. Any journal record (`journal.append`, a pause, a commit) resets the count. The limit belongs to the bridge, not to a worker: set it with `Bridge.SetRestartLimit(n)` or the `DAGNATS_BRIDGE_RESTART_LIMIT` environment variable (1 to 1000, default 5, the same as `worker.WithRestartLimit`). An invalid environment value logs a warning and falls back to 5; `SetRestartLimit` panics on an invalid argument.
+
+A `checkpoint` is durable only once a later `continue` commits it: until then the state lives in the bridge's memory for this claim, and a worker that dies before `continue` loses it. The state may be at most `loop_state_max_bytes` bytes (256 KiB by default; set it with the `loop_state_max_bytes` key or `DAGNATS_LOOP_STATE_MAX_BYTES`, up to `max_payload`). Over it, `checkpoint` and `continue` answer `413 {"code":"state_too_large","max_bytes":N,"bytes":M}`; the task stays claimed. A resolve request body is limited to 8 MiB, the largest `max_payload` dagnats allows; a bigger one answers `413 {"code":"body_too_large","max_bytes":8388608}`.
 
 `complete`, `fail`, `continue` and `pause` end the claim. The other actions leave the task in flight and restart its claim window.
 
@@ -250,6 +258,10 @@ Working examples of non-Go workers using the HTTP bridge:
 
 - **[Python worker](https://github.com/danmestas/dagnats/tree/main/examples/http-worker-python)** -- complete Python worker with connect, poll, resolve, and reconnection logic
 - **[curl walkthrough](https://github.com/danmestas/dagnats/tree/main/examples/http-worker-curl)** -- step-by-step protocol walkthrough using only curl commands
+
+## TypeScript client
+
+[`sdk/ts`](https://github.com/danmestas/dagnats/tree/main/sdk/ts) is a TypeScript client for these endpoints (`@dagnats/bridge`, Node 22.19 or later, no runtime dependencies). It holds the `connect` heartbeat stream open and reconnects, maps the two `409` shapes and the `410` and `503` codes to typed errors, and runs the agent journal's replay rules, tested against the same fixtures as the Go SDK. It ships as a GitHub release asset (`dagnats-bridge-<version>.tgz`), not on npm.
 
 ## Related
 
