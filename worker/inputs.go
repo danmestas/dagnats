@@ -26,6 +26,8 @@ var (
 	// ErrInputsQueued: Continue(UntilInput()) was asked while inputs
 	// are queued. The wait would never be woken for them (they arrived
 	// before it), so the handler must place them and run another turn.
+	// It is the same error value as inputs.ErrQueued, which the HTTP
+	// bridge matches, so errors.Is works with either.
 	ErrInputsQueued = inputs.ErrQueued
 	// ErrInputsNotProvisioned: the submissions bucket is missing.
 	ErrInputsNotProvisioned = inputs.ErrNotProvisioned
