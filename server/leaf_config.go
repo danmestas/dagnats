@@ -7,6 +7,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"strconv"
@@ -110,4 +111,24 @@ func leafBindHost(cfg Config) string {
 		return cfg.LeafHost
 	}
 	return "127.0.0.1"
+}
+
+// warnLeafExposure names the two ways a leaf link reaches further than an
+// operator may expect: an open client port on a leaf shares the hub's
+// subjects with anyone who reaches it, and a listener on every interface
+// sends the leaf login in cleartext wherever it is routed.
+func warnLeafExposure(cfg Config) {
+	if len(cfg.LeafRemotes) > 0 && cfg.NATSUser == "" {
+		host := natsBindHost(cfg)
+		if !net.ParseIP(host).IsLoopback() {
+			slog.Warn("leaf client port is open without a login: anyone who "+
+				"reaches it shares every subject of the hub; set nats_host: "+
+				"127.0.0.1 or nats_user", "nats_host", host)
+		}
+	}
+	if cfg.LeafPort != 0 && net.ParseIP(leafBindHost(cfg)).IsUnspecified() {
+		slog.Warn("leaf_host listens on every interface: the leaf login is "+
+			"sent without TLS; bind it to a private or tailnet IP",
+			"leaf_host", leafBindHost(cfg))
+	}
 }

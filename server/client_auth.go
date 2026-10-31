@@ -81,6 +81,7 @@ func resolveClientAuth(cfg *Config) error {
 		return err
 	}
 	warnUncoveredListeners(*cfg)
+	warnLeafExposure(*cfg)
 	return nil
 }
 

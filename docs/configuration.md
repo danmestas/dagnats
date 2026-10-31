@@ -62,6 +62,8 @@ A dagnats can accept leaf nodes as well as dial out as one. `leaf_port` (default
 
 On the dialing side, `leaf_user` and `leaf_password_file` log in to every leaf remote whose URL carries no login of its own, with a plain user and password instead of the NKey/JWT creds file `leaf_credentials` needs (which assumes operator mode). They are set together, need `leaf_remotes`, and exclude `leaf_credentials`.
 
+A leaf with `leaf_remotes` binds its client port to all interfaces unless `nats_host` is set, and a client on that port shares every subject of the hub. On a laptop, set `nats_host: 127.0.0.1` or a client login with `nats_user`; dagnats warns at start when neither is set. The leaf login travels without TLS, so name a private or tailnet IP in `leaf_host`; dagnats warns when it is `0.0.0.0` or `::`. A linked leaf has the hub's whole account, not only the streams it mirrors, so a stolen leaf login, or a stolen laptop holding one, can do anything a local client of the hub can. Keep the password file readable by its owner only.
+
 ```yaml
 # hub
 leaf_port: 7422
@@ -72,7 +74,8 @@ leaf_listen_password_file: /etc/dagnats/leaf-password
 # laptop
 leaf_remotes: nats-leaf://100.64.0.9:7422
 leaf_user: e-mac
-leaf_password_file: ~/.config/dagnats/leaf-password
+leaf_password_file: /Users/e/.config/dagnats/leaf-password  # absolute: ~ is not expanded
+nats_host: 127.0.0.1  # keep the leaf's client port off the network
 jetstream_domain: e-mac
 ```
 
