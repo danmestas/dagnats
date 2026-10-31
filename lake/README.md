@@ -32,7 +32,10 @@ commits, err := w.Flush(ctx)
 - A part is named by a digest of its batch's content, so a retry lands on the same name.
   Committed parts are never replaced, renamed or deleted.
 - A date whose rows encode past `writer.PartBytesMax` (64 MiB) is split into several parts,
-  each with its own commit.
+  each with its own commit, at stream sequence boundaries. `Append` refuses a row that alone
+  would encode past the ceiling; `Flush` fails on one sequence's rows that would.
+- A retry after a partial failure that also carries newly appended rows is a different batch.
+  Its parts overlap the committed ones, and `ListCommitted` reports them as `Overlaps`.
 
 ### The Store seam
 
@@ -53,6 +56,8 @@ correct either way. Two writers can only meet on one key when they hold the same
 either copy of the part, and either commit record, is right.
 
 `writer.LocalStore` is the local implementation, used by dagnats' archive. It writes a temp
-file, fsyncs it, and links it into place with link(2), which fails if the key exists. lode
+file, fsyncs it, and links it into place with link(2), which fails if the key exists. It needs a
+filesystem with hard links, and one instance per root per process, since an instance sweeps
+crashed runs' temp files on its first Put to a table. lode
 (`github.com/danmestas/lode`) holds the S3-compatible store. Its conditional-PUT path is tested
 by lode against Garage and SigV4 vectors, not yet live on R2.

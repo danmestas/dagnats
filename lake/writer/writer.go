@@ -12,6 +12,11 @@
 // claim. Two writers that do meet on one key are committing the same batch (see Store), so the
 // writer takes no lock.
 //
+// A part's name, and a date's split into parts, follow the exact rows flushed. A retry after a
+// partial failure that also carries newly appended rows is a different batch: its parts overlap
+// the ones already committed, and ListCommitted reports them as Overlaps, as it would for any
+// re-flush of one stream's messages under different content.
+//
 // LocalStore is the local implementation, used by dagnats' archive. lode
 // (github.com/danmestas/lode) holds the S3-compatible one. Its conditional-PUT path is tested by
 // lode against Garage and SigV4 vectors, not yet live on R2.
@@ -166,6 +171,9 @@ func (w *Writer) Append(row Row) error {
 	if w.buffered >= w.cfg.BufferedRowsMax {
 		return ErrBufferFull
 	}
+	if err := w.checkRowFits(row); err != nil {
+		return err
+	}
 	dt := row.EventTime.UTC().Format(time.DateOnly)
 	w.buffers[dt] = append(w.buffers[dt], row)
 	w.buffered++
@@ -200,6 +208,44 @@ func (w *Writer) Flush(ctx context.Context) ([]lake.Commit, error) {
 		delete(w.buffers, dt)
 	}
 	return commits, errors.Join(failures...)
+}
+
+// A value's bytes land in a part at most in a dictionary or data page and as min and max in the
+// page header, the column chunk's statistics and the column index: 7 copies, and measured at
+// about 7x. zstd grows incompressible data by well under 1%, and the footer of ColumnCountMax
+// columns is a few KiB. So 16 copies plus 1 MiB bounds a one-row part with a 2x margin.
+const (
+	rowCopiesMax         = 16
+	partOverheadBytesMax = 1 << 20
+)
+
+// checkRowFits refuses a row that alone would encode past partBytesMax, so it never enters a
+// buffer it could not leave. Only a row the bound cannot clear is encoded, since an encode costs
+// tens of microseconds.
+func (w *Writer) checkRowFits(row Row) error {
+	if w.partBytesMax < 1 || row.EventID == "" {
+		panic("lake: checkRowFits on an unvalidated writer or row")
+	}
+	raw := len(row.EventID) + len(row.Payload) + 3*8 // event_time, stream_seq, schema_version
+	for _, value := range row.Values {
+		if text, ok := value.(string); ok {
+			raw += len(text)
+		} else {
+			raw += 8
+		}
+	}
+	if partOverheadBytesMax+rowCopiesMax*raw <= w.partBytesMax {
+		return nil
+	}
+	data, err := w.enc.encode([]Row{row}, w.cfg.Schema.Version)
+	if err != nil {
+		return err
+	}
+	if len(data) > w.partBytesMax {
+		return fmt.Errorf("lake: row %s encodes to %d bytes, over the %d-byte part ceiling",
+			row.EventID, len(data), w.partBytesMax)
+	}
+	return nil
 }
 
 // key is the only way the writer names an object, so it is where the program scope holds.
@@ -238,7 +284,9 @@ func (w *Writer) batchDigest(dt string, rows []Row) [sha256.Size]byte {
 }
 
 // flushPartition encodes a date's rows and halves any span whose part would pass partBytesMax,
-// writing each span that fits in sequence order. The split depends only on the rows and the
+// at the StreamSeq change nearest its middle, writing each span that fits in sequence order.
+// Rows of one seq stay in one part, since parts of one stream whose ranges share a seq are what
+// ListCommitted reports as Overlaps. The split depends only on the rows and the
 // encoder, so a retry of the same rows lands on the same parts.
 func (w *Writer) flushPartition(ctx context.Context, dt string, rows []Row) ([]lake.Commit, error) {
 	if len(rows) == 0 || len(rows) > PartRowsMax || w.partBytesMax < 1 {
@@ -265,11 +313,12 @@ func (w *Writer) flushPartition(ctx context.Context, dt string, rows []Row) ([]l
 			return commits, err
 		}
 		if len(data) > w.partBytesMax {
-			if next.high-next.low == 1 {
-				return commits, fmt.Errorf("lake: row %s encodes to %d bytes, over the %d-byte part "+
-					"ceiling", rows[next.low].EventID, len(data), w.partBytesMax)
+			middle, found := seqBoundary(rows, next.low, next.high)
+			if !found {
+				return commits, fmt.Errorf("lake: the %d rows of stream_seq %d encode to %d bytes, "+
+					"over the %d-byte part ceiling", next.high-next.low, rows[next.low].StreamSeq,
+					len(data), w.partBytesMax)
 			}
-			middle := next.low + (next.high-next.low)/2
 			pending = append(pending, span{middle, next.high}, span{next.low, middle})
 			continue
 		}
@@ -280,6 +329,23 @@ func (w *Writer) flushPartition(ctx context.Context, dt string, rows []Row) ([]l
 		commits = append(commits, commit)
 	}
 	return commits, nil
+}
+
+// seqBoundary finds the index in (low, high) nearest the middle where StreamSeq changes; rows are
+// sorted by seq. It reports false when the whole span is one seq.
+func seqBoundary(rows []Row, low, high int) (int, bool) {
+	if low < 0 || high > len(rows) || high-low < 1 {
+		panic("lake: seqBoundary span out of range")
+	}
+	middle := low + (high-low)/2
+	for offset := 0; offset <= high-low; offset++ {
+		for _, at := range []int{middle - offset, middle + offset} {
+			if at > low && at < high && rows[at-1].StreamSeq != rows[at].StreamSeq {
+				return at, true
+			}
+		}
+	}
+	return 0, false
 }
 
 func (w *Writer) writePart(

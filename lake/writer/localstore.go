@@ -32,6 +32,12 @@ const sweptTablesMax = 1 << 12
 // that table's date directories. That relies on one process writing a table at a time: a second
 // process's in-flight temp would be removed and its Put fail, never commit wrong data. Puts are
 // serialized, so the sweep never meets a temp of this store. Safe for concurrent use.
+//
+// Use one LocalStore per root per process: two instances can sweep each other's temp files. The
+// root's own entry is made durable in its parent, but no directory above that. The filesystem
+// must support hard links; there is no fallback. Put can fail after the link succeeded, when the
+// directory sync fails: the object is then in place but maybe not durable, and a retry gets
+// fs.ErrExist, which the writer takes as the same content already stored.
 type LocalStore struct {
 	root string
 	ops  fileOps
