@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.39] - 2026-10-31
+
+### Upgrade notes
+
+- **A bridge `poll` may name its `worker_id`.** `sdk/ts` sends it automatically while its `connect` stream is open, so a crashed TS worker's tasks are now redelivered within seconds instead of after AckWait. A `worker_id` owned by another token answers `409 worker_id_owned`; one with no open connection on that bridge is accepted unbound as before.
+- **`@dagnats/bridge` ships as `dagnats-bridge-0.0.39.tgz`** on this release. The `lake` module's latest tag is `lake/v0.2.0`.
+
 ### Added
 
 - **The lake can supersede a committed part, for lode's compaction and retention.** `lake.Supersede(ctx, store, commit, by, at)` writes a create-only `part-<stem>.json.superseded` record beside the part's commit. The record holds the commit with the new `SupersededBy` field, the stem of the part that now holds its rows (empty when retention dropped them), and `WrittenAt` set to when the part stopped being live. `lake.ListCommitted` lists superseded parts in the new `Listing.Superseded` instead of `Commits` and leaves them out of `Overlaps`. A supersede record whose part is gone is not rejected. Superseding a part again to the same successor returns the stored record; naming another successor is an error. It writes through `lake.RecordStore`, which every `writer.Store` satisfies. `lake/writer` is unchanged.
