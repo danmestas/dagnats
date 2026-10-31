@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The bridge's `inputs.place` action places a step's queued inputs (#848).** `{"action":"inputs.place","mode":"steer"|"follow_up"}` answers `200 {"inputs":[{"request_id","mode","content"}]}` (`{"inputs":[]}` when none, never 204; any other mode is `400 {"code":"invalid_mode"}`). It claims the journal on first use and runs the same code as the Go SDK's `PlaceInputs`, now `journal.Placer` (compare-and-swap claim, `input.placed` append, unanswered fallback). A delivery gets each placement once, a redelivery of the same iteration gets the earlier placements back once, and the placed inputs settle to `done` when the iteration commits. `sdk/ts` gains `ctx.inputs.place(mode)`.
+
 ### Fixed
 
 - **A cluster node no longer panics at startup when one bucket lookup goes unanswered.** In a cluster only a stream's leader answers `STREAM.INFO`, so a lookup sent while that stream elects a leader gets no reply. The startup binds of `workflow_runs`, `workflow_defs` and the other buckets the API service, orchestrator and config watcher open were single 5 s requests, and `NewSnapshotStore` panicked on the timeout (`workflow_runs bucket not found: context deadline exceeded`). The optional buckets silently stayed unbound on the same timeout. `natsutil.BindKeyValue` now re-sends an unanswered lookup with the provisioning retry bounds, and a missing bucket still returns at once. The 3-process cluster test now waits for every node's own health endpoint before it proceeds. It used to check only the first node, whose count of nodes up includes a peer that has opened its NATS routes but then died in startup. That is how the flaky `TestMultiProcessCluster_JournalFollowResumesAcrossNodeLoss` ran on two nodes, killed one of them, and lost quorum.

@@ -6,7 +6,7 @@ export type { CallOptions, LogLine, PollItem, PollOptions } from "./client.ts";
 export { Connection } from "./connection.ts";
 export type { ConnectOptions } from "./connection.ts";
 export { TaskContext } from "./context.ts";
-export type { Checkpoint, Claim, ContinueOptions, ContinueWait, FailOptions, FailureType, JournalView, TaskIdentity } from "./context.ts";
+export type { Checkpoint, Claim, ContinueOptions, ContinueWait, FailOptions, InputMode, InputPlaced, FailureType, JournalView, TaskIdentity } from "./context.ts";
 export {
   BodyTooLarge,
   BridgeError,

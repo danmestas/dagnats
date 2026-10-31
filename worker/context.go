@@ -11,6 +11,7 @@ import (
 
 	"github.com/danmestas/dagnats/inputs"
 	"github.com/danmestas/dagnats/internal/chaos"
+	"github.com/danmestas/dagnats/internal/inputplace"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/journal"
 	"github.com/danmestas/dagnats/observe"
@@ -126,13 +127,12 @@ type taskContext struct {
 	restartLimit int
 
 	// inputs is the submissions bucket, bound on first use;
-	// placedEntries are the inputs this claim placed, settled to done
-	// when the iteration commits (ADR-027).
-	inputs        *inputs.Store
-	placedEntries []inputs.Entry
-	// returnedInputs are the request ids PlaceInputs has returned to
-	// this delivery, recorded by it or by an earlier one.
-	returnedInputs map[string]bool
+	// inputs is the submissions bucket, bound on first use; placer
+	// places inputs and settles them to done when the iteration
+	// commits (ADR-027); it also remembers what it returned to this
+	// delivery.
+	inputs *inputs.Store
+	placer *inputplace.Placer
 	// Test seams: beforeClaim runs between reading the inputs and
 	// claiming them; placeFault fails an append by request id.
 	beforeClaim func()

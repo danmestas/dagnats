@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/consumername"
+	"github.com/danmestas/dagnats/internal/inputplace"
 	"github.com/danmestas/dagnats/internal/workertoken"
 	"github.com/danmestas/dagnats/journal"
 	"github.com/nats-io/nats.go/jetstream"
@@ -83,6 +84,10 @@ type ackEntry struct {
 	// is one writer's cursor and not safe for concurrent use.
 	journal   *journal.Journal
 	journalMu *sync.Mutex
+	// placer is the inputs.place state of this delivery (what it has
+	// returned, what to settle done at the commit). It is created under
+	// journalMu on first use and dies with the entry.
+	placer *inputplace.Placer
 	// journalStop is set once another claim fences this delivery. The
 	// entry stays so every later action on it gets the same answer
 	// instead of a "not found" or, worse, a fresh claim.
@@ -487,6 +492,40 @@ func (am *AckMap) SetJournal(taskID string, j *journal.Journal) bool {
 		return false
 	}
 	entry.journal = j
+	am.entries[taskID] = entry
+	return true
+}
+
+// placer returns the inputs placer of taskID's delivery, nil when the
+// delivery has not placed any.
+func (am *AckMap) placer(taskID string) *inputplace.Placer {
+	if am == nil {
+		panic("AckMap.placer: nil receiver")
+	}
+	if taskID == "" {
+		panic("AckMap.placer: taskID must not be empty")
+	}
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	return am.entries[taskID].placer
+}
+
+// setPlacer records the inputs placer for taskID; false when the entry
+// is gone. Never creates an entry.
+func (am *AckMap) setPlacer(taskID string, p *inputplace.Placer) bool {
+	if am == nil {
+		panic("AckMap.setPlacer: nil receiver")
+	}
+	if taskID == "" || p == nil {
+		panic("AckMap.setPlacer: taskID and placer must not be empty")
+	}
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	entry, ok := am.entries[taskID]
+	if !ok {
+		return false
+	}
+	entry.placer = p
 	am.entries[taskID] = entry
 	return true
 }

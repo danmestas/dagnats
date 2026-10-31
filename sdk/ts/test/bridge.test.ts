@@ -301,3 +301,15 @@ test("continue with an invalid wait is InvalidWait and keeps the claim", async (
   await assert.rejects(ctx.continue({ wait: { delay_ms: -1 } }), InvalidWait);
   await ctx.heartbeat();
 });
+
+test("inputs.place returns a queued steer once, content intact, and nothing under another mode", async () => {
+  const type = uniqueType();
+  const runId = await startAgentLoopRun(srv, type);
+  const ctx = new TaskContext(client, await pollOne(client, type));
+  await submitInput(srv, runId, "req-1");
+
+  assert.deepEqual(await ctx.inputs.place("follow_up"), []);
+  assert.deepEqual(await ctx.inputs.place("steer"), [{ request_id: "req-1", mode: "steer", content: "x" }]);
+  assert.deepEqual(await ctx.inputs.place("steer"), []);
+  await ctx.continue({ wait: { input: true } }); // placed, so no longer queued: parks
+});
