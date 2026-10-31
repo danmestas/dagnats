@@ -251,6 +251,10 @@ Working examples of non-Go workers using the HTTP bridge:
 - **[Python worker](https://github.com/danmestas/dagnats/tree/main/examples/http-worker-python)** -- complete Python worker with connect, poll, resolve, and reconnection logic
 - **[curl walkthrough](https://github.com/danmestas/dagnats/tree/main/examples/http-worker-curl)** -- step-by-step protocol walkthrough using only curl commands
 
+## TypeScript client
+
+[`sdk/ts`](https://github.com/danmestas/dagnats/tree/main/sdk/ts) is a TypeScript client for these endpoints (`@dagnats/bridge`, Node 22.19 or later, no runtime dependencies). It holds the `connect` heartbeat stream open and reconnects, maps the two `409` shapes and the `410` and `503` codes to typed errors, and runs the agent journal's replay rules, tested against the same fixtures as the Go SDK. It is not published to npm yet.
+
 ## Related
 
 - [Worker Configuration](/docs/workers/worker-configuration) -- Go native worker setup
