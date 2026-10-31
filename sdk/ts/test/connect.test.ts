@@ -57,6 +57,25 @@ test("a 4xx stops reconnecting and closed rejects with the status", async () => 
   assert.equal(f.hits(), 1, "a 4xx must not be retried");
 });
 
+test("429 and 408 are retried, 429 waiting out Retry-After; other 4xx still stop", async () => {
+  const f = await fake((hit, res) => {
+    if (hit === 1) return void res.writeHead(429, { "retry-after": "1" }).end("slow down");
+    if (hit === 2) return void res.writeHead(408).end("timeout");
+    sse(res);
+  });
+  const started = Date.now();
+  const conn = new BridgeClient(f.url, "t").connect({ worker: "w", task_types: ["x"], ...fast });
+  await conn.ready;
+  assert.equal(f.hits(), 3);
+  assert.ok(Date.now() - started >= 900, "Retry-After: 1 was not honoured");
+  conn.close();
+  await assert.rejects(conn.closed);
+
+  const refused = await fake((_, res) => res.writeHead(403).end("no"));
+  const stopped = new BridgeClient(refused.url, "t").connect({ worker: "w", task_types: ["x"], ...fast });
+  await assert.rejects(stopped.closed, (e: unknown) => e instanceof BridgeError && e.status === 403);
+});
+
 test("a 5xx is retried with backoff until the stream opens", async () => {
   const f = await fake((hit, res) => (hit < 3 ? res.writeHead(500).end("boom") : sse(res)));
   const conn = new BridgeClient(f.url, "t").connect({ worker: "w", task_types: ["x"], ...fast });

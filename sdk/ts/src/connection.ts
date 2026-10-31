@@ -9,7 +9,9 @@
 // restarted together does not retry in step. A 4xx is the bridge refusing
 // this worker (bad body, a worker_id another token owns, a scope the token
 // lacks): retrying cannot change the answer, so it ends the connection and
-// `closed` rejects with the BridgeError. A stream that goes silent for
+// `closed` rejects with the BridgeError. 408 and 429 are the exceptions:
+// they say "not now", so they are retried, waiting at least as long as the
+// Retry-After header asks (a proxy or rate limiter sets it) when it has one. A stream that goes silent for
 // longer than idle_timeout_ms is dropped too, since a half-open TCP
 // connection never reports an error by itself.
 
@@ -20,6 +22,8 @@ import { SSEParser } from "./sse.ts";
 export const IDLE_TIMEOUT_MS_DEFAULT = 75_000;
 const BACKOFF_BASE_MS_DEFAULT = 500;
 const BACKOFF_MAX_MS_DEFAULT = 15_000;
+/** A Retry-After longer than this is not honoured in full; the worker would look dead. */
+const RETRY_AFTER_MAX_MS = 300_000;
 
 export interface ConnectOptions {
   /** The worker id the bridge registers (`worker_id` on the wire). */
@@ -48,6 +52,8 @@ export class Connection {
   private readonly options: ConnectOptions;
   private readonly stop = new AbortController();
   private stopped = false;
+  /** Set by a refused attempt that carried Retry-After; consumed by the next wait. */
+  private retryAfterMs = 0;
   private resolveReady!: () => void;
   private rejectReady!: (reason: unknown) => void;
   private rejectClosed!: (reason: unknown) => void;
@@ -90,13 +96,15 @@ export class Connection {
         if (await this.session()) delayMs = baseMs;
       } catch (err) {
         if (this.stopped) return;
-        if (err instanceof BridgeError && err.status >= 400 && err.status < 500) {
+        if (err instanceof BridgeError && err.status >= 400 && err.status < 500 && !isRetryable4xx(err.status)) {
           this.end(err);
           return;
         }
       }
       if (this.stopped) return;
-      await sleep(delayMs * (0.5 + Math.random() / 2), this.stop.signal);
+      const waitMs = Math.max(delayMs * (0.5 + Math.random() / 2), this.retryAfterMs);
+      this.retryAfterMs = 0;
+      await sleep(waitMs, this.stop.signal);
       delayMs = Math.min(delayMs * 2, maxMs);
     }
   }
@@ -117,6 +125,7 @@ export class Connection {
         signal: attempt.signal,
       });
       if (!res.ok || res.body === null) {
+        this.retryAfterMs = retryAfterMs(res.headers.get("retry-after"));
         throw errorFromResponse(res.status, await res.text());
       }
       established = true;
@@ -165,4 +174,17 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
     }
     signal.addEventListener("abort", done, { once: true });
   });
+}
+
+/** 408 and 429 ask the client to come back later rather than refusing it. */
+function isRetryable4xx(status: number): boolean {
+  return status === 408 || status === 429;
+}
+
+/** Retry-After as milliseconds: delta-seconds or an HTTP date; 0 when absent or unreadable. */
+function retryAfterMs(header: string | null): number {
+  if (header === null) return 0;
+  const seconds = Number(header);
+  const ms = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - Date.now();
+  return Number.isFinite(ms) && ms > 0 ? Math.min(ms, RETRY_AFTER_MAX_MS) : 0;
 }
