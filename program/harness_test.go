@@ -83,11 +83,6 @@ func serverPermissions(p program.Permissions) *natsserver.Permissions {
 			Allow: p.Subscribe.Allow, Deny: p.Subscribe.Deny,
 		},
 	}
-	if p.AllowResponses {
-		out.Response = &natsserver.ResponsePermission{
-			MaxMsgs: 1, Expires: time.Minute,
-		}
-	}
 	return out
 }
 

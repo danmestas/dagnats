@@ -193,7 +193,7 @@ func validateStreams(name string, streams []StreamSpec) []error {
 			errs = append(errs, fmt.Errorf("stream %q declared twice", s.Name))
 		}
 		seen[s.Name] = true
-		errs = append(errs, validateStreamSize(s))
+		errs = append(errs, validateStreamSize(s), validateStreamSubjects(name, s))
 	}
 	return errs
 }
@@ -208,6 +208,28 @@ func validateStreamSize(s StreamSpec) error {
 		return fmt.Errorf("stream %q needs a size: a fraction, a floor, or both", s.Name)
 	case s.MaxAge < 0:
 		return fmt.Errorf("stream %q max age %v is negative", s.Name, s.MaxAge)
+	}
+	return nil
+}
+
+func validateStreamSubjects(name string, s StreamSpec) error {
+	if len(s.Subjects) == 0 {
+		return fmt.Errorf("stream %q needs at least one subject", s.Name)
+	}
+	for _, subject := range s.Subjects {
+		tokens := strings.Split(subject, ".")
+		if tokens[0] != name || len(tokens) < 2 || len(subject) > dottedLenMax {
+			return fmt.Errorf("stream %q subject %q is not under %s.>", s.Name, subject, name)
+		}
+		for i, token := range tokens[1:] {
+			last := i == len(tokens)-2
+			if token == "*" || (token == ">" && last) {
+				continue
+			}
+			if token == "" || strings.IndexFunc(token, notTokenRune) >= 0 {
+				return fmt.Errorf("stream %q subject %q has an invalid token", s.Name, subject)
+			}
+		}
 	}
 	return nil
 }

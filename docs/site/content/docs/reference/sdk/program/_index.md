@@ -18,6 +18,7 @@ The contract between dagnats and a program: a separately released binary that ru
 | `PermissionsFor(m)` | The NATS permission set for the program's user, as a plain `Permissions` struct |
 | `InboxPrefix(name)` | The inbox prefix to dial with: `nats.CustomInboxPrefix(program.InboxPrefix(name))` |
 | `LoadOrCreateKey(path)` | The program's NKey; the seed is written once, mode 0600, and never leaves the process |
+| `Provision(ctx, js, m, grant)` | The host creates the manifest's streams and buckets; programs may not |
 | `Attach(ctx, nc, prog, grant)` | Calls `Start` with a `Host`, then starts the worker serving its handlers; returns a stop func |
 | `Program`, `Host`, `Grant` | The three-method program interface and what `Start` receives |
 

@@ -16,14 +16,11 @@ import (
 
 	"github.com/danmestas/dagnats/program"
 	"github.com/danmestas/dagnats/worker"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nats.go/micro"
 )
 
 type toyProgram struct {
 	manifest program.Manifest
-	// stores makes Start provision the declared stream and bucket.
-	stores bool
 	// service makes Start serve the micro service.
 	service bool
 	// handle, when set, replaces the default toy.echo handler.
@@ -53,11 +50,6 @@ func (p *toyProgram) Start(ctx context.Context, h program.Host) error {
 	}
 	if slices.Contains(p.manifest.TaskTypes, "toy.wait") {
 		h.Handle("toy.wait", p.waitHandler)
-	}
-	if p.stores {
-		if err := provisionToyStores(ctx, h); err != nil {
-			return err
-		}
 	}
 	if p.service {
 		svc, err := startToyService(h)
@@ -131,30 +123,6 @@ func (p *toyProgram) waitHandler(tc worker.TaskContext) error {
 	}
 	p.resumed.Add(1)
 	return tc.Complete(tc.Input())
-}
-
-// provisionToyStores creates the declared stream and bucket at the
-// sizes in the Grant, as a real program's Start does.
-func provisionToyStores(ctx context.Context, h program.Host) error {
-	js, err := jetstream.New(h.Conn)
-	if err != nil {
-		return err
-	}
-	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:     "TOY_EVENTS",
-		Subjects: []string{"toy.events.>"},
-		MaxBytes: h.Grant.StreamMaxBytes["TOY_EVENTS"],
-	})
-	if err != nil {
-		return fmt.Errorf("create TOY_EVENTS: %w", err)
-	}
-	_, err = js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
-		Bucket: "toy_state", MaxBytes: 1 << 20,
-	})
-	if err != nil {
-		return fmt.Errorf("create toy_state: %w", err)
-	}
-	return nil
 }
 
 func startToyService(h program.Host) (micro.Service, error) {

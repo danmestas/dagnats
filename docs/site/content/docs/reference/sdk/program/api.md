@@ -15,14 +15,23 @@ Isolation rests on two rules the package enforces:
 - A program dials with nats.CustomInboxPrefix\(InboxPrefix\(name\)\), and its permissions grant subscribe on "\_INBOX.\<name\>.\>" only. Every pull fetch, KV watch and JetStream API reply lands on that inbox, so no program can read another's task bodies or replies. Attach panics on a connection dialed without the prefix.
 - The program generates its own NKey \(LoadOrCreateKey\). The seed is written once, mode 0600, and never leaves the process; only the public key is registered.
 
+A program never creates or reconfigures a stream or bucket: a stream config can capture, mirror or republish subjects outside the program's grant. The host creates the manifest's streams and buckets with Provision over its own connection, and the program gets reads, consumers, and key writes on them.
+
 Attach is the one path that calls Program.Start. It takes the Grant the caller obtained \(from registration, the in\-process host, or a literal in tests\), builds a Host, starts the worker that serves the handlers Start registered, and returns a stop func.
 
 Permissions is a plain struct. Converting it to nats\-server options is the server's job, so a program never links nats\-server.
+
+Limits of user permissions inside one account, accepted for cooperating programs:
+
+- A consumer's deliver subject is in the request body, which subject permissions cannot see, and nats\-server does not check it against the creator's permissions. Any program can therefore push its own stream contents, or a shared bucket's, to any subject with interest. KV watches need push consumers, so this cannot be closed without accounts or a server\-side check.
+- Consumer delete on shared buckets and next/ack on STICKY\_TASKS are gated only by consumer names, which are random NUIDs that a program cannot list.
+- Validate cannot see other programs, so a protocol such as "beta.x" declared by program alpha would be granted under beta's prefix. Registration must check protocol ownership both ways: a protocol under a registered program's prefix, and a program registering a name some protocol already sits under.
 
 ## Index
 
 - [func Attach\(ctx context.Context, nc \*nats.Conn, prog Program, g Grant\) \(stop func\(context.Context\) error, err error\)](<#Attach>)
 - [func InboxPrefix\(name string\) string](<#InboxPrefix>)
+- [func Provision\(ctx context.Context, js jetstream.JetStream, m Manifest, g Grant\) error](<#Provision>)
 - [func Validate\(m Manifest\) error](<#Validate>)
 - [type BucketSpec](<#BucketSpec>)
 - [type Grant](<#Grant>)
@@ -57,13 +66,22 @@ nc must have been dialed with nats.CustomInboxPrefix\(InboxPrefix\(name\)\); Att
 The returned stop func stops the worker \(draining in\-flight tasks\), then calls prog.Stop once; later calls return the first result. When Start fails, Attach returns its error without calling Stop. When the worker fails to start, Attach calls Stop and returns both errors.
 
 <a name="InboxPrefix"></a>
-## func [InboxPrefix](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L107>)
+## func [InboxPrefix](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L112>)
 
 ```go
 func InboxPrefix(name string) string
 ```
 
 InboxPrefix is the reply\-inbox prefix a program must dial with, nats.CustomInboxPrefix\(InboxPrefix\(name\)\). Its permissions grant subscribe on this prefix only, so no program reads another's replies.
+
+<a name="Provision"></a>
+## func [Provision](<https://github.com/danmestas/dagnats/blob/main/program/provision.go#L16>)
+
+```go
+func Provision(ctx context.Context, js jetstream.JetStream, m Manifest, g Grant) error
+```
+
+Provision creates or updates the manifest's streams and buckets at the sizes in g. The host calls it over its own connection: a program's permissions grant no stream create or update, because a stream config can capture, mirror or republish subjects the program may not touch. Idempotent.
 
 <a name="Validate"></a>
 ## func [Validate](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L47>)
@@ -75,9 +93,9 @@ func Validate(m Manifest) error
 Validate checks names, prefixes, sizes, and that Protocols are not under the program's own prefix or an engine root. Pure; used by registration, by Use, and by a program's own tests. Whether a protocol falls under another registered program's prefix needs the registry and is checked at registration.
 
 <a name="BucketSpec"></a>
-## type [BucketSpec](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L52-L57>)
+## type [BucketSpec](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L57-L62>)
 
-BucketSpec declares one of the program's own KV buckets.
+BucketSpec declares one of the program's own KV buckets. The host creates it \(Provision\); the program reads and writes keys.
 
 ```go
 type BucketSpec struct {
@@ -89,7 +107,7 @@ type BucketSpec struct {
 ```
 
 <a name="Grant"></a>
-## type [Grant](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L67-L75>)
+## type [Grant](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L72-L80>)
 
 Grant is what attach returns. Sizes are absolute: the program never does budget arithmetic.
 
@@ -106,7 +124,7 @@ type Grant struct {
 ```
 
 <a name="HTTPHandler"></a>
-## type [HTTPHandler](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L102>)
+## type [HTTPHandler](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L107>)
 
 HTTPHandler is optional. The host decides the listener and prefix.
 
@@ -115,7 +133,7 @@ type HTTPHandler interface{ Handler() http.Handler }
 ```
 
 <a name="Host"></a>
-## type [Host](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L80-L88>)
+## type [Host](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L85-L93>)
 
 Host is what Start receives. It is data: the connection the program was attached with, its Grant, a logger tagged with its name, and Handle, which registers a task handler on the worker Attach runs.
 
@@ -188,7 +206,7 @@ func (k Key) String() string
 String prints the public key, so logging a Key cannot leak the seed.
 
 <a name="Link"></a>
-## type [Link](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L60-L63>)
+## type [Link](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L65-L68>)
 
 Link is a console navigation entry.
 
@@ -232,24 +250,21 @@ type Manifest struct {
 ```
 
 <a name="Permissions"></a>
-## type [Permissions](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L22-L30>)
+## type [Permissions](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L29-L32>)
 
 Permissions is a plain permission set for one program's NATS user. The server converts it to nats\-server's own type, so a program never links nats\-server.
+
+There is deliberately no response permission \(allow\_responses\): the server grants it for any delivered message with a reply subject, whoever sent it, so a program could publish to itself with a forged reply and "respond" anywhere. Replies go out under Publish "\_INBOX.\>" instead; inbox names end in a random NUID and a program can subscribe only to its own "\_INBOX.\<name\>.\>", so it cannot learn another's.
 
 ```go
 type Permissions struct {
     Publish   SubjectPermission
     Subscribe SubjectPermission
-    // AllowResponses lets the user publish one reply to the reply
-    // subject of each request it receives (nats-server's
-    // allow_responses). A micro service answers on the caller's inbox,
-    // which is never in Publish.Allow.
-    AllowResponses bool
 }
 ```
 
 <a name="PermissionsFor"></a>
-### func [PermissionsFor](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L55>)
+### func [PermissionsFor](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L57>)
 
 ```go
 func PermissionsFor(m Manifest) Permissions
@@ -258,7 +273,7 @@ func PermissionsFor(m Manifest) Permissions
 PermissionsFor derives the NATS permission set for a manifest: every crossing the worker SDK and a micro service make, the program's own subjects, streams and buckets, its protocols, and subscribe on "\_INBOX.\<name\>.\>" and nothing wider. Pure. Panics on a manifest that fails Validate: permissions for an invalid manifest are meaningless.
 
 <a name="Program"></a>
-## type [Program](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L91-L99>)
+## type [Program](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L96-L104>)
 
 Program is a separately released binary's view of dagnats.
 
@@ -275,13 +290,16 @@ type Program interface {
 ```
 
 <a name="StreamSpec"></a>
-## type [StreamSpec](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L44-L49>)
+## type [StreamSpec](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L45-L53>)
 
-StreamSpec declares one of the program's own JetStream streams. Its MaxBytes is resolved by dagnats from the fraction and floor and handed back in Grant.StreamMaxBytes.
+StreamSpec declares one of the program's own JetStream streams. The host creates it \(Provision\); the program only reads and consumes it. Its MaxBytes is resolved by dagnats from the fraction and floor and handed back in Grant.StreamMaxBytes.
 
 ```go
 type StreamSpec struct {
-    Name             string // "NAME_<REST>", upper case
+    Name string // "NAME_<REST>", upper case
+    // Subjects the stream captures, each under the program's "name."
+    // prefix; wildcards allowed.
+    Subjects         []string
     MaxBytesFraction float64
     MaxBytesFloor    int64
     MaxAge           time.Duration

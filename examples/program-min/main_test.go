@@ -65,7 +65,6 @@ func startServer(t *testing.T, key program.Key, log *violations) *natsserver.Ser
 		Nkeys: []*natsserver.NkeyUser{{Nkey: key.PublicKey(), Permissions: &natsserver.Permissions{
 			Publish:   &natsserver.SubjectPermission{Allow: perms.Publish.Allow},
 			Subscribe: &natsserver.SubjectPermission{Allow: perms.Subscribe.Allow},
-			Response:  &natsserver.ResponsePermission{MaxMsgs: 1, Expires: time.Minute},
 		}}},
 	})
 	if err != nil {

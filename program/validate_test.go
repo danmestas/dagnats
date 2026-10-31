@@ -22,7 +22,7 @@ func validManifest() program.Manifest {
 		TaskTypes: []string{"toy.echo", "toy.send.email", "toy.wait"},
 		Workflows: []string{"toy.echo"},
 		Streams: []program.StreamSpec{{
-			Name:             "TOY_EVENTS",
+			Name: "TOY_EVENTS", Subjects: []string{"toy.events.>"},
 			MaxBytesFraction: 0.1, MaxBytesFloor: 1 << 20, MaxAge: time.Hour,
 		}},
 		Buckets: []program.BucketSpec{{
@@ -70,6 +70,13 @@ func TestValidate_RejectsUnprefixedAndProtocolUnderPrefix(t *testing.T) {
 		{"workflow unprefixed", func(m *program.Manifest) { m.Workflows = []string{"echo"} }, "toy."},
 		{"stream unprefixed", func(m *program.Manifest) { m.Streams[0].Name = "EVENTS" }, "TOY_"},
 		{"stream lowercase", func(m *program.Manifest) { m.Streams[0].Name = "TOY_events" }, "TOY_"},
+		{"stream subject foreign", func(m *program.Manifest) {
+			m.Streams[0].Subjects = []string{"history.>"}
+		}, "subject"},
+		{"stream subject capture inbox", func(m *program.Manifest) {
+			m.Streams[0].Subjects = []string{"_INBOX.beta.>"}
+		}, "subject"},
+		{"stream no subjects", func(m *program.Manifest) { m.Streams[0].Subjects = nil }, "subject"},
 		{"stream no size", func(m *program.Manifest) {
 			m.Streams[0].MaxBytesFraction, m.Streams[0].MaxBytesFloor = 0, 0
 		}, "size"},

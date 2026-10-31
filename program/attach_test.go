@@ -19,6 +19,7 @@ import (
 	"github.com/danmestas/dagnats/program"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func expectPanic(t *testing.T, want string, fn func()) {
@@ -66,7 +67,7 @@ func TestAttach_StartStopIdempotent(t *testing.T) {
 	m := validManifest()
 	f, svc := startEngineFixture(t, m)
 	nc := f.dialProgram(t, m.Name)
-	prog := &toyProgram{manifest: m, stores: true}
+	prog := &toyProgram{manifest: m}
 	ctx := context.Background()
 	for round := 1; round <= 2; round++ {
 		stop, err := program.Attach(ctx, nc, prog, toyGrant())
@@ -142,6 +143,14 @@ func startEngineFixture(t *testing.T, m program.Manifest) (*fixture, *api.Servic
 		t.Fatalf("orch.Start: %v", err)
 	}
 	t.Cleanup(orch.Stop)
+	admin, err := jetstream.New(f.admin)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	// The host provisions; the program's user may not create streams.
+	if err := program.Provision(context.Background(), admin, m, toyGrant()); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
 	svc := api.NewService(f.admin)
 	wb := dag.NewWorkflow("toy.echo")
 	send := wb.Task("send", "toy.send.email").After(wb.Task("echo", "toy.echo"))

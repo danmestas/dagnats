@@ -87,7 +87,6 @@ func crossingTable() []crossing {
 		rows = append(rows, kvRows("shared "+b, b)...)
 	}
 	rows = append(rows, kvRows("own bucket", "toy_state")...)
-	rows = append(rows, crossing{"own bucket create", true, "$JS.API.STREAM.CREATE.KV_toy_state"})
 	return append(rows, streamRows("own stream", "TOY_EVENTS")...)
 }
 
@@ -105,14 +104,11 @@ func kvRows(label, bucket string) []crossing {
 
 func streamRows(label, stream string) []crossing {
 	return []crossing{
-		{label + " create", true, "$JS.API.STREAM.CREATE." + stream},
-		{label + " update", true, "$JS.API.STREAM.UPDATE." + stream},
 		{label + " info", true, "$JS.API.STREAM.INFO." + stream},
-		{label + " purge", true, "$JS.API.STREAM.PURGE." + stream},
-		{label + " delete", true, "$JS.API.STREAM.DELETE." + stream},
 		{label + " msg get", true, "$JS.API.STREAM.MSG.GET." + stream},
 		{label + " consumer create", true, "$JS.API.CONSUMER.CREATE." + stream + ".c.toy.events.>"},
 		{label + " consumer info", true, "$JS.API.CONSUMER.INFO." + stream + ".c"},
+		{label + " consumer delete", true, "$JS.API.CONSUMER.DELETE." + stream + ".c"},
 		{label + " consumer list", true, "$JS.API.CONSUMER.LIST." + stream},
 		{label + " consumer next", true, "$JS.API.CONSUMER.MSG.NEXT." + stream + ".c"},
 		{label + " ack", true, "$JS.ACK." + stream + ".c.1.2.3.4.5.6"},
@@ -133,9 +129,9 @@ func TestPermissions_CrossingListComplete(t *testing.T) {
 			t.Errorf("%s: %s %q not granted", row.name, kind, row.subject)
 		}
 	}
-	// Positive: replies to requests (micro, $SRV) go out as responses.
-	if !perms.AllowResponses {
-		t.Error("AllowResponses = false, want true for micro replies")
+	// Positive: micro replies reach a caller's inbox, any program's.
+	if !allowedBy(perms.Publish, "_INBOX.other.reply1") {
+		t.Error("publish to a caller's inbox not granted")
 	}
 	if t.Failed() {
 		t.FailNow()
@@ -149,7 +145,7 @@ func runToyEndToEnd(t *testing.T, m program.Manifest) {
 	f, svc := startEngineFixture(t, m)
 	adoptLegacyDurable(t, f)
 	nc := f.dialProgram(t, m.Name)
-	prog := &toyProgram{manifest: m, stores: true, service: true}
+	prog := &toyProgram{manifest: m, service: true}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	stop, err := program.Attach(ctx, nc, prog, toyGrant())
@@ -334,7 +330,8 @@ func TestPermissions_FilteredConsumerAllowedForeignDenied(t *testing.T) {
 }
 
 // assertForeignResourcesDenied replays the rest of the §2.3 prototype:
-// own stores work, every foreign store, subject and subscription fails.
+// every store create (own ones are the host's job), foreign subject and
+// foreign subscription fails.
 func assertForeignResourcesDenied(t *testing.T, f *fixture, js jetstream.JetStream) {
 	t.Helper()
 	// Each call gets its own deadline: a denial burns its whole timeout.
@@ -345,8 +342,8 @@ func assertForeignResourcesDenied(t *testing.T, f *fixture, js jetstream.JetStre
 	}
 	if _, err := js.CreateStream(short(), jetstream.StreamConfig{
 		Name: "TOY_EVENTS", Subjects: []string{"toy.events.>"}, MaxBytes: 1 << 20,
-	}); err != nil {
-		t.Fatalf("own stream: %v", err)
+	}); err == nil {
+		t.Error("own stream created by the program, want the host to provision it")
 	}
 	if _, err := js.CreateStream(short(), jetstream.StreamConfig{
 		Name: "NOTIFY_FEED", Subjects: []string{"notify.feed.>"},
@@ -371,6 +368,7 @@ func assertForeignResourcesDenied(t *testing.T, f *fixture, js jetstream.JetStre
 		t.Fatalf("flush: %v", err)
 	}
 	for _, subj := range []string{
+		"$JS.API.STREAM.CREATE.TOY_EVENTS",
 		"$JS.API.STREAM.CREATE.NOTIFY_FEED", "$JS.API.STREAM.CREATE.KV_notify_inbox",
 		"$JS.API.STREAM.INFO.KV_workflow_defs", "task.notify.send.run9", "task.>",
 	} {

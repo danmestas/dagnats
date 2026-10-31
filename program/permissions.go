@@ -19,14 +19,16 @@ type SubjectPermission struct {
 // Permissions is a plain permission set for one program's NATS user.
 // The server converts it to nats-server's own type, so a program never
 // links nats-server.
+//
+// There is deliberately no response permission (allow_responses): the
+// server grants it for any delivered message with a reply subject,
+// whoever sent it, so a program could publish to itself with a forged
+// reply and "respond" anywhere. Replies go out under Publish "_INBOX.>"
+// instead; inbox names end in a random NUID and a program can subscribe
+// only to its own "_INBOX.<name>.>", so it cannot learn another's.
 type Permissions struct {
 	Publish   SubjectPermission
 	Subscribe SubjectPermission
-	// AllowResponses lets the user publish one reply to the reply
-	// subject of each request it receives (nats-server's
-	// allow_responses). A micro service answers on the caller's inbox,
-	// which is never in Publish.Allow.
-	AllowResponses bool
 }
 
 // sharedBuckets are the engine buckets every program reads and writes
@@ -77,6 +79,7 @@ func PermissionsFor(m Manifest) Permissions {
 	}
 	own := append([]string{m.Name + ".>"}, protocolSubjects(m.Protocols)...)
 	pub = append(pub, own...)
+	pub = append(pub, "_INBOX.>")
 	sub = append(sub, own...)
 	sub = append(sub, microSubscribe(m.Name)...)
 	sub = append(sub, protocol.CancelSubjectPrefix+"*", InboxPrefix(m.Name)+".>")
@@ -84,9 +87,8 @@ func PermissionsFor(m Manifest) Permissions {
 		panic("program.PermissionsFor: empty permission list")
 	}
 	return Permissions{
-		Publish:        SubjectPermission{Allow: pub},
-		Subscribe:      SubjectPermission{Allow: sub},
-		AllowResponses: true,
+		Publish:   SubjectPermission{Allow: pub},
+		Subscribe: SubjectPermission{Allow: sub},
 	}
 }
 
@@ -118,9 +120,12 @@ func taskQueuePublish(taskTypes []string) []string {
 }
 
 // stickyPublish grants the SDK's optional worker-affinity consumer on
-// STICKY_TASKS. It is ephemeral with a generated name, so the name
-// token is a wildcard; the filter "sticky.<type>.<worker id>.>" is
-// pinned to the declared type.
+// STICKY_TASKS. It is ephemeral with a generated (NUID) name, so the
+// name token of next and ack is a wildcard: a program that learned a
+// sibling's sticky consumer name could pull from it. Names are not
+// listable (no CONSUMER.LIST or NAMES on STICKY_TASKS), which is the
+// whole gate. The create filter "sticky.<type>.<worker id>.>" is pinned
+// to the declared type.
 func stickyPublish(taskTypes []string) []string {
 	if len(taskTypes) == 0 {
 		return nil
@@ -138,6 +143,11 @@ func stickyPublish(taskTypes []string) []string {
 
 // sharedBucketPublish grants open, get, watch and put on one engine
 // bucket, but not create, update, purge or delete of the bucket.
+// Consumer delete is granted because nats.go deletes a KV watcher's
+// ephemeral consumer on Stop; denying it would make every Stop wait out
+// the JetStream timeout. The exposure is gated by the consumer name: a
+// generated NUID, which a program cannot list (no CONSUMER.LIST, NAMES
+// or INFO on these streams), so it can delete only watchers it created.
 func sharedBucketPublish(bucket string) []string {
 	if bucket == "" {
 		panic("program.sharedBucketPublish: bucket must not be empty")
@@ -157,21 +167,27 @@ func sharedBucketPublish(bucket string) []string {
 	return out
 }
 
-// ownStreamPublish grants the whole JetStream API on one of the
-// program's own streams (a bucket's is "KV_<bucket>").
+// ownStreamPublish grants reads and consumers on one of the program's
+// own streams (a bucket's is "KV_<bucket>"): info, message get, direct
+// get, and consumer create, info, list, next, ack and delete. No stream
+// create, update, purge or delete: a stream config can capture, mirror
+// or republish foreign subjects, so the host provisions (Provision).
 func ownStreamPublish(stream string) []string {
 	if stream == "" {
 		panic("program.ownStreamPublish: stream must not be empty")
 	}
 	out := []string{
-		"$JS.API.STREAM.*." + stream,
-		"$JS.API.STREAM.MSG.*." + stream,
-		"$JS.API.CONSUMER.*." + stream,
-		"$JS.API.CONSUMER.*." + stream + ".>",
-		"$JS.API.CONSUMER.MSG.NEXT." + stream + ".*",
-		"$JS.API.CONSUMER.DURABLE.CREATE." + stream + ".*",
+		"$JS.API.STREAM.INFO." + stream,
+		"$JS.API.STREAM.MSG.GET." + stream,
 		"$JS.API.DIRECT.GET." + stream,
 		"$JS.API.DIRECT.GET." + stream + ".>",
+		"$JS.API.CONSUMER.CREATE." + stream + ".>",
+		"$JS.API.CONSUMER.DURABLE.CREATE." + stream + ".*",
+		"$JS.API.CONSUMER.INFO." + stream + ".*",
+		"$JS.API.CONSUMER.DELETE." + stream + ".*",
+		"$JS.API.CONSUMER.LIST." + stream,
+		"$JS.API.CONSUMER.NAMES." + stream,
+		"$JS.API.CONSUMER.MSG.NEXT." + stream + ".*",
 		"$JS.ACK." + stream + ".>",
 		"$JS.FC." + stream + ".>",
 	}

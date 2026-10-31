@@ -38,17 +38,22 @@ type Manifest struct {
 	Console *Link
 }
 
-// StreamSpec declares one of the program's own JetStream streams. Its
-// MaxBytes is resolved by dagnats from the fraction and floor and
+// StreamSpec declares one of the program's own JetStream streams. The
+// host creates it (Provision); the program only reads and consumes it.
+// Its MaxBytes is resolved by dagnats from the fraction and floor and
 // handed back in Grant.StreamMaxBytes.
 type StreamSpec struct {
-	Name             string // "NAME_<REST>", upper case
+	Name string // "NAME_<REST>", upper case
+	// Subjects the stream captures, each under the program's "name."
+	// prefix; wildcards allowed.
+	Subjects         []string
 	MaxBytesFraction float64
 	MaxBytesFloor    int64
 	MaxAge           time.Duration
 }
 
-// BucketSpec declares one of the program's own KV buckets.
+// BucketSpec declares one of the program's own KV buckets. The host
+// creates it (Provision); the program reads and writes keys.
 type BucketSpec struct {
 	Name     string // "name_<rest>", lower case
 	History  uint8
