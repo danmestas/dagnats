@@ -24,8 +24,9 @@ type SubjectPermission struct {
 // server grants it for any delivered message with a reply subject,
 // whoever sent it, so a program could publish to itself with a forged
 // reply and "respond" anywhere. Replies go out under Publish "_INBOX.>"
-// instead; inbox names end in a random NUID and a program can subscribe
-// only to its own "_INBOX.<name>.>", so it cannot learn another's.
+// instead. A program still reads only its own "_INBOX.<name>.>", but it
+// can write into another's inboxes: see "Known limitations / threat
+// model" in the package doc (#862).
 type Permissions struct {
 	Publish   SubjectPermission
 	Subscribe SubjectPermission

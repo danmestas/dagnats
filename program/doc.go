@@ -55,6 +55,14 @@
 //     subject, will. Tracked as dagnats#862;
 //     TestAttack_PushConsumerCannotDeliverIntoForeignSubjects is the proof,
 //     skipped until then.
+//   - Inbox forgery. Micro services reply by publishing to the caller's
+//     inbox, so every program may publish on "_INBOX.>". Inbox names are
+//     not secret: one process's inboxes share a prefix and are numbered
+//     in sequence, so a single reply subject seen from program beta (on a
+//     shared protocol, say) lets program alpha write forged replies into
+//     beta's next inboxes. Reading stays confined to the program's own
+//     "_INBOX.<name>.>". Tracked as dagnats#862 and closed by the same fix
+//     as push-consumer delivery: accounts or a server-side check.
 //   - Name-gated grants. Consumer delete on shared buckets and next/ack
 //     on STICKY_TASKS are gated only by consumer names, which are random
 //     NUIDs that a program cannot list.

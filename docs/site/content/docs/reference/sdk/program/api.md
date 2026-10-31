@@ -26,6 +26,7 @@ Permissions is a plain struct. Converting it to nats\-server options is the serv
 Programs on a dagnats are trusted: today they are all the operator's own, the same stance as the coarse\-shared engine buckets. Within that model these gaps are accepted, and they are closed before untrusted \(third\-party\) programs join a dagnats, the same trigger as making nats\_auth: required the default.
 
 - Push\-consumer delivery. A consumer's deliver subject travels in the JetStream request body, which subject permissions never see, and nats\-server does not check it against the creating user's permissions. So a program can deliver its own stream's messages, or a shared bucket's, onto any subject that has interest, including another program's task or service subjects. KV watches need push consumers, so denying consumer creates is not an option. User permissions inside one account cannot close this; one NATS account per program, or a server\-side check of the deliver subject, will. Tracked as dagnats\#862; TestAttack\_PushConsumerCannotDeliverIntoForeignSubjects is the proof, skipped until then.
+- Inbox forgery. Micro services reply by publishing to the caller's inbox, so every program may publish on "\_INBOX.\>". Inbox names are not secret: one process's inboxes share a prefix and are numbered in sequence, so a single reply subject seen from program beta \(on a shared protocol, say\) lets program alpha write forged replies into beta's next inboxes. Reading stays confined to the program's own "\_INBOX.\<name\>.\>". Tracked as dagnats\#862 and closed by the same fix as push\-consumer delivery: accounts or a server\-side check.
 - Name\-gated grants. Consumer delete on shared buckets and next/ack on STICKY\_TASKS are gated only by consumer names, which are random NUIDs that a program cannot list.
 - Protocol ownership. Validate cannot see other programs, so a protocol such as "beta.x" declared by program alpha would be granted under beta's prefix. Registration must check ownership both ways: a protocol under a registered program's prefix, and a program registering a name some protocol already sits under.
 
@@ -252,11 +253,11 @@ type Manifest struct {
 ```
 
 <a name="Permissions"></a>
-## type [Permissions](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L29-L32>)
+## type [Permissions](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L30-L33>)
 
 Permissions is a plain permission set for one program's NATS user. The server converts it to nats\-server's own type, so a program never links nats\-server.
 
-There is deliberately no response permission \(allow\_responses\): the server grants it for any delivered message with a reply subject, whoever sent it, so a program could publish to itself with a forged reply and "respond" anywhere. Replies go out under Publish "\_INBOX.\>" instead; inbox names end in a random NUID and a program can subscribe only to its own "\_INBOX.\<name\>.\>", so it cannot learn another's.
+There is deliberately no response permission \(allow\_responses\): the server grants it for any delivered message with a reply subject, whoever sent it, so a program could publish to itself with a forged reply and "respond" anywhere. Replies go out under Publish "\_INBOX.\>" instead. A program still reads only its own "\_INBOX.\<name\>.\>", but it can write into another's inboxes: see "Known limitations / threat model" in the package doc \(\#862\).
 
 ```go
 type Permissions struct {
@@ -266,7 +267,7 @@ type Permissions struct {
 ```
 
 <a name="PermissionsFor"></a>
-### func [PermissionsFor](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L57>)
+### func [PermissionsFor](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L58>)
 
 ```go
 func PermissionsFor(m Manifest) Permissions
