@@ -1243,3 +1243,26 @@ func TestWorkflowDetail_slashInName(t *testing.T) {
 		t.Errorf("workflow detail missing name")
 	}
 }
+
+func TestWorkflowDetail_nameEndingInRun(t *testing.T) {
+	// A workflow may itself be named "<x>/run". Only a POST to a trailing
+	// "/run" is the run action; a GET of the same path is that workflow's
+	// detail page.
+	fake := newFakeDS()
+	fake.workflows = []dag.WorkflowDef{{
+		Name:    "acme/run",
+		Version: "v1",
+		Steps:   []dag.StepDef{{ID: "only", Task: "echo", Timeout: time.Minute}},
+	}}
+	h := mountWithFake(t, fake)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(
+		http.MethodGet, "/console/workflows/acme/run", nil))
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want 200", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "acme/run") {
+		t.Errorf("workflow detail missing name")
+	}
+}

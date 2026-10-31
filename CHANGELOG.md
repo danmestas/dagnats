@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The console opens workflows whose names contain a slash** (`acme/support-ticket`), including a name that itself ends in `/run`: only a POST to a trailing `/run` starts a run, and a GET always shows the detail page. Contributed by @calionauta (#836).
+
 ### Security
 
 - **`dagnats-mcp-duckdb` takes `klauspost/compress` v1.20.1** (was v1.18.3), past the fix for GHSA high-severity integer overflow and out-of-bounds write in its s2 decoder (fixed in v1.18.7).
