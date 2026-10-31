@@ -7,9 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.36] - 2026-10-31
+
 ### Upgrade notes
 
 - **Drain agent journal steps before upgrading workers** (let in-flight agent steps finish). An in-flight agent step whose attempt was recorded by an older SDK, with a fresh tool call at a position a prior attempt's unsafe call held, is replayed under the new positions on a redelivery after the upgrade: that call runs again, under a new key.
+- **`worker.(*Worker).Start` now returns an error.** Code that calls `w.Start()` as a statement still compiles, but drops the error; check it, since a consumer that cannot be set up no longer panics.
 
 ### Added
 
