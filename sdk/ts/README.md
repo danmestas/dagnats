@@ -39,8 +39,7 @@ gets its `wait_ms` plus 5 s.
 `complete(output)`, `fail({ error, failure_type?, retry_after_ms? })`, `checkpoint(data)`,
 `loadCheckpoint()` (the data, or `undefined` when there is none), `heartbeat()`, `stream(chunk)`,
 `journal.view()` (`{ claim, records }`) and `journal.append(type, data)`. `task` is the
-delivery identity for `Journal.open`. The bridge's poll answer has no dispatch nonce, so
-`task.dispatch_nonce` is empty until the first `journal.view()`.
+delivery identity for `Journal.open`.
 
 ### Errors
 

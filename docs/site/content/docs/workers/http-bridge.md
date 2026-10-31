@@ -75,8 +75,12 @@ Response:
 [
     {
         "task_id": "abc123.step-1",
+        "task_type": "extract-text",
         "run_id": "abc123",
         "step_id": "step-1",
+        "delivered": 1,
+        "stream_seq": 42,
+        "dispatch_nonce": "9f2c1e",
         "input": {"url": "https://example.com/doc.pdf"},
         "metadata": {"team": "docs"},
         "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
@@ -84,7 +88,7 @@ Response:
 ]
 ```
 
-`iteration` and `attempt` appear only when they are non-zero. `input`, `metadata`, `traceparent` and `tracestate` are omitted when empty.
+`task_type` is the type the task was polled under, since one poll can name several. `dispatch_nonce` is the dispatch identity the task's journal claim carries, and is omitted when the dispatch had none. `iteration` and `attempt` appear only when they are non-zero. `input`, `metadata`, `traceparent` and `tracestate` are omitted when empty.
 
 The `timeout_ms` field controls how long the bridge waits for a task before returning empty. Maximum is 60 seconds. The poll returns as soon as any task is available, with up to `max_tasks` of them, rather than waiting to fill the batch. A poll whose client disconnects, or whose server is stopping, ends within about a second.
 

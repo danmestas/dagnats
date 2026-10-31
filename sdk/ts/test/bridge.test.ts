@@ -50,6 +50,7 @@ test("poll then complete finishes the run", async () => {
   const item = await pollOne(client, type);
   assert.equal(item.run_id, runId);
   assert.equal(item.step_id, "step");
+  assert.equal(item.task_type, type);
   assert.equal(item.task_id, `${runId}.step`);
   assert.deepEqual(item.input, { n: 1 });
   assert.equal(item.delivered, 1);
@@ -121,6 +122,8 @@ test("journal.view carries the claim; journal.append answers a seq", async () =>
   assert.equal(view.claim.delivered, 1);
   assert.equal(view.claim.stream_seq, item.stream_seq);
   assert.ok(view.claim.dispatch_nonce.length > 0);
+  assert.equal(item.dispatch_nonce, view.claim.dispatch_nonce, "poll and claim agree");
+  assert.equal(ctx.task.dispatch_nonce, view.claim.dispatch_nonce);
   assert.deepEqual(view.records, []);
 
   const first = await ctx.journal.append("entry", { w: 1 });
@@ -135,6 +138,7 @@ test("a redelivery fences the first worker from every journal action and sees it
   const payload = { run_id: `fence-${type}`, step_id: "step", dispatch_nonce: "n1" };
   await publishTask(srv, type, payload);
   const first = new TaskContext(client, await pollOne(client, type));
+  assert.equal(first.task.dispatch_nonce, "n1");
   await first.journal.append("entry", { w: 1 });
 
   await publishTask(srv, type, payload); // a dispatch resend: same identity, fresh message

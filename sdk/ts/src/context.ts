@@ -2,9 +2,6 @@
 // SDK's TaskContext: it binds a polled task's id once and names each
 // resolve action as a method. Every method takes an optional CallOptions
 // last, so one slow call can be aborted without a worker-wide signal.
-//
-// The bridge's poll answer has no dispatch nonce; the claim in
-// journal.view does. `task.dispatch_nonce` is "" until the first view.
 
 import type { BridgeClient, CallOptions, PollItem } from "./client.ts";
 import type { Task, ViewRecord } from "../journal/types.ts";
@@ -32,7 +29,7 @@ export class TaskContext {
   readonly input: unknown;
   readonly item: PollItem;
   private readonly client: BridgeClient;
-  private identity: Task;
+  private readonly identity: Task;
 
   constructor(client: BridgeClient, item: PollItem) {
     this.client = client;
@@ -44,7 +41,7 @@ export class TaskContext {
       step_id: item.step_id,
       iteration: item.iteration ?? 0,
       attempt: item.attempt ?? 0,
-      dispatch_nonce: "",
+      dispatch_nonce: item.dispatch_nonce ?? "",
       delivered: item.delivered,
       stream_seq: item.stream_seq ?? 0,
     };
@@ -98,9 +95,7 @@ export class TaskContext {
   readonly journal = {
     /** The claim and the records the claim was opened with. A fenced task answers Fenced. */
     view: async (call?: CallOptions): Promise<JournalView> => {
-      const view = (await this.resolve("journal.view", {}, call)) as JournalView;
-      this.identity = { ...this.identity, dispatch_nonce: view.claim.dispatch_nonce };
-      return view;
+      return (await this.resolve("journal.view", {}, call)) as JournalView;
     },
     /** Appends a record of the given type (bridge default "entry"); answers its seq. */
     append: async (type: string, data: unknown, call?: CallOptions): Promise<{ seq: number }> => {

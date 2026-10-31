@@ -31,11 +31,15 @@ export interface PollOptions {
 /** One task as the bridge hands it out. Absent wire fields are absent here. */
 export interface PollItem {
   task_id: string;
+  /** The type this task was polled under; a poll may name several. */
+  task_type: string;
   run_id: string;
   step_id: string;
   input?: unknown;
   iteration: number;
   attempt: number;
+  /** The claim's dispatch nonce; absent for a task dispatched without one. */
+  dispatch_nonce?: string;
   delivered: number;
   stream_seq: number;
   metadata?: Record<string, string>;
