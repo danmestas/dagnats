@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
@@ -121,6 +122,10 @@ type Config struct {
 	// peers by this name, so it must survive restarts; "" derives
 	// <cluster>-<hostname>-<cluster port>.
 	NATSServerName string `json:"nats_server_name"`
+	// JetStreamDomain names this server's JetStream so another server
+	// linked over a leaf connection can address it as $JS.<domain>.API;
+	// local clients keep using plain $JS.API. "" means no domain.
+	JetStreamDomain string `json:"jetstream_domain"`
 
 	MonitorPort   int   `json:"monitor_port"`
 	MaxStoreBytes int64 `json:"max_store_bytes"`
@@ -373,6 +378,9 @@ func ConfigWithPath(
 	if err := validateLoopStateMaxBytes(cfg); err != nil {
 		return Config{}, "", err
 	}
+	if err := validateJetStreamDomain(cfg.JetStreamDomain); err != nil {
+		return Config{}, "", err
+	}
 
 	if len(cfg.Workers) > 0 {
 		if err := validateWorkerConfigs(cfg.Workers); err != nil {
@@ -585,6 +593,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if val := os.Getenv("DAGNATS_NATS_SERVER_NAME"); val != "" {
 		cfg.NATSServerName = val
+	}
+	if val := os.Getenv("DAGNATS_JETSTREAM_DOMAIN"); val != "" {
+		cfg.JetStreamDomain = val
 	}
 	if val := os.Getenv("DAGNATS_NATS_JETSTREAM_REPLICAS"); val != "" {
 		if r, err := strconv.Atoi(val); err == nil {
@@ -1062,6 +1073,8 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 		cfg.APITokenFile = val
 	case "nats_server_name":
 		cfg.NATSServerName = val
+	case "jetstream_domain":
+		cfg.JetStreamDomain = val
 	case "nats_jetstream_replicas":
 		r, err := strconv.Atoi(val)
 		if err != nil {
@@ -1439,4 +1452,34 @@ func isServerNameRune(r rune) bool {
 	return r == '_' || r == '-' || r == '.' ||
 		(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
 		(r >= '0' && r <= '9')
+}
+
+// jetStreamDomainMaxLength bounds jetstream_domain; the domain is a token
+// in every cross-domain API subject.
+const jetStreamDomainMaxLength = 64
+
+// validateJetStreamDomain accepts "" or a single NATS subject token. A dot
+// would split $JS.<domain>.API into extra tokens and a wildcard would match
+// other domains' APIs.
+func validateJetStreamDomain(domain string) error {
+	if len(domain) > jetStreamDomainMaxLength {
+		return fmt.Errorf("jetstream_domain is %d bytes; max %d",
+			len(domain), jetStreamDomainMaxLength)
+	}
+	for _, r := range domain {
+		reason := ""
+		switch {
+		case r == '.':
+			reason = "contains a dot"
+		case r == '*' || r == '>':
+			reason = "contains a wildcard"
+		case unicode.IsSpace(r) || unicode.IsControl(r):
+			reason = "contains whitespace or a control character"
+		}
+		if reason != "" {
+			return fmt.Errorf("jetstream_domain must be one NATS token; %q %s",
+				domain, reason)
+		}
+	}
+	return nil
 }

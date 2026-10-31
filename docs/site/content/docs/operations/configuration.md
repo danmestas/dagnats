@@ -29,6 +29,7 @@ Zero-config starts everything on defaults. Environment variables always win.
 | `nats_cluster_host` | string | `0.0.0.0` | `0.0.0.0` |
 | `nats_server_name` | string | `<cluster>-<hostname>-<cluster port>` | `<cluster>-<hostname>-<cluster port>` |
 | `nats_jetstream_replicas` | int | `0` (auto-derive) | `0` (auto-derive) |
+| `jetstream_domain` | string | (none) | (none) |
 | `monitor_port` | int | (none) | (none) |
 | `max_store_bytes` | int64 | half of free disk, capped at 10 GiB | half of free disk, capped at 10 GiB |
 | `max_memory_bytes` | int64 | `1073741824` (1 GiB) | `1073741824` (1 GiB) |
@@ -42,6 +43,8 @@ Zero-config starts everything on defaults. Environment variables always win.
 `max_payload` sets the embedded NATS server's largest accepted message in bytes. Unset keeps the nats-server default of 1 MiB; raise it (for example to `4194304`, 4 MiB) when producers publish larger messages. Values must be between 1 and 8388608 (8 MiB). Clients learn the limit from the server's INFO. In a cluster or leaf topology, set the same value on every node.
 
 `legacy_step_events` (`DAGNATS_LEGACY_STEP_EVENTS`) makes the engine accept `step.continue`, `step.completed` and `step.failed` events that carry no dispatch identity, from workers and bridge clients older than the fence. While it is on, a duplicate continue from such a worker can still advance a loop twice, and the engine logs a warning at startup. Set it to `false` once every worker is upgraded. `loop_state_max_bytes` (`DAGNATS_LOOP_STATE_MAX_BYTES`) caps the state an agent loop commits per iteration; it must stay below `max_payload`, and it does not apply to a step that uses the [agent journal](/docs/ai-patterns/durable-agents). Upgrade engines before workers; see [Durable Agents](/docs/ai-patterns/durable-agents#upgrading).
+
+`jetstream_domain` names this server's JetStream domain, so a server linked to it over a leaf connection can reach its JetStream as `$JS.<domain>.API` (`jetstream.NewWithDomain(nc, "e-mac")`) while keeping its own `$JS.API`. Local clients, dagnats included, keep using plain `$JS.API`. Set it on a leaf node that runs its own JetStream, such as a laptop that works offline; leave it unset on the hub. The value must be one NATS subject token: no dots, spaces or wildcards, max 64 bytes. Non-ASCII letters are accepted, since they are legal in a NATS token. In embedded cluster mode the domain belongs to the whole cluster, so every node sets the same value.
 
 On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 
@@ -71,6 +74,7 @@ The `nats_cluster_*`, `nats_server_name` and `nats_jetstream_replicas` keys are 
 | `DAGNATS_NATS_PASSWORD_FILE` | `nats_password_file` | File holding that user's password (chmod 600) |
 | `DAGNATS_API_TOKEN_FILE` | `api_token_file` | File holding a bearer token every HTTP request must carry, except `/health`, `/health/cluster` and `/ready`. Unset: open. Neither login covers `monitor_port` or cluster routes (use `nats_cluster_auth_token`) |
 | `DAGNATS_NATS_SERVER_NAME` | `nats_server_name` | Stable server name; default derived from host |
+| `DAGNATS_JETSTREAM_DOMAIN` | `jetstream_domain` | JetStream domain a leaf hub addresses this server by; default none |
 | `DAGNATS_NATS_JETSTREAM_REPLICAS` | `nats_jetstream_replicas` | One of `{0,1,3,5}`; `0` = auto |
 | `DAGNATS_NATS_WS_PORT` | `nats_ws_port` | Browser WebSocket listener; `0` disables |
 | `DAGNATS_NATS_WS_NO_TLS` | `nats_ws_no_tls` | Required with `nats_ws_port` until NATS TLS is wired |

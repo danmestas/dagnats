@@ -22,6 +22,7 @@ DagNats uses a three-tier configuration system. Each tier overrides the previous
 | `nats_cluster_host`       | string   | `0.0.0.0`                                          | `0.0.0.0`                                |
 | `nats_server_name`        | string   | `<cluster>-<hostname>-<cluster port>`              | `<cluster>-<hostname>-<cluster port>`    |
 | `nats_jetstream_replicas` | int      | `0` (auto-derive)                                  | `0` (auto-derive)                        |
+| `jetstream_domain`        | string   | (none)                                             | (none)                                   |
 | `monitor_port`            | int      | (none)                                             | (none)                                   |
 | `max_store_bytes`         | int64    | half of free disk, capped at 10 GiB                | half of free disk, capped at 10 GiB      |
 | `max_memory_bytes`        | int64    | `1073741824` (1 GiB)                               | `1073741824` (1 GiB)                     |
@@ -48,6 +49,10 @@ These fields enable self-clustered topology (see [`production.md`](production.md
 - `nats_cluster_host` (string, default `0.0.0.0`) — IP address the route listener binds to. Set it to the node's private or tailnet IP so routes are not reachable on public interfaces.
 - `nats_server_name` (string, default `<cluster>-<hostname>-<cluster port>`) — The node's NATS server name. JetStream tracks cluster peers by this name, so it must stay the same across restarts; the default does. Override it if the hostname may change. Letters, digits, `_`, `-` and `.` only, max 64 bytes.
 - `nats_jetstream_replicas` (int, default `0`) — JetStream replication factor override. Valid: `{0, 1, 3, 5}`. `0` means auto-derive from cluster size.
+
+### JetStream domain
+
+`jetstream_domain` (string, default none) names this server's JetStream domain. A server linked to this one over a leaf connection reaches its JetStream as `$JS.<domain>.API` (for example `jetstream.NewWithDomain(nc, "e-mac")`), while that server's own `$JS.API` stays its own. Local clients, dagnats itself included, keep using plain `$JS.API`: a server with a domain answers both. Set it on a leaf node that runs its own JetStream, such as a laptop that works offline and is mirrored by a hub; leave it unset on the hub. The value must be one NATS subject token: no dots, spaces or wildcards (`*`, `>`), max 64 bytes. Non-ASCII letters are accepted, since they are legal in a NATS token. In embedded cluster mode the domain belongs to the whole cluster, so every node sets the same value.
 
 ### Message size
 
@@ -92,6 +97,7 @@ On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 | `DAGNATS_NATS_PASSWORD_FILE` | `nats_password_file` | File holding that user's password (chmod 600) |
 | `DAGNATS_API_TOKEN_FILE` | `api_token_file` | File holding a bearer token every HTTP request must carry, except `/health`, `/health/cluster` and `/ready`. Unset: open. Neither login covers `monitor_port` or cluster routes (use `nats_cluster_auth_token`) |
 | `DAGNATS_NATS_SERVER_NAME` | `nats_server_name` | Stable server name; default derived from host |
+| `DAGNATS_JETSTREAM_DOMAIN` | `jetstream_domain` | JetStream domain a leaf hub addresses this server by; default none |
 | `DAGNATS_NATS_JETSTREAM_REPLICAS` | `nats_jetstream_replicas` | One of `{0,1,3,5}`; `0`=auto |
 | `DAGNATS_MONITOR_PORT`    | `monitor_port`    | NATS monitoring HTTP port        |
 | `DAGNATS_MAX_STORE_BYTES` | `max_store_bytes` | Must be a positive integer       |
