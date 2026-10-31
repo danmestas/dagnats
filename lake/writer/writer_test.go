@@ -1,6 +1,7 @@
-// Methodology: integration tests over a real temp directory. Ordering is proven by crashing the
-// writer between part and commit through the unexported beforeCommit hook and listing what a
-// reader would see. Name stability is proven by writing the same rows into two separate roots.
+// Methodology: integration tests through the exported seam, a LocalStore over a real temp
+// directory. Ordering is proven by crashing the writer between part and commit through the
+// unexported beforeCommit hook and listing what a reader would see. Name stability is proven by
+// writing the same rows into two separate roots.
 package writer
 
 import (
@@ -14,9 +15,9 @@ import (
 	"github.com/danmestas/dagnats/lake"
 )
 
-func testConfig(root string) Config {
+func testConfig() Config {
 	return Config{
-		Root: root, Program: "notify", Table: "deliveries", Stream: "NOTIFY_DELIVERY",
+		Table: "deliveries", Stream: "NOTIFY_DELIVERY",
 		Schema: lake.Schema{Version: 1, Columns: []lake.Column{
 			{Name: "org_id", Type: lake.TypeString}, {Name: "attempts", Type: lake.TypeInt64},
 			{Name: "score", Type: lake.TypeFloat64},
@@ -43,11 +44,19 @@ func listCommits(root string) ([]lake.Commit, error) {
 
 func newTestWriter(t *testing.T, root string) *Writer {
 	t.Helper()
-	writer, err := NewWriter(testConfig(root))
+	writer, err := New(NewLocalStore(root), "notify", testConfig())
 	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
+		t.Fatalf("New: %v", err)
 	}
 	return writer
+}
+
+// partPath is where a LocalStore at root keeps a commit's part.
+func partPath(root string, commit lake.Commit) string {
+	if commit.Key == "" {
+		panic("partPath: commit has no key")
+	}
+	return filepath.Join(root, filepath.FromSlash(commit.Key))
 }
 
 func TestFlush_CommitsOnePartPerEventDate(t *testing.T) {
@@ -58,7 +67,7 @@ func TestFlush_CommitsOnePartPerEventDate(t *testing.T) {
 			t.Fatalf("Append: %v", err)
 		}
 	}
-	flushed, err := writer.Flush()
+	flushed, err := writer.Flush(t.Context())
 	if err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
@@ -79,7 +88,7 @@ func TestFlush_CommitsOnePartPerEventDate(t *testing.T) {
 	if listed[1].Dt != "2026-10-02" || listed[1].Rows != 1 {
 		t.Fatalf("second commit = %+v", listed[1])
 	}
-	again, err := writer.Flush()
+	again, err := writer.Flush(t.Context())
 	if err != nil || len(again) != 0 {
 		t.Fatalf("second Flush = %v, %v; want nothing buffered", again, err)
 	}
@@ -93,7 +102,7 @@ func TestFlush_CrashBetweenPartAndCommitLeavesUncommittedPart(t *testing.T) {
 	}
 	crash := errors.New("crash")
 	writer.beforeCommit = func() error { return crash }
-	if _, err := writer.Flush(); !errors.Is(err, crash) {
+	if _, err := writer.Flush(t.Context()); !errors.Is(err, crash) {
 		t.Fatalf("Flush err = %v, want crash", err)
 	}
 	parts, err := filepath.Glob(filepath.Join(root, "notify", "deliveries", "dt=*", "part-*.parquet"))
@@ -106,7 +115,7 @@ func TestFlush_CrashBetweenPartAndCommitLeavesUncommittedPart(t *testing.T) {
 	}
 	// The rows are still buffered: a retry commits the same content-addressed part.
 	writer.beforeCommit = nil
-	if _, err := writer.Flush(); err != nil {
+	if _, err := writer.Flush(t.Context()); err != nil {
 		t.Fatalf("retry Flush: %v", err)
 	}
 	listed, err = listCommits(root)
@@ -133,7 +142,7 @@ func TestFlush_PartIsDurableBeforeCommitExists(t *testing.T) {
 		}
 		return nil
 	}
-	if _, err := writer.Flush(); err != nil {
+	if _, err := writer.Flush(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -147,7 +156,7 @@ func TestFlush_ContentAddressedNameIsStable(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		commits, err := writer.Flush()
+		commits, err := writer.Flush(t.Context())
 		if err != nil || len(commits) != 1 {
 			t.Fatalf("Flush = %v, %v", commits, err)
 		}
@@ -164,7 +173,7 @@ func TestFlush_ContentAddressedNameIsStable(t *testing.T) {
 	if err := other.Append(testRow(9, 1)); err != nil {
 		t.Fatal(err)
 	}
-	commits, _ := other.Flush()
+	commits, _ := other.Flush(t.Context())
 	if commits[0].Part == names[0] {
 		t.Fatal("different rows produced the same name")
 	}
@@ -187,9 +196,9 @@ func TestAppend_RefusesBadRows(t *testing.T) {
 }
 
 func TestAppend_BufferIsBounded(t *testing.T) {
-	cfg := testConfig(t.TempDir())
+	cfg := testConfig()
 	cfg.BufferedRowsMax = 2
-	writer, err := NewWriter(cfg)
+	writer, err := New(NewLocalStore(t.TempDir()), "notify", cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +210,7 @@ func TestAppend_BufferIsBounded(t *testing.T) {
 	if err := writer.Append(testRow(3, 1)); !errors.Is(err, ErrBufferFull) {
 		t.Fatalf("third Append err = %v, want ErrBufferFull", err)
 	}
-	if _, err := writer.Flush(); err != nil {
+	if _, err := writer.Flush(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Append(testRow(3, 1)); err != nil {
@@ -209,10 +218,18 @@ func TestAppend_BufferIsBounded(t *testing.T) {
 	}
 }
 
-func TestNewWriter_RefusesBadConfig(t *testing.T) {
+func TestNew_RefusesBadConfig(t *testing.T) {
+	store := NewLocalStore(t.TempDir())
+	for _, program := range []string{"", "../x", "a/b", "Lode"} {
+		if _, err := New(store, program, testConfig()); err == nil {
+			t.Errorf("program %q: accepted", program)
+		}
+	}
+	if _, err := New(nil, "notify", testConfig()); err == nil {
+		t.Error("nil store: accepted")
+	}
 	bad := []func(*Config){
-		func(c *Config) { c.Root = "" },
-		func(c *Config) { c.Program = "../x" },
+		func(c *Config) { c.Table = "../x" },
 		func(c *Config) { c.Table = "A" },
 		func(c *Config) { c.Schema.Version = 0 },
 		func(c *Config) { c.Stream = "" },
@@ -221,9 +238,9 @@ func TestNewWriter_RefusesBadConfig(t *testing.T) {
 		func(c *Config) { c.Schema.Columns = []lake.Column{{Name: "payload", Type: lake.TypeString}} },
 	}
 	for i, mutate := range bad {
-		cfg := testConfig(t.TempDir())
+		cfg := testConfig()
 		mutate(&cfg)
-		if _, err := NewWriter(cfg); err == nil {
+		if _, err := New(store, "notify", cfg); err == nil {
 			t.Errorf("case %d: accepted", i)
 		}
 	}
@@ -235,11 +252,11 @@ func TestListCommitted_RejectsCommitWithoutPart(t *testing.T) {
 	if err := writer.Append(testRow(1, 1)); err != nil {
 		t.Fatal(err)
 	}
-	commits, err := writer.Flush()
+	commits, err := writer.Flush(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(commits[0].Path); err != nil {
+	if err := os.Remove(partPath(root, commits[0])); err != nil {
 		t.Fatal(err)
 	}
 	listing, err := lake.ListCommitted(root, "notify", "deliveries")
