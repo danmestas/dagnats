@@ -33,7 +33,8 @@ const restartLimitEnv = "DAGNATS_BRIDGE_RESTART_LIMIT"
 // SetRestartLimit sets how many deliveries may claim one iteration of
 // a journal step without progress before the step fails with reason
 // restart_limit, as worker.WithRestartLimit does for Go workers. It
-// must be called before the bridge serves requests. Panics unless
+// is safe to call while the bridge serves; a claim in flight uses the
+// old value. Panics unless
 // 1 <= n <= worker.RestartLimitMax.
 func (b *Bridge) SetRestartLimit(n int) {
 	if n < 1 {
@@ -42,11 +43,12 @@ func (b *Bridge) SetRestartLimit(n int) {
 	if n > worker.RestartLimitMax {
 		panic("SetRestartLimit: n must be <= worker.RestartLimitMax")
 	}
-	b.restartLimit = n
+	b.restartLimit.Store(int32(n))
 }
 
-// restartLimitFromEnv reads restartLimitEnv; an unset or invalid value
-// yields the default, an invalid one with a warning.
+// restartLimitFromEnv reads restartLimitEnv; an unset value yields the
+// default, and an invalid one the default with a warning (unlike
+// SetRestartLimit, which panics: the environment is operator input).
 func restartLimitFromEnv() int {
 	raw := os.Getenv(restartLimitEnv)
 	if raw == "" {
@@ -74,17 +76,18 @@ func (b *Bridge) failRestartLimit(
 	if j == nil {
 		panic("failRestartLimit: journal must be open")
 	}
-	if b.restartLimit < 1 {
+	limit := int(b.restartLimit.Load())
+	if limit < 1 {
 		panic("failRestartLimit: restart limit must be positive")
 	}
-	if j.Restarts() < b.restartLimit {
+	if j.Restarts() < limit {
 		return nil
 	}
 	reason := fmt.Sprintf("%s: %d deliveries claimed iteration %d without progress",
 		worker.ReasonRestartLimit, j.Restarts(), j.Task().Iteration)
 	slog.WarnContext(ctx, "journal step hit its restart limit; failing it",
 		"task_id", taskID, "iteration", j.Task().Iteration,
-		"restarts", j.Restarts(), "limit", b.restartLimit)
+		"restarts", j.Restarts(), "limit", limit)
 	failureType := protocol.FailureTypeRetriable
 	seq, err := j.Commit(ctx, journal.Commit{
 		Action: journal.ActionFail, Error: reason, FailureType: string(failureType),

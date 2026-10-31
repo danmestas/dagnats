@@ -9,6 +9,8 @@
 package bridge
 
 import (
+	"bytes"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -58,7 +60,7 @@ func TestBridgeRestartLimitFailsStepAfterLimitClaims(t *testing.T) {
 	}
 }
 
-func TestBridgeRestartLimitFailureCarriesReason(t *testing.T) {
+func TestBridgeRestartLimitHonorsCustomLimit(t *testing.T) {
 	rig := newJournalRig(t)
 	b, ts := rig.front(t)
 	b.SetRestartLimit(1)
@@ -111,7 +113,36 @@ func TestBridgeSetRestartLimitRejectsOutOfRange(t *testing.T) {
 		}()
 	}
 	b.SetRestartLimit(7)
-	if b.restartLimit != 7 {
-		t.Fatalf("restartLimit = %d, want 7", b.restartLimit)
+	if b.restartLimit.Load() != 7 {
+		t.Fatalf("restartLimit = %d, want 7", b.restartLimit.Load())
+	}
+}
+
+func TestRestartLimitFromEnv(t *testing.T) {
+	cases := []struct {
+		name, value string
+		want        int
+		warns       bool
+	}{
+		{"unset", "", worker.RestartLimitDefault, false},
+		{"zero", "0", worker.RestartLimitDefault, true},
+		{"too large", "1001", worker.RestartLimitDefault, true},
+		{"not a number", "abc", worker.RestartLimitDefault, true},
+		{"valid", "9", 9, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(restartLimitEnv, tc.value)
+			var logged bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+			defer slog.SetDefault(prev)
+			if got := restartLimitFromEnv(); got != tc.want {
+				t.Fatalf("limit = %d, want %d", got, tc.want)
+			}
+			if warned := strings.Contains(logged.String(), "ignored"); warned != tc.warns {
+				t.Fatalf("warned = %v, want %v (log %q)", warned, tc.warns, logged.String())
+			}
+		})
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/workertoken"
@@ -57,7 +58,7 @@ type Bridge struct {
 	tokenStore     *workertoken.Store
 	tracer         trace.Tracer
 	// restartLimit is the crash-loop guard of journal steps (ADR-028).
-	restartLimit int
+	restartLimit atomic.Int32
 
 	// Pre-allocated metric instruments — created once in constructor.
 	requestCount    metric.Int64Counter
@@ -139,7 +140,6 @@ func NewBridge(pub *natsutil.TracingPublisher) *Bridge {
 		workflowRunsKV:   workflowRunsKV,
 		token:            token,
 		tracer:           otel.Tracer("dagnats/bridge"),
-		restartLimit:     restartLimitFromEnv(),
 		requestCount:     reqCount,
 		requestDuration:  reqDur,
 		logChunkFailures: logChunkFail,
@@ -154,6 +154,7 @@ func NewBridge(pub *natsutil.TracingPublisher) *Bridge {
 			"error", err)
 	}
 	b.metricsReg = reg
+	b.restartLimit.Store(int32(restartLimitFromEnv()))
 	return b
 }
 
