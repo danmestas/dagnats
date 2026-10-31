@@ -37,6 +37,8 @@ type resolveRequest struct {
 	Data         json.RawMessage `json:"data,omitempty"`
 	RunID        string          `json:"run_id,omitempty"`
 	TimeoutMs    int64           `json:"timeout_ms,omitempty"`
+	// Wait is the durable wait a `continue` asks for (ADR-027).
+	Wait *protocol.ContinueWait `json:"wait,omitempty"`
 	// Type is the journal.append record type; "entry" when empty.
 	Type string `json:"type,omitempty"`
 }
@@ -131,6 +133,9 @@ func (b *Bridge) handleResolve(
 			writeJSON(w, http.StatusRequestEntityTooLarge, tooLargeBody{
 				Error: err.Error(), Code: "record_too_large", MaxBytes: int(b.nc.MaxPayload()),
 			})
+			return
+		}
+		if writeWaitRefusal(w, err) {
 			return
 		}
 		var badRequest *badRequestError
@@ -548,8 +553,12 @@ func (b *Bridge) resolveContinue(
 	if err != nil {
 		return err
 	}
+	wait, err := b.continueWait(ctx, taskID, req.Wait)
+	if err != nil {
+		return err
+	}
 	payload, journalSeq, err := b.continuePayload(
-		ctx, taskID, claimingTokenID, msg, dispatch, req,
+		ctx, taskID, claimingTokenID, msg, dispatch, req, wait,
 	)
 	if err != nil {
 		return err
@@ -588,7 +597,7 @@ func (b *Bridge) resolveContinue(
 // state the task was polled with, under the engine's cap.
 func (b *Bridge) continuePayload(
 	ctx context.Context, taskID, tokenID string, msg jetstream.Msg,
-	dispatch taskDispatch, req resolveRequest,
+	dispatch taskDispatch, req resolveRequest, wait *protocol.ContinueWait,
 ) ([]byte, uint64, error) {
 	if taskID == "" {
 		panic("continuePayload: taskID must not be empty")
@@ -607,16 +616,16 @@ func (b *Bridge) continuePayload(
 	}
 	if journaled {
 		seq, err := b.commitJournal(ctx, taskID, tokenID, msg, journal.Commit{
-			Action: journal.ActionContinue, Output: req.Output, State: state,
+			Action: journal.ActionContinue, Output: req.Output, State: state, Wait: wait,
 		})
 		if err != nil {
 			return nil, 0, err
 		}
-		payload, err := json.Marshal(protocol.StepContinuePayload{Output: req.Output})
+		payload, err := json.Marshal(protocol.StepContinuePayload{Output: req.Output, Wait: wait})
 		return payload, seq, err
 	}
 	payload, err := json.Marshal(protocol.StepContinuePayload{
-		Output: req.Output, State: state, StateSet: true,
+		Output: req.Output, State: state, StateSet: true, Wait: wait,
 	})
 	if err != nil {
 		return nil, 0, fmt.Errorf("marshal continue payload: %w", err)

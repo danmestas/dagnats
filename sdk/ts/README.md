@@ -49,9 +49,18 @@ gets its `wait_ms` plus 5 s.
 `complete(output)`, `fail({ error, failure_type?, retry_after_ms? })`, `checkpoint(data)`,
 `loadCheckpoint()` (`{ state, source }`, with the bridge's own `source`: `"journal"`, `"checkpoint"`
 or `"payload"`; `undefined` when there is none), `heartbeat()`, `stream(chunk)`,
-`journal.view()` (`{ claim, records }`) and `journal.append(type, data)`. `task` is the
+`journal.view()` (`{ claim, records }`), `journal.append(type, data)` and
+`continue({ output?, state?, wait? })`. `task` is the
 delivery identity from the poll item (including `dispatch_nonce` and `task_type`) and goes to
 `Journal.open`. A `checkpoint` is durable only once a later `continue` commits it.
+
+### Continue and waits
+
+`ctx.continue({ output?, state?, wait? })` ends the iteration and asks for the next. `wait` parks
+the step durably (no claim is held meanwhile): `{ delay_ms?, until?, input? }`, where `until` is a
+`Date` or ISO-8601 string and `input: true` wakes on the next submitted input; a time and `input`
+wake on whichever comes first. With `input: true` while inputs are already queued the call throws
+`InputsQueued` and the task stays claimed: place the inputs, then continue without the input wait.
 
 ### Errors
 
@@ -63,12 +72,14 @@ Told apart by status and body, so a fence and a cancelled run are not confused (
 | `RunCancelled` | `409`, plain text `run cancelled` |
 | `Stale`, `Committed`, `RestartLimit` | `410` with that `code` |
 | `StateTooLarge`, `BodyTooLarge`, `RecordTooLarge` | `413` with that `code`; `StateTooLarge` carries `maxBytes` and `bytes`, the others `maxBytes`. A journal record must fit the server's `max_payload` |
+| `InputsQueued` | `409 {"code":"inputs_queued"}`: a `continue` with `wait.input` while inputs are queued; not terminal, the task stays claimed |
+| `InvalidWait` | `400 {"code":"invalid_wait"}`: a malformed `wait`; not terminal |
 | `NotProvisioned` | `503 {"code":"not_provisioned"}` |
 | `BridgeError` | anything else; carries `status`, `body` and the JSON `code` if any |
 
 All extend `BridgeError`. They surface from `journal.append` and `journal.view` as well as from
 `complete`. `isTerminal(err)` is true for `Fenced`, `Stale`, `Committed`, `RestartLimit` and
-`RunCancelled`, and false for network errors, 5xx and the 413s.
+`RunCancelled`, and false for network errors, 5xx, the 413s, `InputsQueued` and `InvalidWait`.
 
 ### Journal
 
@@ -85,7 +96,7 @@ const { result } = await journal.tool("bash", { cmd: "ls" }, "unsafe", (key) => 
 
 `BridgeLog` serializes appends: one in flight at a time, in call order. `MemoryLog` is for tests.
 Record `data` shapes are the Go ones, so `dagnats journal check` and Go workers read the same
-journal. Not yet here: `continue` and `inputs.place`.
+journal. Not yet here: `inputs.place`.
 
 ## Develop
 

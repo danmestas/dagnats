@@ -12,6 +12,8 @@ import {
   BridgeError,
   Committed,
   Fenced,
+  InputsQueued,
+  InvalidWait,
   NotProvisioned,
   RestartLimit,
   RunCancelled,
@@ -48,10 +50,10 @@ test("503 not_provisioned is NotProvisioned; a bare 503 is not", () => {
 });
 
 test("anything else is a BridgeError carrying status, body and code", () => {
-  const other409 = errorFromResponse(409, JSON.stringify({ code: "inputs_queued" }));
+  const other409 = errorFromResponse(409, JSON.stringify({ code: "something_new" }));
   assert.equal(other409.constructor, BridgeError);
   assert.equal(other409.status, 409);
-  assert.equal(other409.code, "inputs_queued");
+  assert.equal(other409.code, "something_new");
   const unknown410 = errorFromResponse(410, "gone\n");
   assert.equal(unknown410.constructor, BridgeError);
   assert.equal(unknown410.body, "gone\n");
@@ -86,7 +88,7 @@ test("isTerminal is true for the fenced/finished family and false for the retrya
   }
   assert.equal(isTerminal(errorFromResponse(500, "boom")), false);
   assert.equal(isTerminal(errorFromResponse(503, json("not_provisioned"))), false);
-  assert.equal(isTerminal(errorFromResponse(409, JSON.stringify({ code: "inputs_queued" }))), false);
+  assert.equal(isTerminal(errorFromResponse(409, JSON.stringify({ code: "something_new" }))), false);
   assert.equal(isTerminal(new TypeError("fetch failed")), false);
   assert.equal(isTerminal(new DOMException("aborted", "AbortError")), false);
   assert.equal(isTerminal("string"), false);
@@ -107,4 +109,15 @@ test("the two 413 codes carry their sizes and are not terminal", () => {
   assert.equal(isTerminal(state), false);
   assert.equal(isTerminal(body), false);
   assert.equal(errorFromResponse(413, "too big").constructor, BridgeError);
+});
+
+test("409 inputs_queued is InputsQueued and not terminal; 400 invalid_wait is InvalidWait", () => {
+  const queued = errorFromResponse(409, json("inputs_queued"));
+  assert.ok(queued instanceof InputsQueued);
+  assert.equal(queued.code, "inputs_queued");
+  assert.equal(isTerminal(queued), false);
+  const invalid = errorFromResponse(400, json("invalid_wait"));
+  assert.ok(invalid instanceof InvalidWait);
+  assert.equal(isTerminal(invalid), false);
+  assert.equal(errorFromResponse(400, "bad\n").constructor, BridgeError);
 });

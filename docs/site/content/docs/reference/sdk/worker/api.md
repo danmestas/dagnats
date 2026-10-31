@@ -220,8 +220,7 @@ var (
     // ErrInputsQueued: Continue(UntilInput()) was asked while inputs
     // are queued. The wait would never be woken for them (they arrived
     // before it), so the handler must place them and run another turn.
-    ErrInputsQueued = errors.New(
-        "worker: inputs are queued; place them before waiting for input")
+    ErrInputsQueued = inputs.ErrQueued
     // ErrInputsNotProvisioned: the submissions bucket is missing.
     ErrInputsNotProvisioned = inputs.ErrNotProvisioned
 )
@@ -324,7 +323,7 @@ type CheckpointTask interface {
 ```
 
 <a name="ContinueOption"></a>
-## type [ContinueOption](<https://github.com/danmestas/dagnats/blob/main/worker/inputs.go#L39>)
+## type [ContinueOption](<https://github.com/danmestas/dagnats/blob/main/worker/inputs.go#L37>)
 
 ContinueOption asks the engine to wait before the next iteration \(ADR\-027\). Options combine: a time and UntilInput together wake on whichever comes first; Until wins over Delay.
 
@@ -333,7 +332,7 @@ type ContinueOption func(*protocol.ContinueWait)
 ```
 
 <a name="Delay"></a>
-### func [Delay](<https://github.com/danmestas/dagnats/blob/main/worker/inputs.go#L42>)
+### func [Delay](<https://github.com/danmestas/dagnats/blob/main/worker/inputs.go#L40>)
 
 ```go
 func Delay(d time.Duration) ContinueOption
@@ -342,7 +341,7 @@ func Delay(d time.Duration) ContinueOption
 Delay wakes the step after d.
 
 <a name="Until"></a>
-### func [Until](<https://github.com/danmestas/dagnats/blob/main/worker/inputs.go#L50>)
+### func [Until](<https://github.com/danmestas/dagnats/blob/main/worker/inputs.go#L48>)
 
 ```go
 func Until(t time.Time) ContinueOption
@@ -351,7 +350,7 @@ func Until(t time.Time) ContinueOption
 Until wakes the step at t.
 
 <a name="UntilInput"></a>
-### func [UntilInput](<https://github.com/danmestas/dagnats/blob/main/worker/inputs.go#L60>)
+### func [UntilInput](<https://github.com/danmestas/dagnats/blob/main/worker/inputs.go#L58>)
 
 ```go
 func UntilInput() ContinueOption

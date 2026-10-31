@@ -108,3 +108,24 @@ export async function publishTask(
 ): Promise<void> {
   await rest(`${srv.secondURL}/_test/publish?type=${taskType}`, "POST", payload);
 }
+
+/** Like startOneStepRun, but the step ("agent") is an agent_loop, the type that can continue and park. */
+export async function startAgentLoopRun(srv: DevServer, taskType: string): Promise<string> {
+  const name = `sdkts-loop-${taskType}-${++workflowSeq}-${Date.now()}`;
+  await rest(`${srv.url}/workflows`, "POST", {
+    name,
+    version: "1.0",
+    steps: [{ id: "agent", task: taskType, type: "agent_loop", config: { max_iterations: 10 } }],
+  });
+  const res = (await rest(`${srv.url}/runs`, "POST", { workflow: name })) as { run_id: string };
+  return res.run_id;
+}
+
+/** Submits a steer input to the run's "agent" step. */
+export async function submitInput(srv: DevServer, runId: string, requestId: string): Promise<void> {
+  await rest(`${srv.url}/runs/${runId}/steps/agent/inputs`, "POST", {
+    request_id: requestId,
+    mode: "steer",
+    content: "x",
+  });
+}

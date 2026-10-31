@@ -10,13 +10,15 @@
 
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { BridgeClient, BridgeLog, Fenced, Journal, RecordTooLarge, RunCancelled, StateTooLarge, TaskContext, isTerminal } from "../src/index.ts";
+import { BridgeClient, BridgeLog, Fenced, InputsQueued, InvalidWait, Journal, RecordTooLarge, RunCancelled, StateTooLarge, TaskContext, isTerminal } from "../src/index.ts";
 import type { PollItem } from "../src/index.ts";
 import {
   cancelRun,
   publishTask,
   startDevServer,
+  startAgentLoopRun,
   startOneStepRun,
+  submitInput,
   waitForStatus,
   type DevServer,
 } from "./harness.ts";
@@ -259,4 +261,43 @@ test("a journal record over max_payload raises RecordTooLarge and the claim stay
   assert.equal(isTerminal(err), false);
   assert.ok((await ctx.journal.append("entry", "fits")).seq > 0);
   await ctx.complete(null);
+});
+
+test("continue with wait.delay_ms parks the step, then redelivers the next iteration", async () => {
+  const type = uniqueType();
+  await startAgentLoopRun(srv, type);
+  const ctx = new TaskContext(client, await pollOne(client, type));
+  const start = Date.now();
+  await ctx.continue({ output: { n: 1 }, wait: { delay_ms: 1200 } });
+
+  assert.deepEqual(await client.poll({ task_types: [type], max: 1, wait_ms: 400 }), [], "parked step was redelivered early");
+  const next = await pollOne(client, type);
+  assert.equal(next.iteration, 1);
+  assert.ok(Date.now() - start >= 1200, "redelivered before the delay elapsed");
+});
+
+test("continue with wait.input is refused with InputsQueued while an input is queued, and the claim survives", async () => {
+  const type = uniqueType();
+  const runId = await startAgentLoopRun(srv, type);
+  const ctx = new TaskContext(client, await pollOne(client, type));
+
+  await submitInput(srv, runId, "req-1");
+  const err = await ctx.continue({ wait: { input: true } }).then(
+    () => undefined,
+    (e: unknown) => e,
+  );
+  assert.ok(err instanceof InputsQueued, `expected InputsQueued, got ${String(err)}`);
+  assert.equal(isTerminal(err), false);
+  await ctx.heartbeat(); // still claimed
+
+  await ctx.continue({ output: null });
+  assert.equal((await pollOne(client, type)).iteration, 1);
+});
+
+test("continue with an invalid wait is InvalidWait and keeps the claim", async () => {
+  const type = uniqueType();
+  await startAgentLoopRun(srv, type);
+  const ctx = new TaskContext(client, await pollOne(client, type));
+  await assert.rejects(ctx.continue({ wait: { delay_ms: -1 } }), InvalidWait);
+  await ctx.heartbeat();
 });

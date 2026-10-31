@@ -10,7 +10,6 @@ package worker
 
 import (
 	"errors"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -27,8 +26,7 @@ var (
 	// ErrInputsQueued: Continue(UntilInput()) was asked while inputs
 	// are queued. The wait would never be woken for them (they arrived
 	// before it), so the handler must place them and run another turn.
-	ErrInputsQueued = errors.New(
-		"worker: inputs are queued; place them before waiting for input")
+	ErrInputsQueued = inputs.ErrQueued
 	// ErrInputsNotProvisioned: the submissions bucket is missing.
 	ErrInputsNotProvisioned = inputs.ErrNotProvisioned
 )
@@ -91,13 +89,8 @@ func (c *taskContext) continueWait(opts []ContinueOption) (*protocol.ContinueWai
 	if err != nil {
 		return nil, err
 	}
-	queued, err := store.Queued(c.ctx, c.runID, c.stepID)
-	if err != nil {
+	if err := store.RefuseIfQueued(c.ctx, c.runID, c.stepID); err != nil {
 		return nil, err
-	}
-	if len(queued) > 0 {
-		return nil, fmt.Errorf("%w (%d queued, first %s)",
-			ErrInputsQueued, len(queued), queued[0].RequestID)
 	}
 	return wait, nil
 }
