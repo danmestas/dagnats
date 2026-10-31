@@ -23,6 +23,7 @@ const kvOperationHeader = "KV-Operation"
 type KVLeaderEntry struct {
 	Value    []byte
 	Revision uint64
+	Created  time.Time
 }
 
 // StoredMsg is the message half of a STREAM.MSG.GET reply. []byte
@@ -117,5 +118,88 @@ func decodeKVLeaderReply(bucket, key string, data []byte) (KVLeaderEntry, error)
 			return KVLeaderEntry{}, jetstream.ErrKeyNotFound
 		}
 	}
-	return KVLeaderEntry{Value: reply.Message.Data, Revision: reply.Message.Sequence}, nil
+	return KVLeaderEntry{
+		Value: reply.Message.Data, Revision: reply.Message.Sequence,
+		Created: reply.Message.Time,
+	}, nil
 }
+
+// kvKeyBytesMax bounds a key LeaderReadKV accepts; nats-server's
+// default max payload is far larger than any subject token dagnats uses.
+const kvKeyBytesMax = 4096
+
+// LeaderReadKV returns kv with Get answered by the bucket's stream
+// leader (KVGetLeader); every other method is kv's own. A direct get
+// can land on a follower that has not applied a write the writer
+// already saw acknowledged, so a workflow registered through one node
+// and started at once could be "not found" (measured on an R3 bucket:
+// up to 11 misses per 1000 register-then-read pairs). Bind buckets
+// whose readers act on a write they just made, or one another client
+// just made, through this.
+func LeaderReadKV(nc *nats.Conn, kv jetstream.KeyValue) jetstream.KeyValue {
+	if nc == nil {
+		panic("LeaderReadKV: nc must not be nil")
+	}
+	if kv == nil {
+		panic("LeaderReadKV: kv must not be nil")
+	}
+	return &leaderReadKV{KeyValue: kv, nc: nc}
+}
+
+type leaderReadKV struct {
+	jetstream.KeyValue
+	nc *nats.Conn
+}
+
+// Get is KeyValue.Get read through the stream leader. Delta is 0: the
+// leader read does not report how far the entry is behind the tail.
+func (kv *leaderReadKV) Get(ctx context.Context, key string) (jetstream.KeyValueEntry, error) {
+	if kv.nc == nil {
+		panic("leaderReadKV.Get: nc must not be nil")
+	}
+	if !validKVKey(key) {
+		return nil, jetstream.ErrInvalidKey
+	}
+	bucket := kv.Bucket()
+	got, err := KVGetLeader(ctx, kv.nc, bucket, key)
+	if err != nil {
+		return nil, err
+	}
+	return leaderEntry{bucket: bucket, key: key, entry: got}, nil
+}
+
+// validKVKey is jetstream's key rule (kv.go validKeyRe): letters,
+// digits and -/_=. with no leading or trailing dot. It keeps a wildcard
+// out of the last_by_subj request, where it would match another key.
+func validKVKey(key string) bool {
+	if key == "" || len(key) > kvKeyBytesMax {
+		return false
+	}
+	if key[0] == '.' || key[len(key)-1] == '.' {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		c := key[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '-', c == '/', c == '_', c == '=', c == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// leaderEntry is a KVLeaderEntry as a jetstream.KeyValueEntry.
+type leaderEntry struct {
+	bucket, key string
+	entry       KVLeaderEntry
+}
+
+func (e leaderEntry) Bucket() string                  { return e.bucket }
+func (e leaderEntry) Key() string                     { return e.key }
+func (e leaderEntry) Value() []byte                   { return e.entry.Value }
+func (e leaderEntry) Revision() uint64                { return e.entry.Revision }
+func (e leaderEntry) Created() time.Time              { return e.entry.Created }
+func (e leaderEntry) Delta() uint64                   { return 0 }
+func (e leaderEntry) Operation() jetstream.KeyValueOp { return jetstream.KeyValuePut }

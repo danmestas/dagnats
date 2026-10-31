@@ -327,6 +327,9 @@ func NewOrchestrator(
 				err.Error(),
 		)
 	}
+	// A run start can reach this node before a follower has applied the
+	// registration it names, so definitions are read from the leader.
+	defKV = natsutil.LeaderReadKV(nc, defKV)
 	tp := natsutil.NewTracingPublisher(nc, js)
 	cm, _ := NewConcurrencyManagerSafe(js)
 	store := NewSnapshotStore(js)

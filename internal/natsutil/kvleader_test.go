@@ -74,3 +74,47 @@ func TestKVGetLeader_MissingBucketIsAnError(t *testing.T) {
 		t.Fatalf("missing bucket must not look like a missing key: %v", err)
 	}
 }
+
+// LeaderReadKV answers Get from the leader with the entry jetstream's
+// own Get would return, and keeps its key validation: an invalid key
+// must not reach a last_by_subj request, where a wildcard would match
+// another key.
+func TestLeaderReadKV_GetMatchesKeyValueGet(t *testing.T) {
+	_, nc := StartTestServer(t)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "leader_kv"})
+	if err != nil {
+		t.Fatalf("CreateKeyValue: %v", err)
+	}
+	if _, err := kv.Put(ctx, "wf.a", []byte("def")); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	want, err := kv.Get(ctx, "wf.a")
+	if err != nil {
+		t.Fatalf("direct Get: %v", err)
+	}
+	leader := LeaderReadKV(nc, kv)
+	got, err := leader.Get(ctx, "wf.a")
+	if err != nil {
+		t.Fatalf("leader Get: %v", err)
+	}
+	if string(got.Value()) != "def" || got.Revision() != want.Revision() ||
+		got.Key() != "wf.a" || got.Bucket() != "leader_kv" ||
+		!got.Created().Equal(want.Created()) || got.Operation() != jetstream.KeyValuePut {
+		t.Fatalf("leader entry = %s %q@%d %v %v, want %+v",
+			got.Key(), got.Value(), got.Revision(), got.Created(), got.Operation(), want)
+	}
+	if _, err := leader.Get(ctx, "missing"); !errors.Is(err, jetstream.ErrKeyNotFound) {
+		t.Fatalf("missing key: err=%v, want ErrKeyNotFound", err)
+	}
+	for _, key := range []string{"", "wf.*", "wf.>", "a b", ".wf", "wf."} {
+		if _, err := leader.Get(ctx, key); !errors.Is(err, jetstream.ErrInvalidKey) {
+			t.Fatalf("key %q: err=%v, want ErrInvalidKey", key, err)
+		}
+	}
+}
