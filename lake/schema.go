@@ -5,8 +5,9 @@
 //	<root>/<program>/<table>/dt=YYYY-MM-DD/part-<sha256-16>.parquet
 //	<root>/<program>/<table>/dt=YYYY-MM-DD/part-<sha256-16>.json   (commit record)
 //
-// There is no public writer: the archive program, in this module, is the only writer (see
-// lake/internal/writer). The package is pure Go; DuckDB is imported only by tests.
+// Every program writes through lake/writer, the one implementation of this layout, into a
+// writer.Store: a local directory (writer.LocalStore) or an S3-compatible store (lode). The
+// package is pure Go; DuckDB is imported only by tests.
 package lake
 
 import (

@@ -4,6 +4,7 @@
 package writer
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
@@ -20,7 +21,7 @@ func flushRows(t *testing.T, w *Writer, rows ...Row) []lake.Commit {
 			t.Fatal(err)
 		}
 	}
-	commits, err := w.Flush()
+	commits, err := w.Flush(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +96,7 @@ func TestFlush_RetryRewritesAMissingPart(t *testing.T) {
 	root := t.TempDir()
 	writer := newTestWriter(t, root)
 	first := flushRows(t, writer, testRow(1, 1), testRow(2, 1))
-	if err := os.Remove(first[0].Path); err != nil {
+	if err := os.Remove(partPath(root, first[0])); err != nil {
 		t.Fatal(err)
 	}
 	retry := flushRows(t, writer, testRow(1, 1), testRow(2, 1))
@@ -108,23 +109,22 @@ func TestFlush_RetryRewritesAMissingPart(t *testing.T) {
 	}
 }
 
-// failingDir makes MkdirAll fail for one date directory, as a full disk would.
-type failingDir struct {
-	osOps
+// failingDate makes every Put under one date fail, as a full disk or an outage would.
+type failingDate struct {
+	Store
 	fail string
 }
 
-func (f *failingDir) MkdirAll(path string) error {
-	if f.fail != "" && strings.HasSuffix(path, f.fail) {
-		return errors.New("injected mkdir failure")
+func (f *failingDate) Put(ctx context.Context, key string, data []byte) error {
+	if f.fail != "" && strings.Contains(key, f.fail+"/") {
+		return errors.New("injected put failure")
 	}
-	return f.osOps.MkdirAll(path)
+	return f.Store.Put(ctx, key, data)
 }
 
 func TestFlush_FailedDateDoesNotPoisonTheBuffer(t *testing.T) {
-	root := t.TempDir()
-	ops := &failingDir{fail: "dt=2026-10-01"}
-	writer, err := newWriter(testConfig(root), ops)
+	store := &failingDate{Store: NewLocalStore(t.TempDir()), fail: "dt=2026-10-01"}
+	writer, err := New(store, "notify", testConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,12 +133,12 @@ func TestFlush_FailedDateDoesNotPoisonTheBuffer(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	commits, err := writer.Flush()
+	commits, err := writer.Flush(t.Context())
 	if err == nil || len(commits) != 1 || commits[0].Dt != "2026-10-02" {
 		t.Fatalf("Flush = %+v, %v; want the healthy date committed and an error", commits, err)
 	}
-	ops.fail = ""
-	commits, err = writer.Flush()
+	store.fail = ""
+	commits, err = writer.Flush(t.Context())
 	if err != nil || len(commits) != 1 || commits[0].Dt != "2026-10-01" {
 		t.Fatalf("retry = %+v, %v; want the failed date committed", commits, err)
 	}
@@ -171,7 +171,7 @@ func TestFlush_StemCollisionIsAnErrorNotARetry(t *testing.T) {
 	root := t.TempDir()
 	writer := newTestWriter(t, root)
 	first := flushRows(t, writer, testRow(1, 1), testRow(2, 1))
-	record := strings.TrimSuffix(first[0].Path, ".parquet") + ".json"
+	record := strings.TrimSuffix(partPath(root, first[0]), ".parquet") + ".json"
 	forged := strings.Replace(mustRead(t, record), first[0].Digest, strings.Repeat("0", 64), 1)
 	if err := os.WriteFile(record, []byte(forged), 0o644); err != nil {
 		t.Fatal(err)
@@ -181,7 +181,7 @@ func TestFlush_StemCollisionIsAnErrorNotARetry(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	_, err := writer.Flush()
+	_, err := writer.Flush(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "stem collision") ||
 		!strings.Contains(err.Error(), first[0].Digest) {
 		t.Fatalf("err = %v, want a collision naming both digests", err)

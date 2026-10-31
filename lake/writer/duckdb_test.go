@@ -24,7 +24,7 @@ func TestRoundTrip_DuckDBReadsCommittedParts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := writer.Flush(); err != nil {
+	if _, err := writer.Flush(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	listing, err := lake.ListCommitted(root, "notify", "deliveries")
