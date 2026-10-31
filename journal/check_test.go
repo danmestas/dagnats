@@ -250,6 +250,17 @@ func TestCheckStep_UnansweredIntentIsFineOnceTheAttemptEnded(t *testing.T) {
 	if v := checkToolPairs(timedOut, false); len(v) != 0 {
 		t.Errorf("timeout retry flagged: %v", v)
 	}
+	// Attempt 2 of a timed-out attempt 1 never repeated its unsafe
+	// call, and a fresh call skips the position the unsafe intent
+	// holds: the higher attempt ended attempt 1 all the same.
+	notRepeated := []Record{
+		rec(1, TypeClaim, 1, 1, `{}`), rec(2, TypeToolIntent, 1, 1, `{"call":0,"replay":"unsafe"}`),
+		rec(3, TypeClaim, 1, 2, `{}`), rec(4, TypeToolIntent, 1, 2, `{"call":1,"replay":"unsafe"}`),
+		rec(5, TypeToolResult, 1, 2, `{"call":1}`), commitRec(6, 1, 2, ActionComplete),
+	}
+	if v := checkToolPairs(notRepeated, false); len(v) != 0 {
+		t.Errorf("unsafe intent of a retried attempt flagged: %v", v)
+	}
 	// On a failed step only the last unanswered intent is tolerated.
 	twoOpen := []Record{
 		rec(1, TypeClaim, 1, 1, `{}`), rec(2, TypeToolIntent, 1, 1, `{"call":0,"replay":"safe"}`),

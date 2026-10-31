@@ -453,9 +453,9 @@ func taskOf(r Record) Task {
 // successor answers a crashed holder's unfinished call without a
 // second intent (ADR-026). An intent left unanswered is no violation
 // once its attempt ended: a fail commit of the iteration follows it,
-// or a higher attempt wrote its own intent for the call (the engine
-// timed the attempt out; the next attempt runs a safe call afresh and
-// supersedes it). The last unanswered intent is tolerated when the
+// or a higher attempt wrote to the iteration (the engine timed the
+// attempt out; the next attempt runs a safe call afresh at the same
+// position, and a fresh call skips an unsafe intent's position). The last unanswered intent is tolerated when the
 // step ended failed: nothing could answer it.
 func checkToolPairs(records []Record, stepFailed bool) []string {
 	if records == nil {
@@ -465,8 +465,11 @@ func checkToolPairs(records []Record, stepFailed bool) []string {
 	open := map[toolCall]Record{}
 	// lastCommit is the newest fail commit per iteration.
 	lastCommit := map[int]uint64{}
+	// attempt is the highest attempt that wrote to each iteration.
+	attempt := map[int]int{}
 	var violations []string
 	for _, r := range records {
+		attempt[r.Iteration] = max(attempt[r.Iteration], r.Attempt)
 		switch r.Type {
 		case TypeCommit:
 			if commitAction(r) == ActionFail {
@@ -511,7 +514,8 @@ func checkToolPairs(records []Record, stepFailed bool) []string {
 		last = max(last, pending.Seq)
 	}
 	for key, pending := range open {
-		if pending.Seq <= lastCommit[key.iteration] || (stepFailed && pending.Seq == last) {
+		if pending.Seq <= lastCommit[key.iteration] || pending.Attempt < attempt[key.iteration] ||
+			(stepFailed && pending.Seq == last) {
 			continue
 		}
 		violations = append(violations, fmt.Sprintf(

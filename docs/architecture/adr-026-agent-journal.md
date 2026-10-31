@@ -188,6 +188,20 @@ own key, with its recorded result (the effect happened) or as
 results across attempts would turn every retry into a replay of the
 failure.
 
+*Amended 2026-10-30.* A call that does take a position in the new
+attempt skips every position held by a prior attempt's unsafe intent in
+the iteration. The position makes the key, so without the skip a fresh
+call (a second send after an interrupted one, or another call at a
+prior unsafe call's position) ran under the key of a call whose effect
+may have happened, and a system deduplicating on the key dropped it;
+results are found by position too, so a redelivery could answer the
+interrupted call with the fresh call's result. The held positions come
+from the records before the claim, not this attempt's appends, so every
+delivery of the attempt assigns the same positions. Safe intents and
+model responses hold no position across attempts: a safe call repeated
+at its position is meant to run again under the same key, and a model
+response carries no key.
+
 A retry at iteration 0 without a commit (the engine timed the attempt
 out, or the restart limit failed it) is told from a redelivery by the
 stamped attempt, as on every other iteration: the retry carries a
@@ -217,8 +231,10 @@ The successor writes no second intent for a call it answers, so each
 call has one intent answered by one result, in order (checker invariant
 4, keyed by iteration and call rather than by claim; an intent left
 unanswered is tolerated once its attempt ended, by a fail commit or by
-a higher attempt's intent for the call, and the last one is tolerated
-when the step ended failed). A tool's own error is part of its result,
+any record of a higher attempt in the iteration, and the last one is
+tolerated when the step ended failed; amended 2026-10-30 from "a higher
+attempt's intent for the call", which a fresh call no longer writes at
+an unsafe intent's position). A tool's own error is part of its result,
 not a reason to stop the step; the error `Tool` returns is the journal's
 (`ErrFenced`, `ErrCommitted`, `ErrReplayMismatch`, transport).
 

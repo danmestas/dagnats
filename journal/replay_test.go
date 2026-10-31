@@ -608,7 +608,8 @@ func TestReplay_NewAttemptHonoursPriorUnsafeCallByContentNotPosition(t *testing.
 	retry := open(t, c, task("run-content", 1, 2, 2))
 	// The retry sends first, then charges another amount (a fresh
 	// call: same name, other input), then the same amount (answered
-	// from attempt 1 under its key), then reads (fresh, position 1).
+	// from attempt 1 under its key), then reads (fresh, at position 3:
+	// positions 1 and 2 are attempt 1's unsafe calls, and their keys).
 	res, err := retry.Tool(ctx, ToolCall{Name: "send"}, Unsafe, tool)
 	if err != nil || !res.Interrupted || res.Key != "run-content.s.1.2" {
 		t.Errorf("send on attempt 2 = %+v, %v; want interrupted under the prior key", res, err)
@@ -627,8 +628,8 @@ func TestReplay_NewAttemptHonoursPriorUnsafeCallByContentNotPosition(t *testing.
 		t.Errorf("tool ran %d times after the honoured call, want 3: nothing unsafe reran", n)
 	}
 	res, err = retry.Tool(ctx, ToolCall{Name: "read"}, Safe, tool)
-	if err != nil || res.Key != "run-content.s.1.1" || runs.Load() != 4 {
-		t.Errorf("read on attempt 2 = %+v, %v after %d runs; want a fresh run at position 1",
+	if err != nil || res.Key != "run-content.s.1.3" || runs.Load() != 4 {
+		t.Errorf("read on attempt 2 = %+v, %v after %d runs; want a fresh run at position 3",
 			res, err, runs.Load())
 	}
 	// A redelivery of attempt 2 walks the same calls and reuses what
@@ -652,6 +653,109 @@ func TestReplay_NewAttemptHonoursPriorUnsafeCallByContentNotPosition(t *testing.
 	}
 	if v := checkToolPairs(readRecords(t, c, "run-content"), false); len(v) != 0 {
 		t.Errorf("checker violations: %v", v)
+	}
+}
+
+// TestReplay_FreshCallInNewAttemptSkipsPriorUnsafeKeys: attempt 1
+// reads, then sends to ops and is taken over inside the send, so the
+// send's effect may have happened. Attempt 2 reads, is told the send
+// was interrupted, and sends to ops again: a fresh call, which must
+// not take the interrupted send's key, or a service deduplicating on
+// it drops the real send. A redelivery of attempt 2 then answers
+// every call as attempt 2 first did.
+func TestReplay_FreshCallInNewAttemptSkipsPriorUnsafeKeys(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	c := newClient(t, nc)
+	ctx, cancel := context.WithTimeout(context.Background(), replayTimeout)
+	defer cancel()
+	runs := &atomic.Int32{}
+	tool := func(_ context.Context, call ToolCall) ([]byte, error) {
+		runs.Add(1)
+		return []byte(`"` + call.Key + `"`), nil
+	}
+	read := ToolCall{Name: "read"}
+	send := ToolCall{Name: "send", Input: json.RawMessage(`{"to":"ops"}`)}
+	first := open(t, c, task("run-skip", 0, 1, 1))
+	if _, err := first.Tool(ctx, read, Safe, tool); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	// Attempt 2 claims while attempt 1's send runs: its result is
+	// never recorded.
+	var retry *Journal
+	_, err := first.Tool(ctx, send, Unsafe, func(context.Context, ToolCall) ([]byte, error) {
+		retry = open(t, c, task("run-skip", 0, 2, 1))
+		return []byte(`"sent"`), nil
+	})
+	if !errors.Is(err, ErrFenced) {
+		t.Fatalf("attempt 1 send err = %v, want ErrFenced", err)
+	}
+	if res, err := retry.Tool(ctx, read, Safe, tool); err != nil || res.Key != "run-skip.s.0.0" {
+		t.Errorf("read on attempt 2 = %+v, %v; want a fresh run at position 0", res, err)
+	}
+	res, err := retry.Tool(ctx, send, Unsafe, tool)
+	if err != nil || !res.Interrupted || res.Key != "run-skip.s.0.1" {
+		t.Errorf("send on attempt 2 = %+v, %v; want interrupted under the prior key", res, err)
+	}
+	res, err = retry.Tool(ctx, send, Unsafe, tool)
+	if err != nil || res.Interrupted || res.Key != "run-skip.s.0.2" || runs.Load() != 3 {
+		t.Errorf("second send on attempt 2 = %+v, %v after %d runs; want a fresh run "+
+			"under a key no prior unsafe intent holds", res, err, runs.Load())
+	}
+	again := open(t, c, task("run-skip", 0, 2, 2))
+	if res, err := again.Tool(ctx, read, Safe, tool); err != nil || res.Key != "run-skip.s.0.0" {
+		t.Errorf("read on the redelivery = %+v, %v; want reuse", res, err)
+	}
+	res, err = again.Tool(ctx, send, Unsafe, tool)
+	if err != nil || !res.Interrupted || res.Key != "run-skip.s.0.1" {
+		t.Errorf("send on the redelivery = %+v, %v; want the interrupted answer again", res, err)
+	}
+	res, err = again.Tool(ctx, send, Unsafe, tool)
+	if err != nil || string(res.Output) != `"run-skip.s.0.2"` || res.Key != "run-skip.s.0.2" {
+		t.Errorf("second send on the redelivery = %+v, %v; want the recorded send", res, err)
+	}
+	if n := runs.Load(); n != 3 {
+		t.Errorf("tool ran %d times, want 3: the redelivery repeats nothing", n)
+	}
+	if v := checkToolPairs(readRecords(t, c, "run-skip"), false); len(v) != 0 {
+		t.Errorf("checker violations: %v", v)
+	}
+}
+
+// TestReplay_OtherCallAtPriorUnsafePositionGetsItsOwnKey: attempt 1
+// sends to ops at position 0; attempt 2's model sends to dev instead.
+// The send to dev is fresh and must not reuse the send to ops's key.
+func TestReplay_OtherCallAtPriorUnsafePositionGetsItsOwnKey(t *testing.T) {
+	_, nc := natsutil.StartTestServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	c := newClient(t, nc)
+	ctx, cancel := context.WithTimeout(context.Background(), replayTimeout)
+	defer cancel()
+	runs := &atomic.Int32{}
+	tool := func(_ context.Context, call ToolCall) ([]byte, error) {
+		runs.Add(1)
+		return []byte(`"` + call.Key + `"`), nil
+	}
+	ops := ToolCall{Name: "send", Input: json.RawMessage(`{"to":"ops"}`)}
+	dev := ToolCall{Name: "send", Input: json.RawMessage(`{"to":"dev"}`)}
+	first := open(t, c, task("run-other", 1, 1, 1))
+	if _, err := first.Tool(ctx, ops, Unsafe, tool); err != nil {
+		t.Fatalf("send to ops: %v", err)
+	}
+	retry := open(t, c, task("run-other", 1, 2, 1))
+	res, err := retry.Tool(ctx, dev, Unsafe, tool)
+	if err != nil || res.Key != "run-other.s.1.1" || runs.Load() != 2 {
+		t.Errorf("send to dev on attempt 2 = %+v, %v after %d runs; want a fresh run "+
+			"under its own key", res, err, runs.Load())
+	}
+	res, err = retry.Tool(ctx, ops, Unsafe, tool)
+	if err != nil || string(res.Output) != `"run-other.s.1.0"` || runs.Load() != 2 {
+		t.Errorf("send to ops on attempt 2 = %+v, %v after %d runs; want the prior result",
+			res, err, runs.Load())
 	}
 }
 
