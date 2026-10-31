@@ -56,9 +56,15 @@ const OrderedConsumerResetMax = 4
 // ends, and a live reader is never inactive (every fetch is a pull).
 const OrderedConsumerInactiveThreshold = time.Minute
 
-// orderedCloseTimeout bounds the delete in Close, which runs on its own
-// context because the read's context is often the thing that ended.
+// orderedCloseTimeout bounds each delete of a server-side consumer.
 const orderedCloseTimeout = 5 * time.Second
+
+// orderedGonePoll is how often a delete re-checks that the consumer has
+// left the stream; orderedGonePollMax bounds the checks to the timeout.
+const (
+	orderedGonePoll    = 10 * time.Millisecond
+	orderedGonePollMax = int(orderedCloseTimeout / orderedGonePoll)
+)
 
 // OrderedConsumerSpec is the caller-supplied half of an ordered
 // consumer's config — everything that legitimately varies by call
@@ -103,6 +109,14 @@ func OrderedConsumerConfig(spec OrderedConsumerSpec) jetstream.OrderedConsumerCo
 // reader that skipped the delete left a server-side consumer behind
 // until the inactivity threshold, which exhausted the stream's
 // consumer cap under load.
+//
+// nats.go creates the server-side consumer when the ordered consumer is
+// opened, and every Fetch, FetchBytes, FetchNoWait or Next replaces it
+// with a new one (jetstream/ordered.go reset). It deletes the replaced
+// consumer from a goroutine nobody waits on, so the delete can land
+// after the read ends or never, when the process exits first. The
+// wrappers below delete it before returning; Messages and Consume reuse
+// the consumer created at open and need no wrapper.
 type OrderedConsumer struct {
 	jetstream.Consumer
 	stream string
@@ -120,19 +134,89 @@ func (c *OrderedConsumer) Close() {
 	if c.remove == nil {
 		return
 	}
-	remove := c.remove
+	name := c.currentName()
+	c.release(name)
 	c.remove = nil
+}
+
+// Fetch is jetstream.Consumer.Fetch that deletes the consumer it replaced.
+func (c *OrderedConsumer) Fetch(
+	batch int, opts ...jetstream.FetchOpt,
+) (jetstream.MessageBatch, error) {
+	previous := c.currentName()
+	result, err := c.Consumer.Fetch(batch, opts...)
+	c.releaseReplaced(previous)
+	return result, err
+}
+
+// FetchBytes is jetstream.Consumer.FetchBytes that deletes the consumer
+// it replaced.
+func (c *OrderedConsumer) FetchBytes(
+	bytesMax int, opts ...jetstream.FetchOpt,
+) (jetstream.MessageBatch, error) {
+	previous := c.currentName()
+	result, err := c.Consumer.FetchBytes(bytesMax, opts...)
+	c.releaseReplaced(previous)
+	return result, err
+}
+
+// FetchNoWait is jetstream.Consumer.FetchNoWait that deletes the
+// consumer it replaced.
+func (c *OrderedConsumer) FetchNoWait(batch int) (jetstream.MessageBatch, error) {
+	previous := c.currentName()
+	result, err := c.Consumer.FetchNoWait(batch)
+	c.releaseReplaced(previous)
+	return result, err
+}
+
+// Next is jetstream.Consumer.Next that deletes the consumer it replaced.
+func (c *OrderedConsumer) Next(opts ...jetstream.FetchOpt) (jetstream.Msg, error) {
+	previous := c.currentName()
+	msg, err := c.Consumer.Next(opts...)
+	c.releaseReplaced(previous)
+	return msg, err
+}
+
+// currentName is the server-side consumer the reader is on, or "" when
+// nats.go holds none.
+func (c *OrderedConsumer) currentName() string {
+	if c.Consumer == nil {
+		panic("OrderedConsumer.currentName: consumer must not be nil")
+	}
 	info := c.CachedInfo()
 	if info == nil {
-		return // lazy: no fetch ever created the server-side consumer
+		return ""
+	}
+	return info.Name
+}
+
+// releaseReplaced deletes previous once a reset has moved the reader
+// off it. A failed reset leaves the reader on previous, which stays.
+func (c *OrderedConsumer) releaseReplaced(previous string) {
+	if c.Consumer == nil {
+		panic("OrderedConsumer.releaseReplaced: consumer must not be nil")
+	}
+	if previous == "" || previous == c.currentName() {
+		return
+	}
+	c.release(previous)
+}
+
+// release deletes the named server-side consumer on its own context,
+// because the read's context is often the thing that ended. nats.go's
+// own delete of a replaced consumer races this one, so not-found is
+// success.
+func (c *OrderedConsumer) release(name string) {
+	if c.remove == nil || name == "" {
+		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), orderedCloseTimeout)
 	defer cancel()
-	err := remove(ctx, info.Name)
+	err := c.remove(ctx, name)
 	if err != nil && !errors.Is(err, jetstream.ErrConsumerNotFound) &&
 		!errors.Is(err, jetstream.ErrStreamNotFound) {
 		slog.Warn("delete ordered consumer failed",
-			"stream", c.stream, "consumer", info.Name, "error", err)
+			"stream", c.stream, "consumer", name, "error", err)
 	}
 }
 
@@ -156,7 +240,14 @@ func OpenConsumer(
 	}
 	return &OrderedConsumer{Consumer: cons, stream: streamName,
 		remove: func(ctx context.Context, name string) error {
-			return js.DeleteConsumer(ctx, streamName, name)
+			return deleteConsumer(ctx, name,
+				func(ctx context.Context, name string) error {
+					return js.DeleteConsumer(ctx, streamName, name)
+				},
+				func(ctx context.Context, name string) error {
+					_, err := js.Consumer(ctx, streamName, name)
+					return err
+				})
 		}}, nil
 }
 
@@ -181,6 +272,45 @@ func OpenStreamConsumer(
 	}
 	return &OrderedConsumer{Consumer: cons, stream: "stream-handle",
 		remove: func(ctx context.Context, name string) error {
-			return stream.DeleteConsumer(ctx, name)
+			return deleteConsumer(ctx, name, stream.DeleteConsumer,
+				func(ctx context.Context, name string) error {
+					_, err := stream.Consumer(ctx, name)
+					return err
+				})
 		}}, nil
+}
+
+// deleteConsumer deletes the named consumer and returns once the stream
+// no longer holds it. nats.go deletes a replaced consumer too, and when
+// two deletes race, nats-server answers the loser with success while
+// the winner is still removing it (server/consumer.go stopWithFlags
+// returns on o.closed before mset.removeConsumer), so success alone
+// does not mean gone.
+func deleteConsumer(
+	ctx context.Context, name string, remove, lookup func(context.Context, string) error,
+) error {
+	if name == "" {
+		panic("deleteConsumer: name must not be empty")
+	}
+	if remove == nil || lookup == nil {
+		panic("deleteConsumer: remove and lookup must not be nil")
+	}
+	if err := remove(ctx, name); err != nil {
+		return err
+	}
+	for poll := 0; poll < orderedGonePollMax; poll++ {
+		err := lookup(ctx, name)
+		if errors.Is(err, jetstream.ErrConsumerNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(orderedGonePoll):
+		}
+	}
+	return errors.New("consumer " + name + " still present after delete")
 }
