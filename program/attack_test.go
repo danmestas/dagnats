@@ -184,10 +184,11 @@ func TestAttack_ProgramCannotCreateOrReconfigureStreams(t *testing.T) {
 // subject that has interest, here a stand-in for beta's service.
 //
 // Not closable with user permissions in one account: KV watches need
-// push consumers. Skipped until the isolation decision is revisited
-// (accounts, or a server-side check); the test stays as the proof.
+// push consumers. Accepted for trusted programs; see "Known limitations /
+// threat model" in the package doc. The test stays as the proof.
 func TestAttack_PushConsumerCannotDeliverIntoForeignSubjects(t *testing.T) {
-	t.Skip("known escape: push deliver_subject is unchecked; needs an isolation decision")
+	t.Skip("accepted gap for trusted programs: see \"Known limitations / threat model\" " +
+		"in the program package doc; closed by accounts or a server check before untrusted programs")
 	f, js := attackFixture(t)
 	victim, err := f.admin.SubscribeSync("beta.svc.x")
 	if err != nil {

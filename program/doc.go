@@ -35,21 +35,31 @@
 // Permissions is a plain struct. Converting it to nats-server options is
 // the server's job, so a program never links nats-server.
 //
-// Limits of user permissions inside one account, accepted for
-// cooperating programs:
+// # Known limitations / threat model
 //
-//   - A consumer's deliver subject is in the request body, which subject
-//     permissions cannot see, and nats-server does not check it against
-//     the creator's permissions. Any program can therefore push its own
-//     stream contents, or a shared bucket's, to any subject with interest.
-//     KV watches need push consumers, so this cannot be closed without
-//     accounts or a server-side check.
-//   - Consumer delete on shared buckets and next/ack on STICKY_TASKS are
-//     gated only by consumer names, which are random NUIDs that a program
-//     cannot list.
-//   - Validate cannot see other programs, so a protocol such as "beta.x"
-//     declared by program alpha would be granted under beta's prefix.
-//     Registration must check protocol ownership both ways: a protocol
-//     under a registered program's prefix, and a program registering a
-//     name some protocol already sits under.
+// Programs on a dagnats are trusted: today they are all the operator's
+// own, the same stance as the coarse-shared engine buckets. Within that
+// model these gaps are accepted, and they are closed before untrusted
+// (third-party) programs join a dagnats, the same trigger as making
+// nats_auth: required the default.
+//
+//   - Push-consumer delivery. A consumer's deliver subject travels in the
+//     JetStream request body, which subject permissions never see, and
+//     nats-server does not check it against the creating user's
+//     permissions. So a program can deliver its own stream's messages,
+//     or a shared bucket's, onto any subject that has interest,
+//     including another program's task or service subjects. KV watches
+//     need push consumers, so denying consumer creates is not an option.
+//     User permissions inside one account cannot close this; one NATS
+//     account per program, or a server-side check of the deliver
+//     subject, will (TestAttack_PushConsumerCannotDeliverIntoForeignSubjects
+//     is the proof, skipped until then).
+//   - Name-gated grants. Consumer delete on shared buckets and next/ack
+//     on STICKY_TASKS are gated only by consumer names, which are random
+//     NUIDs that a program cannot list.
+//   - Protocol ownership. Validate cannot see other programs, so a
+//     protocol such as "beta.x" declared by program alpha would be
+//     granted under beta's prefix. Registration must check ownership both
+//     ways: a protocol under a registered program's prefix, and a program
+//     registering a name some protocol already sits under.
 package program
