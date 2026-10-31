@@ -65,6 +65,9 @@ const (
 
 // Sentinel errors.
 var (
+	// ErrQueued: a wait for input was asked while submissions are
+	// already queued (RefuseIfQueued).
+	ErrQueued         = errors.New("inputs are queued; place them before waiting for input")
 	ErrNotProvisioned = errors.New(
 		"inputs: submissions bucket not provisioned" +
 			" — ensure natsutil.SetupAll() has been called" +
@@ -492,6 +495,21 @@ func (s *Store) Queued(ctx context.Context, runID, stepID string) ([]Entry, erro
 		panic("inputs.Queued: filtered more than listed")
 	}
 	return queued, nil
+}
+
+// RefuseIfQueued returns ErrQueued (wrapped with the count and the
+// first request id) while any submission is queued for the step. A wait
+// for input entered then would never be woken for them: they arrived
+// before it. Shared by the Go SDK and the HTTP bridge.
+func (s *Store) RefuseIfQueued(ctx context.Context, runID, stepID string) error {
+	queued, err := s.Queued(ctx, runID, stepID)
+	if err != nil {
+		return err
+	}
+	if len(queued) > 0 {
+		return fmt.Errorf("%w (%d queued, first %s)", ErrQueued, len(queued), queued[0].RequestID)
+	}
+	return nil
 }
 
 // SettleUnanswered is the completion sweep: every queued submission of

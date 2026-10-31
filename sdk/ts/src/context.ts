@@ -15,6 +15,26 @@ export interface FailOptions {
   retry_after_ms?: number;
 }
 
+/**
+ * A durable wait for `continue` (ADR-027): the engine parks the step and no worker holds a
+ * claim meanwhile. `delay_ms` and `until` are a time to wake at (`until`, an ISO-8601 time or a
+ * Date, wins when both are set); `input` wakes the step as soon as an input is queued for it.
+ * A time and `input` together wake on whichever comes first.
+ */
+export interface ContinueWait {
+  delay_ms?: number;
+  until?: string | Date;
+  input?: boolean;
+}
+
+export interface ContinueOptions {
+  /** This iteration's output. */
+  output?: unknown;
+  /** Loop state for the next iteration; absent keeps the checkpointed (or polled) state. */
+  state?: unknown;
+  wait?: ContinueWait;
+}
+
 /** The claim a journal.view answers: this delivery's identity. */
 export type Claim = Omit<Task, "run_id" | "step_id">;
 
@@ -95,6 +115,20 @@ export class TaskContext {
     }
     if (res.state === null || res.state === undefined) return undefined;
     return { state: res.state, source: res.source };
+  }
+
+  /**
+   * continue ends this iteration and asks for the next, optionally after a durable `wait`.
+   * `state` is checkpointed first, as `checkpoint` does. With `wait.input` and inputs already
+   * queued it throws InputsQueued and the task stays claimed: place the inputs and continue
+   * without the input wait.
+   */
+  async continue(options: ContinueOptions = {}, call?: CallOptions): Promise<void> {
+    const { output, state, wait } = options;
+    if (state !== undefined) await this.checkpoint(state, call);
+    const until = wait?.until instanceof Date ? wait.until.toISOString() : wait?.until;
+    const body = { output, wait: wait === undefined ? undefined : { ...wait, until } };
+    await this.resolve("continue", body, call);
   }
 
   /** heartbeat extends the claim with nothing else. */

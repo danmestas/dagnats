@@ -226,7 +226,7 @@ Resolves a polled task. Only the token that claimed the task (or the admin token
 |--------|------------|----------|
 | `complete` | `output` | Publishes `step.completed` event, ACKs message, removes from ack map |
 | `fail` | `error`, `failure_type`, `retry_after_ms` | Publishes `step.failed` event with the failure type (`retriable` by default), ACKs message, removes from ack map |
-| `continue` | `output` | Publishes `step.continue` event for an agent loop, ACKs message, removes from ack map |
+| `continue` | `output`, `wait` | Publishes `step.continue` event for an agent loop, ACKs message, removes from ack map. `wait` is `{"delay_ms", "until", "input"}` (ADR-027) and rides the event's payload (and the commit record of a journal step) as the Go SDK's `Continue(..., Delay, Until, UntilInput)` writes it. `delay_ms` must not be negative and `until` must be a real RFC 3339 time, else `400 {"code":"invalid_wait"}`. With `wait.input` set and a submission already queued for the step, nothing is published or acked and the answer is `409 {"error":"...","code":"inputs_queued"}`: the task stays claimed, so the worker places the inputs and continues without the input wait |
 | `pause` | `duration_ms`, `checkpoint` | Writes checkpoint to KV, NAKs with delay (`duration_ms` in 1 to 3600000), removes from ack map |
 | `checkpoint` | `data` | Writes incremental checkpoint to KV, extends ack deadline (InProgress) |
 | `heartbeat` | none | Extends the ack deadline without resolving the task |

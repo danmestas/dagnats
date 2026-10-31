@@ -520,7 +520,7 @@ DELETE /runs/{id}/steps/{step}/inputs/{request_id}
 
 `GET` with `wait` (at most `60s`) returns as soon as the status is no longer `after` (default `queued`), or the current status at the deadline; an unknown or withdrawn `request_id` is `404` at once.
 
-A handler woken by an input must tolerate finding nothing to place: `step.input.queued` can be redelivered, and a withdrawal can land between the wake and the handler's `PlaceInputs`. Upgrade engines before workers: the `wait` on `step.continue` is new, and a worker that asks an older engine for `UntilInput()` is sent its next iteration at once, which hot-loops the agent until `max_iterations`. `DELETE` withdraws a submission that is still `queued` and answers `204`; the same `request_id` may then be submitted again.
+A handler woken by an input must tolerate finding nothing to place: `step.input.queued` can be redelivered, and a withdrawal can land between the wake and the handler's `PlaceInputs`. Upgrade engines before workers: the `wait` on `step.continue` is new, and a worker that asks an older engine for `UntilInput()` is sent its next iteration at once, which hot-loops the agent until `max_iterations`. An HTTP bridge worker parks a step the same way with `wait` on its `continue` resolve (`{"delay_ms", "until", "input"}`, see [the HTTP bridge](/docs/workers/http-bridge/)); with `wait.input` set and a submission already queued, the bridge answers `409 {"code":"inputs_queued"}` and does not park, mirroring `ErrInputsQueued`. `DELETE` withdraws a submission that is still `queued` and answers `204`; the same `request_id` may then be submitted again.
 
 | Status | Condition |
 |--------|-----------|

@@ -245,6 +245,8 @@ func TestInputs_ContinueUntilInputRefusesWhileQueued(t *testing.T) {
 	}
 	if err := tc.Continue(nil, UntilInput()); !errors.Is(err, ErrInputsQueued) {
 		t.Fatalf("Continue(UntilInput) with q1 queued = %v, want ErrInputsQueued", err)
+	} else if !errors.Is(err, inputs.ErrQueued) {
+		t.Fatalf("Continue(UntilInput) error %v is not inputs.ErrQueued", err)
 	}
 	if records := readJournal(t, js, "run-ui"); len(records) != 1 {
 		t.Fatalf("refused continue wrote %d records past the claim", len(records)-1)

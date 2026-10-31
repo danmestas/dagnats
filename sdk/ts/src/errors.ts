@@ -60,6 +60,14 @@ export class RecordTooLarge extends BridgeError {
     this.maxBytes = jsonNumber(body, "max_bytes");
   }
 }
+/**
+ * 409 inputs_queued: a `continue` with `wait.input` was refused because inputs are already
+ * queued for the step. Not terminal: the task is still claimed. Place the inputs (inputs.place)
+ * and continue without the input wait.
+ */
+export class InputsQueued extends BridgeError {}
+/** 400 invalid_wait: the `wait` of a `continue` was refused. Not terminal: fix the wait. */
+export class InvalidWait extends BridgeError {}
 /** 503 not_provisioned: the AGENT_JOURNAL stream is missing. */
 export class NotProvisioned extends BridgeError {}
 
@@ -92,8 +100,10 @@ export function errorFromResponse(status: number, body: string): BridgeError {
   const code = jsonCode(body);
   if (status === 409) {
     if (code === "fenced") return new Fenced(status, body);
+    if (code === "inputs_queued") return new InputsQueued(status, body);
     if (body.trim() === "run cancelled") return new RunCancelled(status, body);
   }
+  if (status === 400 && code === "invalid_wait") return new InvalidWait(status, body);
   if (status === 410) {
     if (code === "stale") return new Stale(status, body);
     if (code === "committed") return new Committed(status, body);
