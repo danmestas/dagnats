@@ -22,13 +22,18 @@ func (r *Registrar) admit(
 	if err := checkVersion(m.Dagnats, r.cfg.ServerVersion); err != nil {
 		return program.Grant{}, false, err
 	}
+	// Held through provisioning, so an update that commits right after
+	// this Create provisions after it, not before.
+	lock := r.programLock(m.Name)
+	lock.Lock()
+	defer lock.Unlock()
 	grant, revision, err := r.reserveName(ctx, req, keyID)
 	if err != nil || revision == 0 {
 		// revision 0: a concurrent registration of the same program won
 		// the Create; err is its stored Grant's outcome.
 		return grant, false, err
 	}
-	if err := program.Provision(ctx, r.js, m, grant); err != nil {
+	if err := r.provision(ctx, m, grant); err != nil {
 		return program.Grant{}, false, r.rollBack(m.Name, revision, err)
 	}
 	return grant, true, nil

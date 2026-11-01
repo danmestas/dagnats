@@ -11,6 +11,7 @@ package programs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -282,4 +283,200 @@ func cloneManifest(m program.Manifest) program.Manifest {
 	}
 	m.Buckets = slices.Clone(m.Buckets)
 	return m
+}
+
+// TestUpdate_NewStreamFirstDoesNotHideALaterChange: a stream that does
+// not exist yet is skipped, not the end of the live checks, so a
+// destructive change to a later stream or bucket is still refused.
+func TestUpdate_NewStreamFirstDoesNotHideALaterChange(t *testing.T) {
+	newFirst := program.StreamSpec{
+		Name: "NOTIFY_AAA", Subjects: []string{"notify.aaa.>"}, MaxBytesFloor: 1 << 20,
+	}
+	cases := []struct {
+		name   string
+		change func(m *program.Manifest)
+		detail string
+	}{
+		{"later stream subjects", func(m *program.Manifest) {
+			m.Streams[1].Subjects = []string{"notify.other.>"}
+		}, `stream "NOTIFY_EVENTS" subjects change`},
+		{"later stream shrink", func(m *program.Manifest) {
+			m.Streams[1].MaxBytesFloor = 4 << 10
+		}, `stream "NOTIFY_EVENTS" would be capped at 4096 bytes`},
+		{"bucket after streams", func(m *program.Manifest) {
+			m.Buckets[0].MaxBytes = 4 << 10
+		}, `bucket "notify_state" would be capped at 4096 bytes`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t, Config{Open: true})
+			req := request(t, "notify", "")
+			f.mustRegister(t, req)
+			fillStream(t, f.js, "notify.events.x", 16<<10)
+			fillBucket(t, f.js, "notify_state", 16<<10)
+
+			changed := req
+			changed.Manifest = cloneManifest(req.Manifest)
+			changed.Manifest.Streams = append([]program.StreamSpec{newFirst},
+				changed.Manifest.Streams...)
+			tc.change(&changed.Manifest)
+			_, err := f.register(t, changed)
+			wantRefused(t, err, program.RefusedManifestChanged)
+			if !strings.Contains(err.Error(), tc.detail) {
+				t.Fatalf("refusal %q does not say %q", err, tc.detail)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := f.js.Stream(ctx, "NOTIFY_AAA"); err == nil {
+				t.Fatal("a refused update provisioned its new stream")
+			}
+		})
+	}
+}
+
+// TestUpdate_RechecksTheAdmittingJoinKey: a change other than Version is
+// refused once the key that admitted the program could not admit it
+// now. A Version-only rebuild is not a change to what was admitted and
+// still goes through.
+func TestUpdate_RechecksTheAdmittingJoinKey(t *testing.T) {
+	grow := func(m program.Manifest) program.Manifest {
+		m = cloneManifest(m)
+		m.TaskTypes = append(m.TaskTypes, "notify.more")
+		return m
+	}
+	t.Run("revoked", func(t *testing.T) {
+		f := newFixture(t, Config{Open: true})
+		key, plaintext := f.createKey(t, joinkey.Spec{Label: "k", UsesMax: 1})
+		req := request(t, "notify", plaintext)
+		f.mustRegister(t, req)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := f.keys.Revoke(ctx, key.ID); err != nil {
+			t.Fatalf("Revoke: %v", err)
+		}
+		changed := req
+		changed.Manifest = grow(req.Manifest)
+		_, err := f.register(t, changed)
+		wantRefused(t, err, program.RefusedJoinKeyInvalid)
+		rebuilt := req
+		rebuilt.Manifest = cloneManifest(req.Manifest)
+		rebuilt.Manifest.Version = "1.0.1"
+		f.mustRegister(t, rebuilt)
+	})
+	t.Run("expired", func(t *testing.T) {
+		f := newFixture(t, Config{Open: true})
+		expires := time.Now().Add(500 * time.Millisecond)
+		_, plaintext := f.createKey(t, joinkey.Spec{Label: "k", ExpiresAt: &expires})
+		req := request(t, "notify", plaintext)
+		f.mustRegister(t, req)
+		time.Sleep(time.Until(expires) + 50*time.Millisecond)
+		changed := req
+		changed.Manifest = grow(req.Manifest)
+		_, err := f.register(t, changed)
+		wantRefused(t, err, program.RefusedJoinKeyInvalid)
+	})
+	t.Run("protocol outside glob", func(t *testing.T) {
+		f := newFixture(t, Config{Open: true})
+		_, plaintext := f.createKey(t, joinkey.Spec{Label: "k", NameGlob: "notify*"})
+		req := request(t, "notify", plaintext)
+		f.mustRegister(t, req)
+		changed := req
+		changed.Manifest = grow(req.Manifest)
+		changed.Manifest.Protocols = []string{"tool.exec"}
+		_, err := f.register(t, changed)
+		wantRefused(t, err, program.RefusedProtocolNotAllowed)
+		if slices.Contains(f.record(t, "notify").Manifest.Protocols, "tool.exec") {
+			t.Fatal("a refused protocol was stored")
+		}
+	})
+}
+
+// TestRegister_AdoptingKeepsOperatorSettings: an operator's stream is
+// adopted with the fields the manifest does not own left as they were,
+// and a manifest that would start expiring its data is refused.
+func TestRegister_AdoptingKeepsOperatorSettings(t *testing.T) {
+	f := newFixture(t, Config{Open: true})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := f.js.CreateStream(ctx, jetstream.StreamConfig{
+		Name: "NOTIFY_EVENTS", Subjects: []string{"notify.events.>"}, MaxBytes: 1 << 20,
+		Discard: jetstream.DiscardNew, MaxMsgs: 5000, DenyDelete: true,
+	})
+	if err != nil {
+		t.Fatalf("create operator stream: %v", err)
+	}
+	expiring := request(t, "notify", "")
+	expiring.Manifest.Streams[0].MaxAge = time.Minute
+	_, err = f.register(t, expiring)
+	wantRefused(t, err, program.RefusedManifestChanged)
+	if !strings.Contains(err.Error(), `MaxAge drops from 0s to 1m0s`) {
+		t.Fatalf("refusal %q does not name the MaxAge change", err)
+	}
+
+	f.mustRegister(t, request(t, "notify", ""))
+	stream, err := f.js.Stream(ctx, "NOTIFY_EVENTS")
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	live := stream.CachedInfo().Config
+	if live.Discard != jetstream.DiscardNew || live.MaxMsgs != 5000 || !live.DenyDelete {
+		t.Fatalf("adoption reset operator settings: discard=%v maxMsgs=%d denyDelete=%v",
+			live.Discard, live.MaxMsgs, live.DenyDelete)
+	}
+}
+
+// TestUpdate_PartialProvisionRestoresStreams: an update that grows one
+// stream and adds one that cannot be created is undone whole: the grown
+// stream gets its old config back and the record its old manifest, so
+// the two still agree.
+func TestUpdate_PartialProvisionRestoresStreams(t *testing.T) {
+	f := newFixture(t, Config{Open: true})
+	req := request(t, "notify", "")
+	f.mustRegister(t, req)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := f.js.CreateStream(ctx, jetstream.StreamConfig{
+		Name: "SQUAT", Subjects: []string{"notify.outbox.>"},
+	})
+	if err != nil {
+		t.Fatalf("create squatting stream: %v", err)
+	}
+	changed := req
+	changed.Manifest = cloneManifest(req.Manifest)
+	changed.Manifest.Streams[0].MaxBytesFloor = 2 << 20
+	changed.Manifest.Streams = append(changed.Manifest.Streams, program.StreamSpec{
+		Name: "NOTIFY_OUTBOX", Subjects: []string{"notify.outbox.>"}, MaxBytesFloor: 1 << 20,
+	})
+	_, err = f.register(t, changed)
+	var refusal *program.ErrRefused
+	if err == nil || errors.As(err, &refusal) {
+		t.Fatalf("update err = %v, want a provisioning failure", err)
+	}
+	stream, err := f.js.Stream(ctx, "NOTIFY_EVENTS")
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	if got := stream.CachedInfo().Config.MaxBytes; got != 1<<20 {
+		t.Fatalf("NOTIFY_EVENTS MaxBytes = %d after the failed update, want 1 MiB", got)
+	}
+	if !sameManifest(f.record(t, "notify").Manifest, req.Manifest) {
+		t.Fatal("the record kept the manifest whose provisioning failed")
+	}
+}
+
+// fillBucket writes size bytes of values to bucket.
+func fillBucket(t *testing.T, js jetstream.JetStream, bucket string, size int) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	kv, err := js.KeyValue(ctx, bucket)
+	if err != nil {
+		t.Fatalf("bucket %s: %v", bucket, err)
+	}
+	value := make([]byte, 1<<10)
+	for i := range size / len(value) {
+		if _, err := kv.Put(ctx, fmt.Sprintf("k%d", i), value); err != nil {
+			t.Fatalf("put %s: %v", bucket, err)
+		}
+	}
 }

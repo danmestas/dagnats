@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/joinkey"
 	"github.com/danmestas/dagnats/program"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -41,6 +42,11 @@ func (r *Registrar) update(
 	if err := checkVersion(req.Manifest.Dagnats, r.cfg.ServerVersion); err != nil {
 		return program.Grant{}, err
 	}
+	// Held from the commit through provisioning, so two updates of one
+	// program provision in the order they committed.
+	lock := r.programLock(name)
+	lock.Lock()
+	defer lock.Unlock()
 	for attempt := 1; attempt <= updateAttemptsMax; attempt++ {
 		pending, err := r.commitUpdate(ctx, req)
 		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
@@ -49,7 +55,7 @@ func (r *Registrar) update(
 		if err != nil || !pending.provision {
 			return pending.grant, err
 		}
-		if err := program.Provision(ctx, r.js, req.Manifest, pending.grant); err != nil {
+		if err := r.provision(ctx, req.Manifest, pending.grant); err != nil {
 			return program.Grant{}, r.rollBackUpdate(name, pending, err)
 		}
 		return pending.grant, nil
@@ -76,6 +82,9 @@ func (r *Registrar) commitUpdate(
 	}
 	pending := pendingUpdate{grant: record.Grant, previous: entry.Value()}
 	if !versionOnly(record.Manifest, req.Manifest) {
+		if err := r.checkAdmittingKey(record, req.Manifest); err != nil {
+			return pendingUpdate{}, err
+		}
 		pending.grant, err = r.readmit(ctx, record.Manifest, req.Manifest)
 		if err != nil {
 			return pendingUpdate{}, err
@@ -123,6 +132,32 @@ func (r *Registrar) readmit(
 	return grant, nil
 }
 
+// checkAdmittingKey refuses a change once the join key that admitted the
+// program could not admit it now: removed, revoked, expired, or with
+// names that do not cover a protocol root the change declares. A
+// keyless open-mode registration stays keyless. No use is spent.
+func (r *Registrar) checkAdmittingKey(record Record, changed program.Manifest) error {
+	if record.Manifest.Name != changed.Name {
+		panic("programs.checkAdmittingKey: an update keeps the program's name")
+	}
+	if record.JoinKeyID == "" {
+		return nil
+	}
+	err := r.keys.Check(record.JoinKeyID, changed.Name, changed.Protocols)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, joinkey.ErrProtocolNotAllowed):
+		return refused(program.RefusedProtocolNotAllowed, "%v", err)
+	case errors.Is(err, joinkey.ErrNotFound), errors.Is(err, joinkey.ErrRevoked),
+		errors.Is(err, joinkey.ErrExpired), errors.Is(err, joinkey.ErrNameNotAllowed):
+		return refused(program.RefusedJoinKeyInvalid,
+			"the join key that admitted program %q no longer admits changes: %v",
+			changed.Name, err)
+	}
+	return fmt.Errorf("check join key of program %q: %w", changed.Name, err)
+}
+
 // lookupEntry reads a record with its KV entry, for a compare-and-set.
 func (r *Registrar) lookupEntry(
 	ctx context.Context, name string,
@@ -162,8 +197,10 @@ func (r *Registrar) writeRecord(
 
 // rollBackUpdate restores the record an update replaced when its
 // provisioning failed, but only at the revision the update wrote, so a
-// later registration's record survives. Streams the update created are
-// left; the program's next registration declares them again.
+// later registration's record survives. provision has already put back
+// the configs of the streams that existed, so the record and the
+// streams agree again. Streams the update created are left; the
+// program's next registration declares them again.
 func (r *Registrar) rollBackUpdate(name string, pending pendingUpdate, cause error) error {
 	if name == "" || pending.revision == 0 || len(pending.previous) == 0 {
 		panic("programs.rollBackUpdate: name, revision and previous record must be set")

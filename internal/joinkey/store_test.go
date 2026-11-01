@@ -471,3 +471,53 @@ func TestMutateContentionIsTypedAndBounded(t *testing.T) {
 		t.Fatalf("contended ConsumeUse wrote: %+v, %v", stored, err)
 	}
 }
+
+// TestCheck: Check vouches for a key that admitted a program, for a
+// change to that program's registration. It refuses a missing, revoked
+// or expired key and a name or protocol root outside the glob, but not
+// an exhausted key, whose last use was the program's own.
+func TestCheck(t *testing.T) {
+	store := newTestStore(t)
+	key, plaintext := mustCreate(t, store,
+		Spec{Label: "once", NameGlob: "notify*", UsesMax: 1})
+	verified, err := store.Verify(plaintext, "notify")
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := store.ConsumeUse(ctx, verified.ID); err != nil {
+		t.Fatalf("ConsumeUse: %v", err)
+	}
+	if err := store.Check(key.ID, "notify", []string{"notifyx.rpc"}); err != nil {
+		t.Fatalf("Check on the exhausted admitting key: %v", err)
+	}
+	refusals := []struct {
+		id, name  string
+		protocols []string
+		want      error
+	}{
+		{"nosuchid", "notify", nil, ErrNotFound},
+		{key.ID, "other", nil, ErrNameNotAllowed},
+		{key.ID, "notify", []string{"tool.exec"}, ErrProtocolNotAllowed},
+	}
+	for _, refusal := range refusals {
+		err := store.Check(refusal.id, refusal.name, refusal.protocols)
+		if !errors.Is(err, refusal.want) {
+			t.Errorf("Check(%s, %s, %v) = %v, want %v",
+				refusal.id, refusal.name, refusal.protocols, err, refusal.want)
+		}
+	}
+	expires := time.Now().UTC().Add(time.Hour)
+	expiring, _ := mustCreate(t, store, Spec{Label: "dated", ExpiresAt: &expires})
+	store.now = func() time.Time { return expires }
+	if err := store.Check(expiring.ID, "notify", nil); !errors.Is(err, ErrExpired) {
+		t.Errorf("Check at expiry = %v, want ErrExpired", err)
+	}
+	if err := store.Revoke(ctx, key.ID); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if err := store.Check(key.ID, "notify", nil); !errors.Is(err, ErrRevoked) {
+		t.Errorf("Check after revoke = %v, want ErrRevoked", err)
+	}
+}

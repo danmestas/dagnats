@@ -44,6 +44,37 @@ func (s *Store) Verify(plaintext, programName string) (JoinKey, error) {
 	return key.redacted(), nil
 }
 
+// Check reports whether key id, which admitted programName, still
+// admits a change to that program's registration: it must exist and be
+// neither revoked nor expired, and its names must still cover the
+// program and the root of every protocol it now declares. It spends no
+// use and ignores exhaustion, since the program spent its use when it
+// first registered. Like Verify it reads the watched cache, not KV.
+func (s *Store) Check(id, programName string, protocols []string) error {
+	if s.keys == nil || s.now == nil {
+		panic("joinkey.Check: store not opened")
+	}
+	if id == "" || programName == "" {
+		panic("joinkey.Check: id and programName must not be empty")
+	}
+	key, found := s.lookup(id)
+	switch {
+	case !found:
+		return ErrNotFound
+	case key.RevokedAt != nil:
+		return ErrRevoked
+	case key.ExpiresAt != nil && !s.now().Before(*key.ExpiresAt):
+		return ErrExpired
+	case !key.AllowsName(programName):
+		return ErrNameNotAllowed
+	}
+	if protocol, outside := key.ProtocolOutside(protocols); outside {
+		return fmt.Errorf("%w: protocol %q is outside names %q",
+			ErrProtocolNotAllowed, protocol, key.NameGlob)
+	}
+	return nil
+}
+
 // ConsumeUse spends one use of key id. Registration calls it after
 // Verify and before committing, and refunds with RefundUse if the
 // registration then fails, so concurrent registrations cannot admit

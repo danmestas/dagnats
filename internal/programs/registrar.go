@@ -93,6 +93,7 @@ type Registrar struct {
 	// same way: two nodes can each admit one side of a clash at the same
 	// moment. Join-key uses are exact across nodes.
 	admitMu sync.Mutex
+	locks   programLocks
 }
 
 // NewRegistrar binds the programs bucket, creating it when absent.
@@ -239,20 +240,17 @@ func (r *Registrar) reserveUse(ctx context.Context, req program.RegisterRequest)
 }
 
 // protocolsOutsideGlob refuses a protocol whose root a --names key does
-// not cover. A protocol claims its root for protocol_clash, so a key
-// limited to artifact* that could declare "notify.rpc" would lock the
-// name notify out. Checked before the use is spent.
+// not cover (joinkey.JoinKey.ProtocolOutside). Checked before the use is
+// spent.
 func protocolsOutsideGlob(key joinkey.JoinKey, protocols []string) error {
 	if key.ID == "" {
 		panic("programs.protocolsOutsideGlob: key must be verified")
 	}
-	for _, protocol := range protocols {
+	if protocol, outside := key.ProtocolOutside(protocols); outside {
 		protocolRoot, _, _ := strings.Cut(protocol, ".")
-		if !key.AllowsName(protocolRoot) {
-			return refused(program.RefusedProtocolNotAllowed,
-				"protocol %q: root %q is outside the join key's names %q",
-				protocol, protocolRoot, key.NameGlob)
-		}
+		return refused(program.RefusedProtocolNotAllowed,
+			"protocol %q: root %q is outside the join key's names %q",
+			protocol, protocolRoot, key.NameGlob)
 	}
 	return nil
 }
