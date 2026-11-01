@@ -25,8 +25,10 @@ type Manifest struct {
 	// TaskTypes are the task types the program's worker handles, each
 	// "name.<rest>". Host.Handle refuses any other.
 	TaskTypes []string
-	// Workflows are the workflow names the program registers, each
-	// "name.<rest>".
+	// Workflows optionally lists fixed workflow names the program
+	// registers, each "name.<rest>". It is documentation, not a limit:
+	// api.p.<name>.workflows.register accepts any name under "name.",
+	// including ones made up at runtime.
 	Workflows []string
 	Streams   []StreamSpec
 	Buckets   []BucketSpec

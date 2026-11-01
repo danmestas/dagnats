@@ -882,6 +882,19 @@ The `dagnats-api` micro service answers these subjects for clients that talk to 
 
 The lease endpoints share the queue group `dagnats-leases`, so one instance serves each request. The others have no queue group, so every running instance receives the request.
 
+### Program-scoped control plane (`api.p.<name>.*`)
+
+A program (#885) manages its own workflows on these subjects. Its NATS permissions let it publish only under `api.p.<its name>.>`, so the name in the subject is the caller, and every request is confined to workflows named `<name>.*`. Bodies and replies match the global subjects above.
+
+| Subject | Request | Reply |
+|---------|---------|-------|
+| `api.p.<name>.workflows.register` | A `WorkflowDef` named `<name>.*` | `{"status":"registered","name"}` |
+| `api.p.<name>.runs.start` | `{"workflow","input"}`, workflow `<name>.*` | `{"run_id"}` |
+| `api.p.<name>.runs.get` | The run ID as plain text | The run snapshot |
+| `api.p.<name>.runs.cancel` | The run ID as plain text | `{"status":"cancelled","run_id"}` |
+
+Register refuses a def that reaches outside the prefix anywhere: its name, any step's `task` (normal, agent, agent loop, map), a sub-workflow target, a `wait_for_event` event type, or a `cancel_on` event type. It refuses planner steps outright for now: the engine checks a planner's run-time fragment only against `allowed_tasks`, not the fragment steps' types or configs, so a fragment could still reach outside the prefix. It also refuses a workflow the operator's control-plane policy grants or lets promote: grants name a workflow, not a definition, so the operator registers those. The check runs at registration only: a grant added later by hot reload does not evict a definition the program already registered under that name, so review a program's registered definition before granting it. `runs.get` and `runs.cancel` answer a run of another program's workflow with the same `{"error":"workflow run not found"}` as a run that does not exist. These endpoints share the queue group `dagnats-program-api`, so one instance serves each request. Workflow names under the prefix need not be declared in `Manifest.Workflows`.
+
 ## Idempotent child-run spawn (`api.runs.spawn`)
 
 A gated handler spawns a child run with `api.runs.spawn`. The request is
