@@ -255,7 +255,10 @@ const expiredRegistrationsMax = 1024
 // expiredRegistrations rate-limits re-registration after an expiry, per
 // join key and name, on this node: without it a single-use key could
 // register, let it expire (refunding the use) and register again
-// forever, re-squatting the name. Per node, like the budget lock.
+// forever, re-squatting the name. Per node, like the budget lock: in a
+// cluster a retry reaching another node is not held back. That is low
+// impact, since a pending registration provisions nothing and holds the
+// name only until it expires again.
 type expiredRegistrations struct {
 	mu   sync.Mutex
 	when map[string]time.Time

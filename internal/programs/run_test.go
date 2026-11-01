@@ -364,3 +364,45 @@ func TestRegistrationDoesNotReflectReplies(t *testing.T) {
 		t.Fatal("a dropped registration was still admitted")
 	}
 }
+
+// TestConfirmAnswersOnlyItsKeysProgram: a confirmation's reply goes to
+// the inbox of the program whose record holds the subject's key. A key
+// confirming with a body that names another program, reply-to that
+// program's inbox, is dropped, so it cannot forge replies there.
+func TestConfirmAnswersOnlyItsKeysProgram(t *testing.T) {
+	f := serveFixture(t, Config{Open: true})
+	victim := request(t, "notify", "")
+	if _, err := registerAndConfirm(f.registrar, victim); err != nil {
+		t.Fatalf("register notify: %v", err)
+	}
+	inbox, err := f.nc.SubscribeSync("_INBOX.notify.>")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	forged := victim
+	forged.PublicKey = publicKey(t)
+	body, err := json.Marshal(forged)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	msg := &nats.Msg{Subject: program.ConfirmSubject(forged.PublicKey),
+		Reply: "_INBOX.notify.forged", Data: body}
+	if err := f.nc.PublishMsg(msg); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if got, err := inbox.NextMsg(500 * time.Millisecond); err == nil {
+		t.Fatalf("another key's confirmation was answered in notify's inbox: %s", got.Data)
+	}
+	own, err := json.Marshal(victim)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	msg = &nats.Msg{Subject: program.ConfirmSubject(victim.PublicKey),
+		Reply: "_INBOX.notify.own", Data: own}
+	if err := f.nc.PublishMsg(msg); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if _, err := inbox.NextMsg(5 * time.Second); err != nil {
+		t.Fatalf("the key's own confirmation was not answered: %v", err)
+	}
+}

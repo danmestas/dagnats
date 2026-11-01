@@ -250,21 +250,46 @@ func waitPromoted(ctx context.Context, nc *nats.Conn, name string) error {
 	if nc == nil || name == "" {
 		panic("program.waitPromoted: nc and name must be set")
 	}
+	subject := "api.p." + name + ".runs.get"
 	deadline := time.Now().Add(firstDialRetryWindow)
 	for {
+		before := nc.LastError()
 		probeCtx, cancel := context.WithTimeout(ctx, promotionProbeWait)
-		_, err := nc.RequestWithContext(probeCtx, "api.p."+name+".runs.get", []byte("x"))
+		_, err := nc.RequestWithContext(probeCtx, subject, []byte("x"))
 		cancel()
 		if err == nil || errors.Is(err, nats.ErrNoResponders) {
 			return nil
 		}
 		if time.Now().After(deadline) || ctx.Err() != nil {
-			return fmt.Errorf("program %s: its confirmed permissions did not reach "+
-				"the server it is connected to within %s: %w",
-				name, firstDialRetryWindow, err)
+			return promotionTimeout(name, subject, deniedSince(nc, before, subject), err)
 		}
 		time.Sleep(firstDialRetryWait)
 	}
+}
+
+// deniedSince reports whether the server refused a publish on subject
+// since before was nc's last error: nats.go records each permissions
+// violation the server sends as a new last error.
+func deniedSince(nc *nats.Conn, before error, subject string) bool {
+	last := nc.LastError()
+	return last != nil && (before == nil || !errors.Is(last, before)) &&
+		errors.Is(last, nats.ErrPermissionViolation) &&
+		strings.Contains(last.Error(), subject)
+}
+
+// promotionTimeout says which of the two causes stopped waitPromoted: the
+// program's confirmed permissions never reached its server, or they did
+// and the engine API was not answering.
+func promotionTimeout(name, subject string, denied bool, err error) error {
+	if name == "" || subject == "" {
+		panic("program.promotionTimeout: name and subject must be set")
+	}
+	if denied {
+		return fmt.Errorf("program %s: its confirmed permissions did not reach "+
+			"the server it is connected to within %s: %w", name, firstDialRetryWindow, err)
+	}
+	return fmt.Errorf("program %s: confirmed, but the engine API is not answering %s "+
+		"within %s: %w", name, subject, firstDialRetryWindow, err)
 }
 
 // promotionProbeWait bounds one waitPromoted probe: a denied publish is

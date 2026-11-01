@@ -115,32 +115,57 @@ func (r *Registrar) handleRegister(req micro.Request) {
 }
 
 // handleConfirm answers a confirmation, which arrives from the program's
-// own connection: its reply must be under that program's inbox.
+// own connection: its reply must be under that program's inbox. The
+// program is the one whose record holds the subject's key, never a name
+// the body claims, so a key cannot have its answer sent to another
+// program's inbox.
 func (r *Registrar) handleConfirm(req micro.Request) {
 	if req == nil {
 		panic("programs.handleConfirm: req must not be nil")
+	}
+	publicKey := strings.TrimPrefix(req.Subject(), strings.TrimSuffix(
+		program.ConfirmSubjectWildcard, "*"))
+	name, ok := r.confirmingProgram(req.Data(), publicKey)
+	if !ok {
+		slog.Warn("programs: dropped a confirmation for no program of its key",
+			"subject", req.Subject())
+		return
+	}
+	if !replyUnder(req, program.InboxPrefix(name)+".") {
+		return
+	}
+	respond(req, r.answerWith(req.Data(), func(
+		ctx context.Context, request program.RegisterRequest,
+	) (program.Grant, error) {
+		return r.Confirm(ctx, publicKey, request)
+	}))
+}
+
+// confirmingProgram names the program a confirmation is for: the one the
+// body names, provided its record holds publicKey.
+func (r *Registrar) confirmingProgram(body []byte, publicKey string) (string, bool) {
+	if r.kv == nil {
+		panic("programs.confirmingProgram: registrar not constructed")
 	}
 	var named struct {
 		Manifest struct {
 			Name string `json:"Name"`
 		} `json:"manifest"`
 	}
-	if err := json.Unmarshal(req.Data(), &named); err != nil ||
-		program.ValidateName(named.Manifest.Name) != nil {
-		slog.Warn("programs: dropped a confirmation with no valid program name",
-			"subject", req.Subject())
-		return
+	if len(body) > registerBodyBytesMax || json.Unmarshal(body, &named) != nil ||
+		program.ValidateName(named.Manifest.Name) != nil || publicKey == "" {
+		return "", false
 	}
-	if !replyUnder(req, program.InboxPrefix(named.Manifest.Name)+".") {
-		return
+	ctx, cancel := context.WithTimeout(context.Background(), registerTimeout)
+	defer cancel()
+	record, found, err := r.lookup(ctx, named.Manifest.Name)
+	if err != nil || !found || record.PublicKey != publicKey {
+		return "", false
 	}
-	publicKey := strings.TrimPrefix(req.Subject(), strings.TrimSuffix(
-		program.ConfirmSubjectWildcard, "*"))
-	respond(req, r.answerWith(req.Data(), func(
-		ctx context.Context, request program.RegisterRequest,
-	) (program.Grant, error) {
-		return r.Confirm(ctx, publicKey, request)
-	}))
+	if record.Manifest.Name != named.Manifest.Name {
+		panic("programs.confirmingProgram: lookup returned another program's record")
+	}
+	return record.Manifest.Name, true
 }
 
 func respond(req micro.Request, reply program.RegisterReply) {
