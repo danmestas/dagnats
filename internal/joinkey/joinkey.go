@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"strings"
 	"time"
 )
 
@@ -79,6 +80,9 @@ var (
 	ErrExhausted      = errors.New("join key exhausted")
 	ErrNameNotAllowed = errors.New("join key does not cover program name")
 	ErrNotFound       = errors.New("join key not found")
+	// ErrProtocolNotAllowed is a declared protocol whose root the key's
+	// names do not cover.
+	ErrProtocolNotAllowed = errors.New("join key does not cover protocol root")
 	// ErrContention: a write lost the revision race casAttemptsMax
 	// times in a row. Nothing was written; the caller may retry.
 	ErrContention = errors.New("join key contended")
@@ -145,6 +149,24 @@ func (key JoinKey) AllowsName(name string) bool {
 	// ErrBadPattern; a stored record that somehow does fails closed.
 	match, err := path.Match(key.NameGlob, name)
 	return err == nil && match
+}
+
+// ProtocolOutside returns the first protocol whose root (its first
+// token) key's NameGlob does not cover, and whether there is one. A
+// protocol claims its root for protocol_clash, so a key limited to
+// artifact* that could declare "notify.rpc" would lock the name notify
+// out.
+func (key JoinKey) ProtocolOutside(protocols []string) (string, bool) {
+	for _, protocol := range protocols {
+		root, _, _ := strings.Cut(protocol, ".")
+		if root == "" {
+			panic("joinkey.ProtocolOutside: protocols were validated")
+		}
+		if !key.AllowsName(root) {
+			return protocol, true
+		}
+	}
+	return "", false
 }
 
 // redacted returns key without its secret hash.

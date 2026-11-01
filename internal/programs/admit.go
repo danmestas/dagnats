@@ -22,22 +22,31 @@ func (r *Registrar) admit(
 	if err := checkVersion(m.Dagnats, r.cfg.ServerVersion); err != nil {
 		return program.Grant{}, false, err
 	}
+	// Held through provisioning, so an update that commits right after
+	// this Create provisions after it, not before.
+	lock := r.programLock(m.Name)
+	lock.Lock()
+	defer lock.Unlock()
 	grant, revision, err := r.reserveName(ctx, req, keyID)
 	if err != nil || revision == 0 {
 		// revision 0: a concurrent registration of the same program won
 		// the Create; err is its stored Grant's outcome.
 		return grant, false, err
 	}
-	if err := program.Provision(ctx, r.js, m, grant); err != nil {
-		return program.Grant{}, false, r.rollBack(m.Name, revision, err)
+	if before, err := r.provision(ctx, m, grant); err != nil {
+		return program.Grant{}, false, r.rollBack(m.Name, revision, before, err)
 	}
 	return grant, true, nil
 }
 
 // rollBack removes the record a failed provisioning left, but only at
 // the revision this call created: a record rewritten since then belongs
-// to a later registration and must survive.
-func (r *Registrar) rollBack(name string, revision uint64, cause error) error {
+// to a later registration and must survive, and so do the streams it
+// provisioned. Only a removal that wins puts back the configs the
+// adopted streams had before.
+func (r *Registrar) rollBack(
+	name string, revision uint64, before []jetstream.StreamConfig, cause error,
+) error {
 	if name == "" || revision == 0 {
 		panic("programs.rollBack: name and revision must be set")
 	}
@@ -45,10 +54,13 @@ func (r *Registrar) rollBack(name string, revision uint64, cause error) error {
 	defer cancel()
 	err := fmt.Errorf("provision program %q: %w", name, cause)
 	deleteErr := r.kv.Delete(ctx, name, jetstream.LastRevision(revision))
-	if deleteErr != nil && !errors.Is(deleteErr, jetstream.ErrKeyRevisionMismatch) {
-		err = errors.Join(err, fmt.Errorf("roll back program %q: %w", name, deleteErr))
+	switch {
+	case deleteErr == nil:
+		return errors.Join(err, r.restoreConfigs(before))
+	case errors.Is(deleteErr, jetstream.ErrKeyRevisionMismatch):
+		return err
 	}
-	return err
+	return errors.Join(err, fmt.Errorf("roll back program %q: %w", name, deleteErr))
 }
 
 // reserveName checks the manifest against every registered program
@@ -75,6 +87,9 @@ func (r *Registrar) reserveName(
 	if err != nil {
 		return program.Grant{}, 0, err
 	}
+	if err := r.checkLive(ctx, req.Manifest, grant); err != nil {
+		return program.Grant{}, 0, err
+	}
 	data, err := json.Marshal(Record{
 		Manifest: req.Manifest, PublicKey: req.PublicKey,
 		Permissions: program.PermissionsFor(req.Manifest), Grant: grant,
@@ -85,11 +100,30 @@ func (r *Registrar) reserveName(
 	}
 	revision, err = r.kv.Create(ctx, req.Manifest.Name, data)
 	if errors.Is(err, jetstream.ErrKeyExists) {
-		grant, _, err = r.existing(ctx, req)
-		return grant, 0, err
+		return r.lostCreate(ctx, req)
 	}
 	if err != nil {
 		return program.Grant{}, 0, fmt.Errorf("store program %q: %w", req.Manifest.Name, err)
 	}
 	return grant, revision, nil
+}
+
+// lostCreate settles a registration whose Create lost to a concurrent
+// one, still under admitMu, so it cannot re-admit here: a changed
+// manifest is refused and its next registration is an update.
+func (r *Registrar) lostCreate(
+	ctx context.Context, req program.RegisterRequest,
+) (program.Grant, uint64, error) {
+	record, found, err := r.lookup(ctx, req.Manifest.Name)
+	if err != nil || !found {
+		return program.Grant{}, 0, errors.Join(err,
+			fmt.Errorf("program %q: Create lost but no record found", req.Manifest.Name))
+	}
+	grant, changed, err := settle(record, req)
+	if changed {
+		return program.Grant{}, 0, refused(program.RefusedManifestChanged,
+			"program %q was registered at the same moment with a different "+
+				"manifest; register again to update it", req.Manifest.Name)
+	}
+	return grant, 0, err
 }
