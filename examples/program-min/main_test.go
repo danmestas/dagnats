@@ -101,11 +101,16 @@ func TestProgramMinServesTaskAsRestrictedUser(t *testing.T) {
 	}
 	t.Cleanup(orch.Stop)
 
+	svc := api.NewService(engineConn)
+	// A program's step events and journal records go through the engine
+	// relay that NATSAPI serves (#885).
+	natsAPI := api.NewNATSAPI(svc, engineConn, "1.0.0")
+	natsAPI.Start()
+	t.Cleanup(natsAPI.Stop)
 	stop, err := serve(context.Background(), ns.ClientURL(), key)
 	if err != nil {
 		t.Fatalf("serve: %v", err)
 	}
-	svc := api.NewService(engineConn)
 	wb := dag.NewWorkflow("min.upper")
 	wb.Task("upper", "min.upper")
 	dagnatstest.Workflow(t, svc, wb)
