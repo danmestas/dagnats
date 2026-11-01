@@ -59,11 +59,13 @@ in the KV bucket.
 
 ## Notes
 
-- **Fan-out preserved.** The original endpoints run **without** a micro queue group, matching
-  the pre-micro plain-subscribe behavior — every instance receives each message
-  (no load-balancing was silently introduced). The `api.leases.*` endpoints are the
-  exception: they use the queue group `dagnats-leases` so that exactly one instance
-  serves each request. See [Leases]({{< ref "/docs/coordination/leases" >}}).
+- **One instance answers each request.** Every control-plane endpoint is in a micro queue
+  group, so on a cluster each request is handled by exactly one node: `dagnats-api` for the
+  `api.*` endpoints, `dagnats-program-api` for `api.p.*`, and `dagnats-leases` for
+  `api.leases.*` (see [Leases]({{< ref "/docs/coordination/leases" >}})). Before, the unscoped
+  endpoints had no queue group and every node handled each request, so one `api.runs.start`
+  started a run per node. `api.cluster.health` is the exception: every node answers it,
+  each with its own view.
 - **Error envelope unchanged.** Handlers reply with the same JSON error shape as
   before (they do not use `micro`'s `Nats-Service-Error` headers), so existing
   request/reply clients parse responses identically.
