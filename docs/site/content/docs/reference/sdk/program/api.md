@@ -35,6 +35,7 @@ Programs on a dagnats are trusted: today they are all the operator's own, the sa
 - [Constants](<#constants>)
 - [Variables](<#variables>)
 - [func Attach\(ctx context.Context, nc \*nats.Conn, prog Program, g Grant\) \(stop func\(context.Context\) error, err error\)](<#Attach>)
+- [func ConfirmSubject\(publicKey string\) string](<#ConfirmSubject>)
 - [func InboxPrefix\(name string\) string](<#InboxPrefix>)
 - [func Provision\(ctx context.Context, js jetstream.JetStream, m Manifest, g Grant\) error](<#Provision>)
 - [func Validate\(m Manifest\) error](<#Validate>)
@@ -94,7 +95,14 @@ const (
     RefusedVersionIncompatible = "version_incompatible"
     RefusedProtocolClash       = "protocol_clash"
     RefusedProtocolNotAllowed  = "protocol_not_allowed"
+    RefusedConfirmExpired      = "confirm_expired"
 )
+```
+
+<a name="ConfirmSubjectWildcard"></a>ConfirmSubjectWildcard is what the registration service answers.
+
+```go
+const ConfirmSubjectWildcard = confirmSubjectPrefix + "*"
 ```
 
 ## Variables
@@ -117,6 +125,15 @@ Attach is the one path that calls prog.Start. It takes the Grant the caller alre
 nc must have been dialed with nats.CustomInboxPrefix\(InboxPrefix\(name\)\); Attach panics otherwise, because the program's permissions grant no other inbox and every reply would time out.
 
 The returned stop func stops the worker \(draining in\-flight tasks\), then calls prog.Stop once; later calls return the first result. When Start fails, Attach returns its error without calling Stop. When the worker fails to start, Attach calls Stop and returns both errors.
+
+<a name="ConfirmSubject"></a>
+## func [ConfirmSubject](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L20>)
+
+```go
+func ConfirmSubject(publicKey string) string
+```
+
+ConfirmSubject is the subject the program with publicKey confirms on.
 
 <a name="InboxPrefix"></a>
 ## func [InboxPrefix](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L123>)
@@ -173,7 +190,7 @@ type BucketSpec struct {
 ```
 
 <a name="ErrRefused"></a>
-## type [ErrRefused](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L55-L58>)
+## type [ErrRefused](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L75-L78>)
 
 ErrRefused is dagnats declining to admit the program, with one of the Refused\* codes and a human\-readable detail.
 
@@ -185,7 +202,7 @@ type ErrRefused struct {
 ```
 
 <a name="ErrRefused.Error"></a>
-### func \(\*ErrRefused\) [Error](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L60>)
+### func \(\*ErrRefused\) [Error](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L80>)
 
 ```go
 func (e *ErrRefused) Error() string
@@ -237,7 +254,7 @@ type Host struct {
 ```
 
 <a name="Instance"></a>
-## type [Instance](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L29-L32>)
+## type [Instance](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L46-L49>)
 
 Instance identifies the process registering, for the operator.
 
@@ -432,12 +449,13 @@ type Program interface {
 ```
 
 <a name="RegisterReply"></a>
-## type [RegisterReply](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L47-L51>)
+## type [RegisterReply](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L66-L71>)
 
-RegisterReply is the reply: exactly one of Grant, Refused or Error. Error is a server fault \(a KV write failed\), not a refusal, and may succeed on retry.
+RegisterReply is the reply: a Grant, Refused or Error. Error is a server fault \(a KV write failed\), not a refusal, and may succeed on retry. Confirm, when set, is the subject the program must confirm on after logging in with its key: a new registration is pending until then, and a manifest change is applied only then \(Grant may be nil\).
 
 ```go
 type RegisterReply struct {
+    Confirm string      `json:"confirm,omitempty"`
     Grant   *Grant      `json:"grant,omitempty"`
     Refused *ErrRefused `json:"refused,omitempty"`
     Error   string      `json:"error,omitempty"`
@@ -445,7 +463,7 @@ type RegisterReply struct {
 ```
 
 <a name="RegisterRequest"></a>
-## type [RegisterRequest](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L37-L42>)
+## type [RegisterRequest](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L54-L59>)
 
 RegisterRequest is the body of a RegisterSubject request. JoinKey may be empty on an open\-mode server. Only the public key is sent; the seed never leaves the program.
 

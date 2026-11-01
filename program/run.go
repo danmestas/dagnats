@@ -84,9 +84,10 @@ func Run(ctx context.Context, prog Program, opts Options) (*Running, error) {
 	if err != nil {
 		return nil, fmt.Errorf("program %s: key: %w", m.Name, err)
 	}
-	grant, err := register(ctx, opts, RegisterRequest{
+	req := RegisterRequest{
 		JoinKey: opts.JoinKey, Manifest: m, PublicKey: key.PublicKey(), Instance: thisInstance(),
-	})
+	}
+	grant, confirm, err := register(ctx, opts, req)
 	if err != nil {
 		return nil, err
 	}
@@ -94,6 +95,15 @@ func Run(ctx context.Context, prog Program, opts Options) (*Running, error) {
 	nc, err := dialAsProgram(opts, m.Name, key, running)
 	if err != nil {
 		return nil, err
+	}
+	if confirm != "" {
+		// The registration (or a manifest change) is pending until this
+		// connection, logged in with the key, confirms it.
+		if grant, err = confirmRegistration(ctx, nc, confirm, req); err != nil {
+			running.stopping.Store(true)
+			nc.Close()
+			return nil, err
+		}
 	}
 	stopAttach, err := Attach(ctx, nc, prog, grant)
 	if err != nil {
@@ -188,7 +198,7 @@ func closedHandlerOf(options []nats.Option) (nats.ConnHandler, error) {
 
 // register sends req over a short-lived anonymous connection dialed
 // with the join inbox prefix, and returns the Grant or the refusal.
-func register(ctx context.Context, opts Options, req RegisterRequest) (Grant, error) {
+func register(ctx context.Context, opts Options, req RegisterRequest) (Grant, string, error) {
 	if req.Manifest.Name == "" || req.PublicKey == "" {
 		panic("program.register: manifest name and public key must be set")
 	}
@@ -199,7 +209,8 @@ func register(ctx context.Context, opts Options, req RegisterRequest) (Grant, er
 	}
 	body, err := json.Marshal(req)
 	if err != nil {
-		return Grant{}, fmt.Errorf("program %s: encode registration: %w", req.Manifest.Name, err)
+		return Grant{}, "", fmt.Errorf("program %s: encode registration: %w",
+			req.Manifest.Name, err)
 	}
 	// The caller's options reach the server (TLS, a dialer), but this
 	// short-lived connection must not fire the caller's close handler.
@@ -208,35 +219,68 @@ func register(ctx context.Context, opts Options, req RegisterRequest) (Grant, er
 		nats.Name("program "+req.Manifest.Name+" registration"))
 	nc, err := nats.Connect(opts.URL, options...)
 	if err != nil {
-		return Grant{}, fmt.Errorf("program %s: dial %s to register: %w",
+		return Grant{}, "", fmt.Errorf("program %s: dial %s to register: %w",
 			req.Manifest.Name, opts.URL, err)
 	}
 	defer nc.Close()
 	msg, err := nc.RequestWithContext(ctx, RegisterSubject, body)
 	if errors.Is(err, nats.ErrNoResponders) {
-		return Grant{}, fmt.Errorf("program %s: no dagnats answers %s at %s",
+		return Grant{}, "", fmt.Errorf("program %s: no dagnats answers %s at %s",
 			req.Manifest.Name, RegisterSubject, opts.URL)
 	}
 	if err != nil {
-		return Grant{}, fmt.Errorf("program %s: register: %w", req.Manifest.Name, err)
+		return Grant{}, "", fmt.Errorf("program %s: register: %w", req.Manifest.Name, err)
 	}
 	return decodeReply(req.Manifest.Name, msg.Data)
 }
 
-func decodeReply(name string, data []byte) (Grant, error) {
+// confirmRegistration confirms on subject over nc, which is logged in
+// with the program's key: that login is what proves the program holds
+// the seed (internal/programs/possession.go).
+func confirmRegistration(
+	ctx context.Context, nc *nats.Conn, subject string, req RegisterRequest,
+) (Grant, error) {
+	if nc == nil || subject == "" {
+		panic("program.confirmRegistration: nc and subject must be set")
+	}
+	if _, has := ctx.Deadline(); !has {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, registerTimeoutDefault)
+		defer cancel()
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return Grant{}, fmt.Errorf("program %s: encode confirmation: %w", req.Manifest.Name, err)
+	}
+	msg, err := nc.RequestWithContext(ctx, subject, body)
+	if err != nil {
+		return Grant{}, fmt.Errorf("program %s: confirm: %w", req.Manifest.Name, err)
+	}
+	grant, again, err := decodeReply(req.Manifest.Name, msg.Data)
+	if err == nil && again != "" {
+		return Grant{}, fmt.Errorf("program %s: confirmation still pending", req.Manifest.Name)
+	}
+	return grant, err
+}
+
+// decodeReply returns the Grant, the subject to confirm on when the
+// registration needs it (the Grant may then be empty), or the refusal.
+func decodeReply(name string, data []byte) (Grant, string, error) {
 	var reply RegisterReply
 	if err := json.Unmarshal(data, &reply); err != nil {
-		return Grant{}, fmt.Errorf("program %s: registration reply: %w", name, err)
+		return Grant{}, "", fmt.Errorf("program %s: registration reply: %w", name, err)
 	}
 	switch {
 	case reply.Refused != nil:
-		return Grant{}, reply.Refused
+		return Grant{}, "", reply.Refused
 	case reply.Error != "":
-		return Grant{}, fmt.Errorf("program %s: registration failed: %s", name, reply.Error)
+		return Grant{}, "", fmt.Errorf("program %s: registration failed: %s", name, reply.Error)
+	case reply.Grant == nil && reply.Confirm == "":
+		return Grant{}, "", fmt.Errorf("program %s: registration reply has no grant", name)
 	case reply.Grant == nil:
-		return Grant{}, fmt.Errorf("program %s: registration reply has no grant", name)
+		return Grant{}, reply.Confirm, nil
 	}
-	return *reply.Grant, nil
+	return *reply.Grant, reply.Confirm, nil
 }
 
 func thisInstance() Instance {

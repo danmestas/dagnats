@@ -123,11 +123,30 @@ func request(t *testing.T, name, joinKey string) program.RegisterRequest {
 	}
 }
 
+// register is what program.Run does with a key it holds: register, then
+// confirm when the reply asks for it (a new registration is pending, a
+// manifest change needs confirming). Tests of the confirmation itself
+// call Register and Confirm directly.
 func (f *fixture) register(t *testing.T, req program.RegisterRequest) (program.Grant, error) {
 	t.Helper()
+	return registerAndConfirm(f.registrar, req)
+}
+
+func registerAndConfirm(r *Registrar, req program.RegisterRequest) (program.Grant, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return f.registrar.Register(ctx, req)
+	grant, err := r.Register(ctx, req)
+	if errors.Is(err, errConfirmRequired) {
+		return r.Confirm(ctx, req.PublicKey, req)
+	}
+	if err != nil {
+		return grant, err
+	}
+	record, found, lookupErr := r.lookup(ctx, req.Manifest.Name)
+	if lookupErr != nil || !found || !record.Pending {
+		return grant, lookupErr
+	}
+	return r.Confirm(ctx, req.PublicKey, req)
 }
 
 func (f *fixture) createKey(t *testing.T, spec joinkey.Spec) (joinkey.JoinKey, string) {
@@ -566,9 +585,10 @@ func TestRegister_BindRunsBeforeReplyAndRollsBack(t *testing.T) {
 	if _, err := f.register(t, req); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if len(bound) != 1 || bound[0].PublicKey != req.PublicKey ||
-		len(bound[0].Permissions.Publish.Allow) == 0 {
-		t.Fatalf("Bind saw %+v", bound)
+	// Bound twice: the pending user at register, the full one on confirm.
+	if len(bound) != 2 || !bound[0].Pending || bound[1].Pending ||
+		bound[1].PublicKey != req.PublicKey || len(bound[1].Permissions.Publish.Allow) == 0 {
+		t.Fatalf("Bind saw %d records, want pending then confirmed", len(bound))
 	}
 	bindErr = errors.New("reload failed")
 	key, plaintext := f.createKey(t, joinkey.Spec{Label: "once", UsesMax: 1})

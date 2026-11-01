@@ -9,7 +9,23 @@ import "fmt"
 const (
 	RegisterSubject = "api.programs.register"
 	JoinInboxPrefix = "_JOIN"
+	// confirmSubjectPrefix + "<public key>" is where a program, logged
+	// in with that key, confirms its registration or a manifest change:
+	// only that key's NATS user may publish it, so a confirmation proves
+	// the program holds the seed (ConfirmSubject).
+	confirmSubjectPrefix = "api.programs.confirm."
 )
+
+// ConfirmSubject is the subject the program with publicKey confirms on.
+func ConfirmSubject(publicKey string) string {
+	if publicKey == "" {
+		panic("program.ConfirmSubject: publicKey must not be empty")
+	}
+	return confirmSubjectPrefix + publicKey
+}
+
+// ConfirmSubjectWildcard is what the registration service answers.
+const ConfirmSubjectWildcard = confirmSubjectPrefix + "*"
 
 // Refusal codes. Each reaches the program as an *ErrRefused from Run.
 const (
@@ -23,6 +39,7 @@ const (
 	RefusedVersionIncompatible = "version_incompatible"
 	RefusedProtocolClash       = "protocol_clash"
 	RefusedProtocolNotAllowed  = "protocol_not_allowed"
+	RefusedConfirmExpired      = "confirm_expired"
 )
 
 // Instance identifies the process registering, for the operator.
@@ -41,10 +58,13 @@ type RegisterRequest struct {
 	Instance  Instance `json:"instance"`
 }
 
-// RegisterReply is the reply: exactly one of Grant, Refused or Error.
-// Error is a server fault (a KV write failed), not a refusal, and may
-// succeed on retry.
+// RegisterReply is the reply: a Grant, Refused or Error. Error is a
+// server fault (a KV write failed), not a refusal, and may succeed on
+// retry. Confirm, when set, is the subject the program must confirm on
+// after logging in with its key: a new registration is pending until
+// then, and a manifest change is applied only then (Grant may be nil).
 type RegisterReply struct {
+	Confirm string      `json:"confirm,omitempty"`
 	Grant   *Grant      `json:"grant,omitempty"`
 	Refused *ErrRefused `json:"refused,omitempty"`
 	Error   string      `json:"error,omitempty"`

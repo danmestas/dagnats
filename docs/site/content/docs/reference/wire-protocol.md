@@ -882,6 +882,10 @@ The `dagnats-api` micro service answers these subjects for clients that talk to 
 
 The lease endpoints share the queue group `dagnats-leases`, so one instance serves each request. The others have no queue group, so every running instance receives the request.
 
+### Program registration and confirmation
+
+`api.programs.register` takes a `RegisterRequest` from an anonymous connection (the join user in required mode). Its reply carries `confirm` when the program must prove it holds its key: a new registration is pending until then, and a manifest change of a registered program is applied only then (the reply may carry no `grant`). The program logs in with its NKey and sends the same request to `api.programs.confirm.<public key>`, a subject only that key's NATS user may publish; the reply is its Grant. A pending registration that is not confirmed within 60 seconds is removed and its join-key use refunded (`confirm_expired` to a late confirm).
+
 ### Program-scoped control plane (`api.p.<name>.*`)
 
 A program (#885) manages its own workflows on these subjects. Its NATS permissions let it publish only under `api.p.<its name>.>`, so the name in the subject is the caller, and every request is confined to workflows named `<name>.*`. Bodies and replies match the global subjects above.

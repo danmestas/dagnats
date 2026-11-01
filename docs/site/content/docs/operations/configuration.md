@@ -198,6 +198,8 @@ dagnats' embedded NATS server always has these users:
 - **The operator login**, `nats_user`, when set. Unrestricted.
 - **One NKey user per registered program**, with the permissions its manifest derives (`program.PermissionsFor`). Every node builds them from the `programs` KV bucket at start and reloads them whenever the bucket changes. A program whose key is unchanged stays connected across a reload; a removed or replaced key is disconnected.
 
+**Proof of possession.** A registration only claims a public key, so a new program is held **pending** for 60 seconds: its NKey user may publish nothing but `api.programs.confirm.<its public key>`. The program logs in with its key (NATS's NKey challenge proves it holds the seed) and confirms there; only then does it get its full permissions. A manifest change of a registered program is applied only on that confirmation, never on the anonymous registration. An unconfirmed registration expires, its join-key use is refunded and its name is free again. `program.Run` does all of this.
+
 In required mode a program needs a join key to register. In open mode the key is optional, because anonymous is root anyway; that includes reading other clients' registration requests, so join keys protect only a required-mode server.
 
 ## Control plane policy

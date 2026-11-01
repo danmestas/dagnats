@@ -98,10 +98,13 @@ func (r *Registrar) reserveName(
 	if err := r.checkLive(ctx, req.Manifest, grant); err != nil {
 		return Record{}, 0, err
 	}
+	now := time.Now().UTC()
 	record = Record{
 		Manifest: req.Manifest, PublicKey: req.PublicKey,
 		Permissions: program.PermissionsFor(req.Manifest), Grant: grant,
-		JoinKeyID: keyID, RegisteredAt: time.Now().UTC(),
+		JoinKeyID: keyID, RegisteredAt: now,
+		// Pending until the key's holder confirms (possession.go).
+		Pending: true, PendingUntil: now.Add(r.pendingTTL()),
 	}
 	data, err := json.Marshal(record)
 	if err != nil {

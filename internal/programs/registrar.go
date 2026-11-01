@@ -69,6 +69,9 @@ type Config struct {
 	// here can log in. A failure rolls the registration back. Nil in
 	// tests that do not dial as the program.
 	Bind func(Record) error
+	// PendingTTL is how long an unconfirmed registration lives; zero
+	// means the PendingTTL default.
+	PendingTTL time.Duration
 }
 
 // Record is one registered program, as stored.
@@ -79,6 +82,10 @@ type Record struct {
 	Grant        program.Grant       `json:"grant"`
 	JoinKeyID    string              `json:"join_key_id,omitempty"`
 	RegisteredAt time.Time           `json:"registered_at"`
+	// Pending is a registration not yet confirmed by the key's holder;
+	// it is removed at PendingUntil (possession.go).
+	Pending      bool      `json:"pending,omitempty"`
+	PendingUntil time.Time `json:"pending_until,omitempty"`
 }
 
 // Registrar admits programs. Safe for concurrent use.
@@ -169,8 +176,9 @@ func (r *Registrar) checkRequest(req program.RegisterRequest) error {
 
 // existing settles a request for a name already registered: the same
 // key and manifest get the stored Grant, the same key with a changed
-// manifest is re-admitted, and another key is refused. settled is false
-// when the name is free.
+// manifest needs confirming with the key (errConfirmRequired), and
+// another key is refused. An expired pending registration frees the
+// name. settled is false when the name is free.
 func (r *Registrar) existing(
 	ctx context.Context, req program.RegisterRequest,
 ) (grant program.Grant, settled bool, err error) {
@@ -181,12 +189,24 @@ func (r *Registrar) existing(
 	if !found {
 		return program.Grant{}, false, nil
 	}
+	if record.expired(time.Now()) {
+		free, err := r.expireIfStale(ctx, req.Manifest.Name)
+		if err != nil || free {
+			return program.Grant{}, !free, err
+		}
+	}
 	grant, changed, err := settle(record, req)
 	if err != nil || !changed {
 		return grant, true, err
 	}
-	grant, err = r.update(ctx, req)
-	return grant, true, err
+	if record.Pending {
+		return program.Grant{}, true, refused(program.RefusedManifestChanged,
+			"program %q is pending with a different manifest; confirm that one "+
+				"or wait %s for it to expire", req.Manifest.Name, r.pendingTTL())
+	}
+	// A change to a registered program is applied only on confirm, by a
+	// connection logged in with its key (possession.go).
+	return program.Grant{}, true, errConfirmRequired
 }
 
 // settle judges a request against its name's record: another key is

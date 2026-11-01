@@ -62,6 +62,10 @@ func (s *Server) startPrograms(js jetstream.JetStream) error {
 		s.stopProgramUsers()
 		return fmt.Errorf("programs service: %w", err)
 	}
+	// Unconfirmed registrations expire and refund their join-key use.
+	expiryCtx, stopExpiry := context.WithCancel(context.Background())
+	s.programsExpiryStop = stopExpiry
+	go registrar.RunExpiry(expiryCtx)
 	printStep(os.Stderr, "program registration ready")
 	return nil
 }

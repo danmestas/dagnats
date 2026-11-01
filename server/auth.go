@@ -85,7 +85,8 @@ func programUsers(records []programs.Record) []*natsserver.NkeyUser {
 	users = append(users, &natsserver.NkeyUser{Nkey: placeholderNkey, Permissions: denyAll()})
 	for _, record := range sorted {
 		users = append(users, &natsserver.NkeyUser{
-			Nkey: record.PublicKey, Permissions: serverPermissions(record.Permissions),
+			Nkey:        record.PublicKey,
+			Permissions: serverPermissions(programs.UserPermissions(record)),
 		})
 	}
 	return users
@@ -196,11 +197,14 @@ func (u *userSet) put(name string, record programs.Record, deleted bool) error {
 // sameUser reports whether two records give the same NATS user, so a
 // watch replay of a write this node already applied costs no reload.
 func sameUser(a, b programs.Record) bool {
-	return a.PublicKey == b.PublicKey &&
-		slices.Equal(a.Permissions.Publish.Allow, b.Permissions.Publish.Allow) &&
-		slices.Equal(a.Permissions.Publish.Deny, b.Permissions.Publish.Deny) &&
-		slices.Equal(a.Permissions.Subscribe.Allow, b.Permissions.Subscribe.Allow) &&
-		slices.Equal(a.Permissions.Subscribe.Deny, b.Permissions.Subscribe.Deny)
+	if a.PublicKey != b.PublicKey {
+		return false
+	}
+	pa, pb := programs.UserPermissions(a), programs.UserPermissions(b)
+	return slices.Equal(pa.Publish.Allow, pb.Publish.Allow) &&
+		slices.Equal(pa.Publish.Deny, pb.Publish.Deny) &&
+		slices.Equal(pa.Subscribe.Allow, pb.Subscribe.Allow) &&
+		slices.Equal(pa.Subscribe.Deny, pb.Subscribe.Deny)
 }
 
 func (u *userSet) reloadLocked() error {

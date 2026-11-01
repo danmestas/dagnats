@@ -199,7 +199,7 @@ func TestUpdate_ConcurrentUpdatesSettleByCAS(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, errs[i] = registrar.Register(ctx, update)
+			_, errs[i] = registerAndConfirm(registrar, update)
 		}()
 	}
 	wg.Wait()
@@ -516,7 +516,7 @@ func TestUpdate_RollBackLeavesANewerUpdatesStreams(t *testing.T) {
 		if err := f.js.DeleteStream(ctx, "SQUAT"); err != nil {
 			t.Errorf("delete squatting stream: %v", err)
 		}
-		if _, err := peer.Register(ctx, u2); err != nil {
+		if _, err := registerAndConfirm(peer, u2); err != nil {
 			t.Errorf("B's update in A's rollback window: %v", err)
 		}
 	}

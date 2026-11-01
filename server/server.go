@@ -61,8 +61,10 @@ type Server struct {
 	programsService micro.Service
 	// programUsers is this node's program NKey users, kept current by a
 	// watch on the programs bucket (stopped by programUsersStop).
-	programUsers       *userSet
-	programUsersStop   context.CancelFunc
+	programUsers     *userSet
+	programUsersStop context.CancelFunc
+	// programsExpiryStop ends the pending-registration expiry sweep.
+	programsExpiryStop context.CancelFunc
 	programUsersDone   chan struct{}
 	httpSrv            *http.Server
 	telShutdown        func(context.Context)
@@ -815,6 +817,9 @@ func (s *Server) shutdown() error {
 			if err := s.programsService.Stop(); err != nil {
 				slog.Warn("stop programs service", "error", err)
 			}
+		}
+		if s.programsExpiryStop != nil {
+			s.programsExpiryStop()
 		}
 		s.stopProgramUsers()
 		if s.joinKeyStore != nil {

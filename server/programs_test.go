@@ -319,3 +319,72 @@ func TestServer_RecordFromAnotherNodeReachesThisNode(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// TestServer_PendingUserCanOnlyConfirm: before it confirms, a registered
+// key logs in as a pending NATS user that can publish nothing but its
+// own confirm subject, so knowing a public key reserves nothing usable;
+// after confirming over that connection, it has its full permissions.
+func TestServer_PendingUserCanOnlyConfirm(t *testing.T) {
+	srv, _ := startProgramsServer(t, loginConfig(t))
+	key, err := program.LoadOrCreateKey(filepath.Join(t.TempDir(), "seed"))
+	if err != nil {
+		t.Fatalf("LoadOrCreateKey: %v", err)
+	}
+	manifest := (&tinyProgram{}).Manifest()
+	req := program.RegisterRequest{
+		JoinKey: createJoinKey(t, srv), Manifest: manifest, PublicKey: key.PublicKey(),
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	anonymous, err := nats.Connect(srv.ns.ClientURL(),
+		nats.CustomInboxPrefix(program.JoinInboxPrefix))
+	if err != nil {
+		t.Fatalf("anonymous connect: %v", err)
+	}
+	defer anonymous.Close()
+	msg, err := anonymous.Request(program.RegisterSubject, body, 10*time.Second)
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	var reply program.RegisterReply
+	if err := json.Unmarshal(msg.Data, &reply); err != nil || reply.Confirm == "" {
+		t.Fatalf("register reply = %s, %v; want a confirm subject", msg.Data, err)
+	}
+	if !denied(anonymous, reply.Confirm) {
+		t.Fatal("an anonymous client reached the confirm subject")
+	}
+	conn, err := nats.Connect(srv.ns.ClientURL(), key.ConnectOption(),
+		nats.CustomInboxPrefix(program.InboxPrefix(manifest.Name)))
+	if err != nil {
+		t.Fatalf("pending key login: %v", err)
+	}
+	defer conn.Close()
+	if !denied(conn, "api.p.notify.runs.get") {
+		t.Fatal("a pending program reached its scoped API before confirming")
+	}
+	other, err := program.LoadOrCreateKey(filepath.Join(t.TempDir(), "other"))
+	if err != nil {
+		t.Fatalf("LoadOrCreateKey: %v", err)
+	}
+	if !denied(conn, program.ConfirmSubject(other.PublicKey())) {
+		t.Fatal("a pending program reached another key's confirm subject")
+	}
+	confirmed, err := conn.Request(reply.Confirm, body, 10*time.Second)
+	if err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	var answer program.RegisterReply
+	if err := json.Unmarshal(confirmed.Data, &answer); err != nil || answer.Grant == nil ||
+		answer.Confirm != "" {
+		t.Fatalf("confirm reply = %s, %v; want a grant", confirmed.Data, err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !permitted(conn, "api.p.notify.runs.get") {
+		if time.Now().After(deadline) {
+			t.Fatal("the confirmed program never got its scoped API")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
