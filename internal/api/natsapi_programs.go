@@ -76,6 +76,10 @@ func (n *NATSAPI) handleProgramRegister(req micro.Request) {
 		policy.AllowsPromote(def.Name) {
 		// A grant names a workflow, not a definition: letting the program
 		// re-register it would swap new steps under the operator's grant.
+		// Checked at registration only: a grant the operator adds later
+		// by hot reload does not evict a definition the program already
+		// registered under that name, so grant a program's workflow only
+		// after reviewing the definition it has registered.
 		n.replyErr(req, fmt.Errorf("workflow %q holds an operator grant; "+
 			"the operator registers it, not the program", def.Name))
 		return

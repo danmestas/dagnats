@@ -10,10 +10,12 @@ import (
 // confineDef refuses a definition a program registers through
 // api.p.<name> that reaches outside "<name>.": its name, any step's task
 // type (so a step cannot dispatch to another program's worker and read
-// the output back through runs.get), a sub-workflow target, the tasks a
-// planner may emit, and the event types it waits on or is cancelled by
-// (event subjects are global). Prefix-only for now: declared protocols
-// are not yet a way out.
+// the output back through runs.get), a sub-workflow target, and the
+// event types it waits on or is cancelled by. Event types are confined to
+// the prefix because the event correlator matches a type from any
+// publisher, so a program waiting on another's type would observe that
+// program's events. Planner steps are refused outright (confineStep).
+// Prefix-only for now: declared protocols are not yet a way out.
 func confineDef(def dag.WorkflowDef, prefix string) error {
 	if prefix == "" || !strings.HasSuffix(prefix, ".") {
 		panic("confineDef: prefix must be \"<name>.\"")
