@@ -19,7 +19,7 @@ Ten streams handle all durable messaging. `dagnats serve` creates these on first
 | `SLEEP_TIMERS` | `sleep.>`, `scheduled.>` | Limits | File | No max age | Durable timers (sleep, timeout, rate-retry, scheduled runs) |
 | `STICKY_TASKS` | `sticky.>` | Limits | Memory | 30-minute max age | Worker-affinity task routing |
 | `TRIGGER_HISTORY` | `trigger.fire.>` | Limits | File | 30-day max age | Trigger fire records (`dagnats trigger history`) |
-| `BUILD_LOGS` | `logs.>` | Limits | File | `DAGNATS_BUILD_LOGS_TTL`, default 7 days (1h to 8760h); 2-minute dedup window | Task log lines (`logs.{run}.{step}.{attempt}.{iteration}`) |
+| `BUILD_LOGS` | `logs.>` | Limits | File | `DAGNATS_BUILD_LOGS_TTL`, default 7 days (1h to 8760h); 2-minute dedup window | Task log lines (`logs.{run}.{step}.{attempt}.{iteration}`, or `logs.p.{program}.{run}...` from a program's worker) |
 | `AGENT_JOURNAL` | `journal.>` | Limits | File | 30-day max age, 2-minute dedup window, direct get off | Agent journal records (`journal.{run}.{step}`), one fenced subject per step |
 
 `TASK_QUEUES` and `SLEEP_TIMERS` have no max age because their messages are live work: an age limit would silently delete pending tasks and unfired timers. Every file-backed stream also gets a byte ceiling that is a share of the JetStream store budget (`max_store_bytes`): `WORKFLOW_HISTORY` 25%, `EVENTS` 15%, `TASK_QUEUES` 12%, `TELEMETRY` 10%, `BUILD_LOGS` 5%, `DEAD_LETTERS` 5%, `AGENT_JOURNAL` 4%, `TRIGGER_HISTORY` 4% and `SLEEP_TIMERS` 4%, plus 0.5% for the `submissions` KV bucket, 84.5% in all, with the rest left as headroom for the other KV buckets and JetStream's own index. `AGENT_JOURNAL` is sized small on purpose: one record per claim, pause, entry and commit per step, aged out at 30 days like history. `STICKY_TASKS` is in memory and bounded by its age.
@@ -113,7 +113,9 @@ scheduled.{runID}                       # Scheduled run triggers
 sticky.{taskType}.{workerID}.{runID}    # Worker-affinity tasks
 trigger.fire.{triggerID}                # Trigger fire records
 logs.{runID}.{stepID}.{attempt}.{iter}  # Task log lines
+logs.p.{program}.{runID}.{stepID}...    # Task log lines from a program's worker
 stream.{runID}.{stepID}                 # Real-time step output (core NATS)
+stream.p.{program}.{runID}.{stepID}     # Real-time output from a program's worker
 ```
 
 The subject design ensures that consumers can filter to exactly the messages they need. A worker subscribing to `task.summarize` only receives summarize tasks. The orchestrator subscribing to `history.>` receives all workflow events.

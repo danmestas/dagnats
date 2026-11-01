@@ -621,6 +621,13 @@ func (w *Worker) Start() error {
 // exist. Missing buckets are fine — features degrade gracefully.
 // Logs warnings so operators know which features are unavailable.
 func (w *Worker) bindOptionalKV() {
+	if w.tp.Relayed() {
+		// A relayed worker is a program: its checkpoints, signals and
+		// inputs go through the engine, and its NATS user may not open
+		// those buckets or read run snapshots.
+		w.bindWorkerStatusKV()
+		return
+	}
 	w.checkpointKV, _ = w.js.KeyValue(
 		context.Background(), "checkpoints",
 	)
@@ -641,10 +648,15 @@ func (w *Worker) bindOptionalKV() {
 				" will return errors",
 		)
 	}
-	// A relayed worker is a program: its NATS user may not read run
-	// snapshots, so the cancelled-run fast-skip stays off.
-	if !w.tp.Relayed() {
-		w.bindWorkflowRunsKV()
+	w.bindWorkflowRunsKV()
+	w.bindWorkerStatusKV()
+}
+
+// bindWorkerStatusKV binds the per-worker counter snapshots; a missing
+// bucket disables drain-progress aggregation.
+func (w *Worker) bindWorkerStatusKV() {
+	if w.js == nil {
+		panic("bindWorkerStatusKV: js must not be nil")
 	}
 	w.workerStatusKV, _ = w.js.KeyValue(
 		context.Background(), "worker_status",

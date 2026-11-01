@@ -54,7 +54,13 @@ func offloadRunLogs(
 	}
 	cons, err := stream.CreateOrUpdateConsumer(
 		ctx, jetstream.ConsumerConfig{
-			FilterSubject: buildLogsSubjectPrefix + runID + ".>",
+			// A run's logs are on the native subject (fully credentialed
+			// workers) or in a program's namespace,
+			// logs.p.<program>.<run>... (a program's worker, #885).
+			FilterSubjects: []string{
+				buildLogsSubjectPrefix + runID + ".>",
+				buildLogsSubjectPrefix + "p.*." + runID + ".>",
+			},
 			AckPolicy:     jetstream.AckExplicitPolicy,
 			DeliverPolicy: jetstream.DeliverAllPolicy,
 		},
@@ -230,8 +236,25 @@ func closeLogErr(f *os.File) {
 	}
 }
 
+// stripProgramNamespace turns logs.p.<program>.<rest> into logs.<rest>,
+// so both subject shapes parse alike. This archive keeps every log line
+// of the run; a reader that must attribute lines to the step's own
+// program (the dagnats API does) reads only that program's namespace.
+func stripProgramNamespace(subject string) string {
+	rest, ok := strings.CutPrefix(subject, buildLogsSubjectPrefix+"p.")
+	if !ok {
+		return subject
+	}
+	_, after, found := strings.Cut(rest, ".")
+	if !found {
+		return subject
+	}
+	return buildLogsSubjectPrefix + after
+}
+
 // parseLogSubject extracts stepID, attempt, and iteration from a
-// logs.{runID}.{stepID}.{attempt}.{iteration} subject. runID is
+// logs.{runID}.{stepID}.{attempt}.{iteration} subject, or the same in a
+// program's namespace (logs.p.{program}.{runID}...). runID is
 // passed in (already known from the trigger's input) rather than
 // re-derived from the subject, so a step ID that happens to contain
 // characters resembling the runID token cannot confuse the split.
@@ -242,6 +265,7 @@ func parseLogSubject(subject, runID string) (string, int, int, error) {
 	if runID == "" {
 		panic("parseLogSubject: runID must not be empty")
 	}
+	subject = stripProgramNamespace(subject)
 	prefix := buildLogsSubjectPrefix + runID + "."
 	if !strings.HasPrefix(subject, prefix) {
 		return "", 0, 0, fmt.Errorf("subject %q missing prefix %q", subject, prefix)

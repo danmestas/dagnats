@@ -24,10 +24,7 @@ import (
 )
 
 // sharedBuckets is the engine's coarse-shared bucket list (design §2.1).
-var sharedBuckets = []string{
-	"workers", "services", "triggers", "trigger_types", "checkpoints",
-	"signals", "worker_status", "submissions", "leases",
-}
+var sharedBuckets = []string{"workers", "services", "worker_status"}
 
 type crossing struct {
 	name    string
@@ -44,7 +41,6 @@ func crossingTable() []crossing {
 		{"task consumer list", true, "$JS.API.CONSUMER.LIST.TASK_QUEUES"},
 		{"task consumer create", true,
 			"$JS.API.CONSUMER.CREATE.TASK_QUEUES.workers-toy-echo.task.toy.echo.*"},
-		{"pause marker write", true, "$KV.checkpoints.run1.wait"},
 		{"task consumer create dotted", true,
 			"$JS.API.CONSUMER.CREATE.TASK_QUEUES.workers-toy-send-email.task.toy.send.email.*"},
 		{"task consumer info", true, "$JS.API.CONSUMER.INFO.TASK_QUEUES.workers-toy-echo"},
@@ -56,12 +52,18 @@ func crossingTable() []crossing {
 			"$JS.API.CONSUMER.CREATE.STICKY_TASKS.abc.sticky.toy.echo.wid.>"},
 		{"sticky consumer next", true, "$JS.API.CONSUMER.MSG.NEXT.STICKY_TASKS.abc"},
 		{"sticky ack", true, "$JS.ACK.STICKY_TASKS.abc.1.2.3.4.5.6"},
-		{"stream", true, "stream.run1.step1"},
-		{"logs", true, "logs.run1.step1.stdout"},
+		{"stream", true, "stream.p.toy.run1.step1"},
+		{"logs", true, "logs.p.toy.run1.step1.1.0"},
 		{"control plane", true, "api.p.toy.workflows.register"},
 		{"step event relay", true, "api.p.toy.events"},
 		{"journal relay", true, "api.p.toy.journal.append"},
 		{"journal view", true, "api.p.toy.journal.view"},
+		{"checkpoint relay", true, "api.p.toy.checkpoint"},
+		{"signal relay", true, "api.p.toy.signal"},
+		{"inputs relay", true, "api.p.toy.inputs"},
+		{"trigger types read", true, "$JS.API.DIRECT.GET.KV_trigger_types.$KV.trigger_types.k"},
+		{"own trigger type put", true, "$KV.trigger_types.toy.webhook"},
+		{"triggers read", true, "$JS.API.DIRECT.GET.KV_triggers.$KV.triggers.k"},
 		{"run cancel", false, "dagnats.cancel.run1"},
 		{"account info", true, "$JS.API.INFO"},
 		{"micro ping", false, "$SRV.PING"},
@@ -138,10 +140,11 @@ func TestPermissions_CrossingListComplete(t *testing.T) {
 
 // TestPermissions_EngineRecordsGoThroughTheRelay: a program may not
 // publish step events or journal records itself, read run snapshots
-// (every step's nonce and output), or read the history or journal
-// streams (every run's events, model outputs and tool results). The
-// engine relay is the only way to write the first two and to read its
-// own journal (#885).
+// (every step's nonce and output), read the history or journal streams
+// (every run's events, model outputs and tool results), or write the
+// checkpoints, signals, submissions, leases or triggers buckets, another
+// program's trigger types, or output outside its own namespace. The
+// engine relay is the only way to the stores (#885).
 func TestPermissions_EngineRecordsGoThroughTheRelay(t *testing.T) {
 	perms := program.PermissionsFor(validManifest())
 	denied := []string{
@@ -151,6 +154,14 @@ func TestPermissions_EngineRecordsGoThroughTheRelay(t *testing.T) {
 		"$JS.API.STREAM.MSG.GET.AGENT_JOURNAL",
 		"$JS.API.STREAM.INFO.AGENT_JOURNAL",
 		"$JS.API.CONSUMER.CREATE.AGENT_JOURNAL.c.journal.run1.step1",
+		// Engine inputs another program's worker or the engine acts on.
+		"$KV.checkpoints.run1.step1", "$JS.API.DIRECT.GET.KV_checkpoints.$KV.checkpoints.k",
+		"$KV.signals.run1.go", "$JS.API.DIRECT.GET.KV_signals.$KV.signals.k",
+		"$KV.submissions.run1.step1.r1", "$KV.leases.k", "$KV.triggers.k",
+		"$KV.trigger_types.other.webhook", "$KV.trigger_types.k",
+		// Output only in the program's own namespace.
+		"stream.run1.step1", "logs.run1.step1.1.0",
+		"stream.p.other.run1.step1", "logs.p.other.run1.step1.1.0",
 		"$JS.API.DIRECT.GET.KV_workflow_runs.$KV.workflow_runs.run.run1",
 		"$JS.API.STREAM.MSG.GET.KV_workflow_runs",
 		"$KV.workflow_runs.run.run1",

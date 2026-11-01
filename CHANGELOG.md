@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **A program's worker publishes its live output and logs in its own namespace (#885).** `PutStream` from a worker started by `program.Attach` or `program.Run` now goes to `stream.p.<program>.<run>.<step>`, and its log lines to `logs.p.<program>.<run>.<step>.<attempt>.<iteration>`. A subscriber following a program's step must use the new subject. `<program>` is the first segment of the step's task type. The dagnats API (`GET /runs/{id}/logs`, including `follow=1`) reads both shapes, and the `examples/log-offload` archiver does too. Native workers, the bridge and their subjects are unchanged.
+- **Programs may no longer write `checkpoints`, `signals`, `submissions`, `leases` or `triggers`, or another program's `trigger_types` (#885).** A program's worker reaches its step's checkpoint, signals and agent inputs through the engine (see Security). A program that called `RegisterTriggerType` must name its trigger types `<program>.<rest>`.
+
 ### Security
 
 - **A program can no longer read another program's results or forge its steps (#885).** A program's NATS permissions drop `history.>` and `journal.>` publish, the `workflow_runs` bucket, and reads of the `WORKFLOW_HISTORY` and `AGENT_JOURNAL` streams. Its worker sends step events and journal records to the engine on `api.p.<name>.events` and `api.p.<name>.journal.append`, and reads its journal through `api.p.<name>.journal.view`; the engine serves each only for a step whose task is under `<name>.` and only with that step's current dispatch nonce, and requires a journal record's dedup id to be that step's own. A node relays at most 16 requests in flight per program and refuses past that. Relayed step events must carry dispatch identity; `legacy_step_events` never applies to them. `program.Attach` turns this on (`worker.WithEngineRelay`); native workers with full credentials publish directly as before. A relayed worker no longer reads `workflow_runs`, so its cancelled-run fast-skip is off; cancels still arrive on the cancel subject.
+- **A program can no longer touch another program's checkpoints, signals or agent inputs, or spoof its output (#885).** A program's NATS permissions drop write access to the `checkpoints`, `signals`, `submissions`, `leases` and `triggers` buckets; `trigger_types` is writable only under the program's own `<name>.` keys; and live output and logs are publishable only under `stream.p.<name>.>` and `logs.p.<name>.>`. The worker reaches its step's checkpoint on `api.p.<name>.checkpoint` and its agent inputs on `api.p.<name>.inputs`, both served only for its own step and current dispatch nonce, and sends and reads signals on `api.p.<name>.signal`, served only for runs the program has a step in. A relayed `WaitForSignal` polls every 250ms instead of watching the bucket.
 
 ### Added
 

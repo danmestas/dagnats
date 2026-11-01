@@ -9,7 +9,9 @@
 package worker
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/danmestas/dagnats/inputs"
@@ -94,18 +96,50 @@ func (c *taskContext) continueWait(opts []ContinueOption) (*protocol.ContinueWai
 	if err != nil {
 		return nil, err
 	}
-	if err := store.RefuseIfQueued(c.ctx, c.runID, c.stepID); err != nil {
+	if err := refuseIfQueued(c.ctx, store, c.runID, c.stepID); err != nil {
 		return nil, err
 	}
 	return wait, nil
 }
 
-// inputsStore binds the submissions bucket once per delivery.
-func (c *taskContext) inputsStore() (*inputs.Store, error) {
+// refuseIfQueued is inputs.Store.RefuseIfQueued over either store: an
+// input wait is refused while the step has queued submissions.
+func refuseIfQueued(ctx context.Context, store inputplace.Store, runID, stepID string) error {
+	if store == nil {
+		panic("refuseIfQueued: store must not be nil")
+	}
+	all, err := store.List(ctx, runID, stepID)
+	if err != nil {
+		return err
+	}
+	queued := 0
+	first := ""
+	for _, entry := range all {
+		if entry.Status != inputs.StatusQueued {
+			continue
+		}
+		if queued == 0 {
+			first = entry.RequestID
+		}
+		queued++
+	}
+	if queued > 0 {
+		return fmt.Errorf("%w (%d queued, first %s)", inputs.ErrQueued, queued, first)
+	}
+	return nil
+}
+
+// inputsStore binds the submissions bucket once per delivery, or, for a
+// relayed worker, its step's inputs through the engine.
+func (c *taskContext) inputsStore() (inputplace.Store, error) {
 	if c.runID == "" {
 		panic("inputsStore: runID must not be empty")
 	}
 	if c.inputs != nil {
+		return c.inputs, nil
+	}
+	if c.relayed() {
+		c.inputs = relayInputs{c: c}
 		return c.inputs, nil
 	}
 	if c.js == nil {

@@ -913,6 +913,16 @@ Bodies cross unchanged, so payload limits are a direct publish's. A refusal is `
 - **Ownership failures** are all `not_yours`, so a program cannot probe another's runs.
 - **Bound:** each relay endpoint is its own subscription; a node runs at most 16 relays in flight per program and 256 in all, and refuses `busy` past that rather than queueing, so one program's flood cannot delay another's.
 
+The stores another worker or the engine acts on go the same way, each a request/reply subject with the operation in `Dagnats-Relay-Op`:
+
+| Subject | Operations | Served only for |
+|---------|-----------|-----------------|
+| `api.p.<name>.checkpoint` | `get`, `put`, `delete` | The program's own step (`Dagnats-Relay-Run`, `-Step`) with its current `Dagnats-Dispatch-Nonce` |
+| `api.p.<name>.signal` | `get`, `put` | A run (`Dagnats-Relay-Run`) with a step whose task is under `<name>.`; the signal name is `Dagnats-Relay-Key` |
+| `api.p.<name>.inputs` | `get`, `list`, `transition`, `claim` | The program's own step with its current nonce; an entry passed in must be that step's |
+
+A program may only read `triggers`, may write `trigger_types` only under its own `<name>.` keys, and may publish live output and logs only in its own namespace, `stream.p.<name>.>` and `logs.p.<name>.>`. Readers of a step's output read the native subject and the step owner's namespace only.
+
 Native workers with full credentials publish and read directly as before.
 
 ## Idempotent child-run spawn (`api.runs.spawn`)

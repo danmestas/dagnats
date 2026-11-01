@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	"github.com/danmestas/dagnats/internal/consumername"
-	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 )
 
@@ -33,27 +32,35 @@ type Permissions struct {
 }
 
 // sharedBuckets are the engine buckets every program reads and writes
-// through the worker SDK. Coarse-shared in v1: a program can read a
-// sibling's keys (design §2.3, accepted). workflow_runs is not among
-// them: run snapshots hold every step's dispatch nonce and output, so a
-// program could read another's results and forge its steps. The SDK
-// only read it to skip a cancelled run early; without it that check is
-// off and cancels arrive on the cancel subject (#885).
-var sharedBuckets = []string{
-	"workers", "services", "triggers", "trigger_types", "checkpoints",
-	"signals", "worker_status", natsutil.SubmissionsBucket,
-	natsutil.LeasesBucket,
-}
+// through the worker SDK: the worker and service directories and worker
+// status. Coarse-shared in v1: they are observational, and a program can
+// read a sibling's entries (design §2.3, accepted).
+//
+// Buckets the engine or another worker acts on are not here (#885):
+// workflow_runs (every step's nonce and output), checkpoints, signals
+// and submissions go through the engine relay, checked against the
+// program's own step or run; leases is not used by the SDK.
+var sharedBuckets = []string{"workers", "services", "worker_status"}
 
-// engineEventSubjects are the shared subjects a worker publishes on
-// directly: task output streaming and build logs. Step events
-// (history.>) and journal records (journal.>) go through the engine
-// relay on api.p.<name>.events and api.p.<name>.journal.append, and
-// journal reads through api.p.<name>.journal.view (worker.
-// WithEngineRelay), each checked against the program's own step and
-// current dispatch. No engine stream is readable directly: the journal
+// readOnlyBuckets are shared buckets the SDK only reads: triggers
+// (WatchTriggers' catch-up). Writing one would make the trigger service
+// fire another program's workflow.
+var readOnlyBuckets = []string{"triggers"}
+
+// scopedBuckets are shared buckets a program writes only under its own
+// "<name>." keys: trigger_types (RegisterTriggerType), so one program
+// cannot replace another's trigger type.
+var scopedBuckets = []string{"trigger_types"}
+
+// engineEventSubjects are the shared subject roots a worker publishes on
+// directly, each only under its program's own namespace
+// "<root>.p.<name>.>": task output streaming and build logs. Readers
+// accept the namespace of the program that owns the step, so a program
+// cannot pass its output off as another's. Step events, journal records
+// and the buckets above go through the engine relay (worker.
+// WithEngineRelay). No engine stream is readable directly: the journal
 // and history hold other programs' model outputs and tool results.
-var engineEventSubjects = []string{"stream.>", "logs.>"}
+var engineEventSubjects = []string{"stream", "logs"}
 
 // PermissionsFor derives the NATS permission set for a manifest: every
 // crossing the worker SDK and a micro service make, the program's own
@@ -68,10 +75,19 @@ func PermissionsFor(m Manifest) Permissions {
 	pub = append(pub, "$JS.API.INFO")
 	pub = append(pub, taskQueuePublish(m.TaskTypes)...)
 	pub = append(pub, stickyPublish(m.TaskTypes)...)
-	pub = append(pub, engineEventSubjects...)
+	for _, root := range engineEventSubjects {
+		pub = append(pub, root+".p."+m.Name+".>")
+	}
 	pub = append(pub, "api.p."+m.Name+".>")
 	for _, b := range sharedBuckets {
 		pub = append(pub, sharedBucketPublish(b)...)
+	}
+	for _, b := range readOnlyBuckets {
+		pub = append(pub, readBucketPublish(b)...)
+	}
+	for _, b := range scopedBuckets {
+		pub = append(pub, readBucketPublish(b)...)
+		pub = append(pub, "$KV."+b+"."+m.Name+".>")
 	}
 	for _, s := range m.Streams {
 		pub = append(pub, ownStreamPublish(s.Name)...)

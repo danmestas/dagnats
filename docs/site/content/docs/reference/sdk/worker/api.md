@@ -326,7 +326,7 @@ type CheckpointTask interface {
 ```
 
 <a name="ContinueOption"></a>
-## type [ContinueOption](<https://github.com/danmestas/dagnats/blob/main/worker/inputs.go#L39>)
+## type [ContinueOption](<https://github.com/danmestas/dagnats/blob/main/worker/inputs.go#L41>)
 
 ContinueOption asks the engine to wait before the next iteration \(ADR\-027\). Options combine: a time and UntilInput together wake on whichever comes first; Until wins over Delay.
 
@@ -335,7 +335,7 @@ type ContinueOption func(*protocol.ContinueWait)
 ```
 
 <a name="Delay"></a>
-### func [Delay](<https://github.com/danmestas/dagnats/blob/main/worker/inputs.go#L42>)
+### func [Delay](<https://github.com/danmestas/dagnats/blob/main/worker/inputs.go#L44>)
 
 ```go
 func Delay(d time.Duration) ContinueOption
@@ -344,7 +344,7 @@ func Delay(d time.Duration) ContinueOption
 Delay wakes the step after d.
 
 <a name="Until"></a>
-### func [Until](<https://github.com/danmestas/dagnats/blob/main/worker/inputs.go#L50>)
+### func [Until](<https://github.com/danmestas/dagnats/blob/main/worker/inputs.go#L52>)
 
 ```go
 func Until(t time.Time) ContinueOption
@@ -353,7 +353,7 @@ func Until(t time.Time) ContinueOption
 Until wakes the step at t.
 
 <a name="UntilInput"></a>
-### func [UntilInput](<https://github.com/danmestas/dagnats/blob/main/worker/inputs.go#L60>)
+### func [UntilInput](<https://github.com/danmestas/dagnats/blob/main/worker/inputs.go#L62>)
 
 ```go
 func UntilInput() ContinueOption
@@ -1044,7 +1044,7 @@ Start creates JetStream subscriptions for all registered task types, in task\-ty
 A failure to subscribe \(stream not ready, permission denied\) is returned, after Start stops what it already started: the Worker is then stopped, and retrying takes a new Worker. Programmer errors \(no handlers, colliding task types\) still panic.
 
 <a name="Worker.Stop"></a>
-### func \(\*Worker\) [Stop](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L1210>)
+### func \(\*Worker\) [Stop](<https://github.com/danmestas/dagnats/blob/main/worker/worker.go#L1222>)
 
 ```go
 func (w *Worker) Stop()

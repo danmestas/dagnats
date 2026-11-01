@@ -26,8 +26,19 @@ const (
 	RelayEventsOp  = "events"
 	RelayJournalOp = "journal.append"
 	RelayViewOp    = "journal.view"
+	// The stores a program reaches only through the engine: its step's
+	// checkpoint, signals to runs it takes part in, and its step's agent
+	// inputs. The operation is RelayOpHeader.
+	RelayCheckpointOp = "checkpoint"
+	RelaySignalOp     = "signal"
+	RelayInputsOp     = "inputs"
 
 	RelaySubjectHeader   = "Dagnats-Relay-Subject"
+	RelayOpHeader        = "Dagnats-Relay-Op"
+	RelayRunHeader       = "Dagnats-Relay-Run"
+	RelayStepHeader      = "Dagnats-Relay-Step"
+	RelayKeyHeader       = "Dagnats-Relay-Key"
+	RelayRevisionHeader  = "Dagnats-Relay-Revision"
 	RelayFromSeqHeader   = "Dagnats-Relay-From-Seq"
 	RelayStreamHeader    = "Dagnats-Relay-Stream"
 	RelaySeqHeader       = "Dagnats-Relay-Seq"
@@ -105,6 +116,38 @@ func (tp *TracingPublisher) WithRelay(prefix string) *TracingPublisher {
 	relayed := *tp
 	relayed.relay = prefix
 	return &relayed
+}
+
+// RelayProgram returns the program name tp relays for, or "" when it is
+// not relayed.
+func (tp *TracingPublisher) RelayProgram() string {
+	if tp == nil {
+		panic("TracingPublisher.RelayProgram: tp must not be nil")
+	}
+	name := strings.TrimPrefix(tp.relay, "api.p.")
+	return strings.TrimSuffix(name, ".")
+}
+
+// RelayCall sends one store operation to the relay op and returns the
+// reply, or the refusal or JetStream error it carries. It is the
+// building block for the relayed checkpoint, signal and input stores.
+func (tp *TracingPublisher) RelayCall(
+	ctx context.Context, op string, header nats.Header, data []byte,
+) (*nats.Msg, error) {
+	if tp == nil || tp.relay == "" {
+		panic("TracingPublisher.RelayCall: tp is not relayed")
+	}
+	if op == "" || header == nil {
+		panic("TracingPublisher.RelayCall: op and header must be set")
+	}
+	reply, err := tp.relayRequest(ctx, op, header, data)
+	if err != nil {
+		return nil, fmt.Errorf("relay %s: %w", op, err)
+	}
+	if err := relayError(reply.Header); err != nil {
+		return nil, err
+	}
+	return reply, nil
 }
 
 // Relayed reports whether tp goes through the engine relay.

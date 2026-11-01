@@ -813,6 +813,8 @@ different purposes and neither replaces the other:
 
 ### `logs.{runID}.{stepID}.{attempt}.{iteration}` — captured step stdout/stderr (BUILD_LOGS stream)
 
+A program's worker logs under `logs.p.{program}.{runID}.{stepID}.{attempt}.{iteration}` instead (#885); the API reads the native subject and the step owner's namespace (the first segment of the step's task type), never another program's.
+
 dagnats owns the JetStream **hot lane only** — a bounded, short-TTL
 buffer of a step's captured output. There is no S3 offload, no cache,
 no long-term index. **Retention past the hot TTL is a consumer's job**,

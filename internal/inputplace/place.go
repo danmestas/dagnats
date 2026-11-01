@@ -17,9 +17,21 @@ import (
 
 // Placer places inputs for one claim of one iteration. It belongs to
 // the goroutine (or bridge claim) that owns the Journal.
+// Store is the submissions store a Placer works through: *inputs.Store,
+// or, for a program's worker, the engine's relayed view of its own step
+// (#885).
+type Store interface {
+	Get(ctx context.Context, runID, stepID, requestID string) (inputs.Entry, error)
+	List(ctx context.Context, runID, stepID string) ([]inputs.Entry, error)
+	Transition(
+		ctx context.Context, entry inputs.Entry, status inputs.Status, iteration int,
+	) (inputs.Entry, error)
+	Claim(ctx context.Context, entry inputs.Entry, iteration int) (inputs.Entry, error)
+}
+
 type Placer struct {
 	Journal   *journal.Journal
-	Store     *inputs.Store
+	Store     Store
 	RunID     string
 	StepID    string
 	Iteration int

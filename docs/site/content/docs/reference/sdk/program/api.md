@@ -384,7 +384,7 @@ func OptionsFromEnv(name string) Options
 OptionsFromEnv reads \<NAME\>\_DAGNATS\_URL, \<NAME\>\_SEED and \<NAME\>\_JOIN\_KEY, with NAME the program name in upper case: notify reads NOTIFY\_DAGNATS\_URL. The URL defaults to nats://127.0.0.1:4222 and the seed to ./\<name\>.seed.
 
 <a name="Permissions"></a>
-## type [Permissions](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L30-L33>)
+## type [Permissions](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L29-L32>)
 
 Permissions is a plain permission set for one program's NATS user. The server converts it to nats\-server's own type, so a program never links nats\-server.
 
@@ -398,7 +398,7 @@ type Permissions struct {
 ```
 
 <a name="PermissionsFor"></a>
-### func [PermissionsFor](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L63>)
+### func [PermissionsFor](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L70>)
 
 ```go
 func PermissionsFor(m Manifest) Permissions
@@ -508,7 +508,7 @@ type StreamSpec struct {
 ```
 
 <a name="SubjectPermission"></a>
-## type [SubjectPermission](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L14-L17>)
+## type [SubjectPermission](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L13-L16>)
 
 SubjectPermission is one direction's allow and deny subject lists, with NATS wildcard semantics. A subject is permitted when an Allow entry matches it and no Deny entry does.
 

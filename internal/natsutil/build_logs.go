@@ -134,6 +134,18 @@ func LogSubject(runID, stepID string, attempt, iteration int) string {
 		runID, SubjectToken(stepID), attempt, iteration)
 }
 
+// ProgramLogSubject is LogSubject in program's namespace,
+// "logs.p.<program>.<run>.<step>.<attempt>.<iteration>": a program's NATS
+// user may publish logs only there, and readers accept it only for the
+// program that owns the step (#885).
+func ProgramLogSubject(program, runID, stepID string, attempt, iteration int) string {
+	if program == "" || strings.ContainsAny(program, ". \t*>") {
+		panic("ProgramLogSubject: program must be one plain token")
+	}
+	return "logs.p." + program + "." + strings.TrimPrefix(
+		LogSubject(runID, stepID, attempt, iteration), "logs.")
+}
+
 // LogMsgID builds the BUILD_LOGS dedup key for one chunk:
 // log-{runID}-{stepID}-{attempt}-{iteration}-{seq}. SubjectToken(stepID)
 // here matches LogSubject exactly, so the Msg-Id always reflects the
