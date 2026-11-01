@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Programs get a scoped control plane: `api.p.<name>.workflows.register`, `runs.start`, `runs.get` and `runs.cancel` (#885).** A program's NATS permissions already allow publishing under `api.p.<its name>.>`, so these work for a program logged in as its own NKey user, which the global `api.workflows.register` and `api.runs.*` do not. Register refuses a workflow named outside `<name>.` and a sub-workflow step that starts one outside it. Start refuses a workflow outside the prefix. Get and cancel answer another program's run exactly as they answer a run that does not exist. `runs.cancel` is new on NATS; until now only REST could cancel a run. `Manifest.Workflows` is now optional documentation: any name under the prefix may be registered at runtime.
+
 ## [0.0.41] - 2026-11-01
 
 ### Upgrade notes

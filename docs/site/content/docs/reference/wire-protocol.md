@@ -882,6 +882,19 @@ The `dagnats-api` micro service answers these subjects for clients that talk to 
 
 The lease endpoints share the queue group `dagnats-leases`, so one instance serves each request. The others have no queue group, so every running instance receives the request.
 
+### Program-scoped control plane (`api.p.<name>.*`)
+
+A program (#885) manages its own workflows on these subjects. Its NATS permissions let it publish only under `api.p.<its name>.>`, so the name in the subject is the caller, and every request is confined to workflows named `<name>.*`. Bodies and replies match the global subjects above.
+
+| Subject | Request | Reply |
+|---------|---------|-------|
+| `api.p.<name>.workflows.register` | A `WorkflowDef` named `<name>.*` | `{"status":"registered","name"}` |
+| `api.p.<name>.runs.start` | `{"workflow","input"}`, workflow `<name>.*` | `{"run_id"}` |
+| `api.p.<name>.runs.get` | The run ID as plain text | The run snapshot |
+| `api.p.<name>.runs.cancel` | The run ID as plain text | `{"status":"cancelled","run_id"}` |
+
+Register refuses a def named outside the prefix, and a def with a sub-workflow step that starts a workflow outside it. `runs.get` and `runs.cancel` answer a run of another program's workflow with the same `{"error":"workflow run not found"}` as a run that does not exist. These endpoints share the queue group `dagnats-program-api`, so one instance serves each request. Workflow names under the prefix need not be declared in `Manifest.Workflows`.
+
 ## Idempotent child-run spawn (`api.runs.spawn`)
 
 A gated handler spawns a child run with `api.runs.spawn`. The request is
