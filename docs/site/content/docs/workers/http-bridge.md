@@ -128,7 +128,7 @@ Resolves a polled task. The `action` field determines behavior:
 | `checkpoint` | Buffers `data` as the task's loop state for the next `continue`, and extends the claim |
 | `heartbeat` | Extends the claim with nothing else |
 | `stream` | Publishes `data` to `stream.{run_id}.{step_id}` for live consumers and extends the claim |
-| `send_signal` | Writes `data` to the signal `name` of run `run_id` |
+| `send_signal` | Writes `data` to the signal `name` of run `run_id`. To wake a step a program runs, name the signal `<program>.<name>` (see below) |
 | `wait_signal` | Blocks until signal `name` arrives, or answers `408` after `timeout_ms` (1 to 3,600,000) |
 | `journal.append` | Claims the task's agent journal on first use and appends a record (`type`, default `entry`; `data`); answers `{"seq": N}` |
 | `journal.read` | Claims the journal on first use and answers every record of the step |
@@ -250,6 +250,8 @@ reconnect window (capped at 30s), not zero.
 ## Setup
 
 `dagnats serve` mounts the bridge on its HTTP listener under `/v1/`, with no extra configuration. Point workers at that address (default `http://127.0.0.1:8080`). `bridge.NewBridge` takes an internal publisher type, so the package is not meant to be constructed outside the dagnats module.
+
+**Signalling a program's step.** A step that a **program** runs (a worker started by `program.Attach` or `program.Run`) waits only on signals named `<program>.<name>`, where `<program>` is the first segment of the step's task type; to signal it, use that name, e.g. `notify.approved`. Bridge workers themselves are not programs and may use any signal name.
 
 The bridge binds the **checkpoints** and **signals** KV buckets when it is created. If a bucket is missing, the corresponding resolve actions return an error.
 

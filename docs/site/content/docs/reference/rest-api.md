@@ -461,6 +461,8 @@ POST /runs/{id}/signal/{name}
 
 The request body is the signal payload (raw bytes, max 1 MiB).
 
+A step that a **program** runs (a worker started by `program.Attach` or `program.Run`) waits only on signals named `<program>.<name>`, where `<program>` is the first segment of the step's task type; to signal it, use that name, e.g. `notify.approved`.
+
 **Response:** `200 OK`
 
 ```json

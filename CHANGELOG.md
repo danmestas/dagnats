@@ -19,7 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`dagnats run signal --program <name>` names a signal in a program's namespace.** A step a program runs waits only on signals named `<program>.<name>` (#885), so `--program notify approved` sends `notify.approved`; a name that already carries the prefix is left alone. The CLI, REST and HTTP-bridge docs say how to signal a program's step.
 - **Programs get a scoped control plane: `api.p.<name>.workflows.register`, `runs.start`, `runs.get` and `runs.cancel` (#885).** A program's NATS permissions already allow publishing under `api.p.<its name>.>`, so these work for a program logged in as its own NKey user, which the global `api.workflows.register` and `api.runs.*` do not. Register refuses a definition that reaches outside `<name>.` anywhere: its name, any step's task type, a sub-workflow target, and `wait_for_event` and `cancel_on` event types. Planner steps are refused outright until the engine confines their run-time fragments. It also refuses a workflow the operator's control-plane policy grants or lets promote, because a grant names a workflow, not a definition. Start refuses a workflow outside the prefix. Get and cancel answer another program's run exactly as they answer a run that does not exist. `runs.cancel` is new on NATS; until now only REST could cancel a run. `Manifest.Workflows` is now optional documentation: any name under the prefix may be registered at runtime.
+
+### Fixed
+
+- **No NATS control-plane request can crash the server.** Every `dagnats-api` handler, global and program-scoped (`api.p.<name>.*`), the cluster-health endpoint and program registration now run under one recover: a panic, from a bug or from an assertion caller input reached, is logged with its subject and stack and answered with `{"error", "kind":"internal"}` (registration: `{"error"}`) instead of killing the process. The hostile-body test now covers the `api.p` routes and registration.
 
 ## [0.0.41] - 2026-11-01
 

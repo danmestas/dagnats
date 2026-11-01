@@ -385,7 +385,7 @@ func (n *NATSAPI) addClusterEndpoint(srv micro.Service) {
 		return
 	}
 	err := srv.AddEndpoint(
-		"cluster-health", micro.HandlerFunc(n.handleClusterHealth),
+		"cluster-health", n.guarded(n.handleClusterHealth),
 		micro.WithEndpointSubject(clusterHealthSubject),
 		micro.WithEndpointQueueGroupDisabled(),
 	)

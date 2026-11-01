@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/danmestas/dagnats/program"
 	"os"
 	"strconv"
 	"strings"
@@ -452,6 +453,47 @@ type runSignalResult struct {
 }
 
 // runSignalCmd sends a signal to a running workflow.
+// takeProgramFlag removes "--program <name>" (or "--program=<name>")
+// from args and returns the program name, "" when absent.
+func takeProgramFlag(args []string) (string, []string, error) {
+	if len(args) > 1000 {
+		panic("takeProgramFlag: args exceeds max bound")
+	}
+	name := ""
+	rest := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--program":
+			if i+1 >= len(args) {
+				return "", nil, fmt.Errorf("--program needs a program name")
+			}
+			name = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "--program="):
+			name = strings.TrimPrefix(arg, "--program=")
+		default:
+			rest = append(rest, arg)
+		}
+	}
+	if name != "" {
+		if err := program.ValidateName(name); err != nil {
+			return "", nil, fmt.Errorf("--program: %w", err)
+		}
+	}
+	return name, rest, nil
+}
+
+// programSignalName names a signal in a program's namespace: a program's
+// step waits only on signals named "<program>.<name>" (#885), so a human
+// signalling it with --program need not type the prefix.
+func programSignalName(programName, name string) string {
+	if programName == "" || strings.HasPrefix(name, programName+".") {
+		return name
+	}
+	return programName + "." + name
+}
+
 func runSignalCmd(args []string) {
 	if args == nil {
 		panic("runSignalCmd: args must not be nil")
@@ -461,6 +503,11 @@ func runSignalCmd(args []string) {
 	args = StripJSONFlag(args)
 	hasLast := HasLastFlag(args)
 	args = StripLastFlag(args)
+	programName, args, err := takeProgramFlag(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
 	// With --last: need 2 args (name, payload).
 	// Without --last: need 3 args (run-id, name, payload).
@@ -474,7 +521,7 @@ func runSignalCmd(args []string) {
 		fmt.Fprintln(os.Stderr,
 			"Usage: dagnats run signal"+
 				" <run-id> <name> <payload>"+
-				" [--last] [--json]")
+				" [--program <name>] [--last] [--json]")
 		os.Exit(1)
 	}
 
@@ -494,6 +541,7 @@ func runSignalCmd(args []string) {
 	if name == "" {
 		panic("runSignalCmd: name must not be empty")
 	}
+	name = programSignalName(programName, name)
 
 	runID, err := ResolveRunID(svc, rawID, hasLast)
 	if err != nil {
