@@ -52,11 +52,12 @@ func confineStep(step dag.StepDef, prefix string) error {
 			return fmt.Errorf("starts workflow %q, which is not under %q", cfg.Workflow, prefix)
 		}
 	case dag.StepTypePlanner:
-		cfg, err := dag.ParsePlannerConfig(step)
-		if err != nil {
-			return err
-		}
-		return confinePlanner(cfg, prefix)
+		// The engine checks a planner's run-time fragment only against
+		// allowed_tasks, not the fragment steps' types or configs, so a
+		// fragment could still start another program's workflow or wait
+		// on its events. Refused until the engine confines fragments.
+		return fmt.Errorf("planner steps are not available to programs yet: " +
+			"their run-time fragments are not confined to the program's prefix")
 	case dag.StepTypeWaitForEvent:
 		cfg, err := dag.ParseWaitForEventConfig(step)
 		if err != nil {
@@ -64,20 +65,6 @@ func confineStep(step dag.StepDef, prefix string) error {
 		}
 		if !underPrefix(cfg.Event, prefix) {
 			return fmt.Errorf("waits for event %q, which is not under %q", cfg.Event, prefix)
-		}
-	}
-	return nil
-}
-
-// confinePlanner requires an explicit task list under the prefix: with
-// none, the planner's fragments may name any task type at run time.
-func confinePlanner(cfg dag.PlannerConfig, prefix string) error {
-	if len(cfg.AllowedTasks) == 0 {
-		return fmt.Errorf("planner needs allowed_tasks, each under %q", prefix)
-	}
-	for _, task := range cfg.AllowedTasks {
-		if !underPrefix(task, prefix) {
-			return fmt.Errorf("planner allows task %q, which is not under %q", task, prefix)
 		}
 	}
 	return nil

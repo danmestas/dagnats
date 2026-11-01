@@ -182,7 +182,7 @@ func waitScopedStatus(t *testing.T, nc *nats.Conn, program, runID string, want d
 
 // TestScopedRegisterConfinesEveryStepType: a program may not dispatch to,
 // wait on, or be cancelled by anything outside its prefix, through any
-// step type or workflow field.
+// step type or workflow field, and may not use planner steps at all.
 func TestScopedRegisterConfinesEveryStepType(t *testing.T) {
 	nc := startScopedAPI(t)
 	match := dag.Match{Left: "task_id", Op: dag.MatchOpEq, Right: "input.task_id"}
@@ -203,6 +203,10 @@ func TestScopedRegisterConfinesEveryStepType(t *testing.T) {
 		"planner allows": func(b builder) {
 			b.Planner("a", "notify.plan", plannerCfg("notify.x", "artifact.x"))
 		},
+		// Refused even fully confined: its fragments are not (yet).
+		"planner confined": func(b builder) {
+			b.Planner("a", "notify.plan", plannerCfg("notify.x"))
+		},
 		"wait event": func(b builder) { b.WaitForEvent("a", waitOpts("artifact.done", match)) },
 		"cancel on": func(b builder) {
 			b.Task("a", "notify.work")
@@ -217,9 +221,9 @@ func TestScopedRegisterConfinesEveryStepType(t *testing.T) {
 		}
 	}
 	allowed := dag.NewWorkflow("notify.ok")
-	plan := allowed.Planner("plan", "notify.plan", plannerCfg("notify.x"))
+	first := allowed.Agent("first", "notify.think", nil)
 	wait := allowed.WaitForEvent("wait", waitOpts("notify.done", match))
-	wait.After(plan)
+	wait.After(first)
 	allowed.Map("fan", "notify.item").After(wait)
 	allowed.CancelOn("notify.abort", match)
 	reply := registerScoped(t, nc, "notify", allowed)
