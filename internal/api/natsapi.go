@@ -139,7 +139,7 @@ func (n *NATSAPI) Start() {
 			queue = micro.WithEndpointQueueGroup(e.queueGroup)
 		}
 		if err := srv.AddEndpoint(
-			e.name, e.handler,
+			e.name, n.guarded(e.handler),
 			micro.WithEndpointSubject(e.subject), queue,
 		); err != nil {
 			panic("NATSAPI.Start: AddEndpoint failed for " +

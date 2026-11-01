@@ -335,7 +335,7 @@ dagnats run retry-all --workflow=deploy --mode=replay
 Send a named signal with a JSON payload to a running workflow.
 
 ```
-dagnats run signal <run-id> <name> <payload> [--last] [--json]
+dagnats run signal <run-id> <name> <payload> [--program <name>] [--last] [--json]
 ```
 
 | Argument | Required | Description |
@@ -343,11 +343,17 @@ dagnats run signal <run-id> <name> <payload> [--last] [--json]
 | `run-id` | Yes* | Run ID (or use `--last`) |
 | `name` | Yes | Signal name |
 | `payload` | Yes | JSON payload |
+| `--program` | No | Name the signal in a program's namespace: `--program notify approved` sends `notify.approved` |
+
+A step that a **program** runs (a worker started by `program.Attach` or `program.Run`) waits only on signals named `<program>.<name>`, where `<program>` is the first segment of the step's task type; to signal it, use that name, e.g. `notify.approved`. `--program` adds the prefix for you.
 
 **Example:**
 ```bash
 dagnats run signal a1b2c3d4 approval '{"approved": true}'
 # Signal sent: approval
+
+dagnats run signal --program notify a1b2c3d4 approved '{"approved": true}'
+# Signal sent: notify.approved
 
 dagnats run signal --last done '{}' --json
 # {"run_id":"a1b2...","signal":"done","sent":true}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"runtime/debug"
 	"time"
 
 	"github.com/danmestas/dagnats/program"
@@ -51,6 +52,23 @@ func (r *Registrar) handleRegister(req micro.Request) {
 	if req == nil {
 		panic("programs.handleRegister: req must not be nil")
 	}
+	// A registration request is caller input from an anonymous client; no
+	// bug it reaches may take the node down. A panic is answered as a
+	// server error (RegisterReply.Error) and logged with its stack.
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			return
+		}
+		slog.Error("programs: registration handler panicked",
+			"panic", recovered, "stack", string(debug.Stack()))
+		data, err := json.Marshal(program.RegisterReply{Error: "internal error"})
+		if err == nil {
+			if respondErr := req.Respond(data); respondErr != nil {
+				slog.Warn("programs: internal-error reply not sent", "error", respondErr)
+			}
+		}
+	}()
 	reply := r.answer(req.Data())
 	data, err := json.Marshal(reply)
 	if err != nil {

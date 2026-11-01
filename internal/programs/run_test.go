@@ -12,6 +12,7 @@ package programs
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"sync/atomic"
@@ -288,4 +289,27 @@ func watchControlPlane(t *testing.T, nc *nats.Conn) *atomic.Int32 {
 		}
 	})
 	return &count
+}
+
+// TestRegisterEndpointSurvivesHostileBodies: api.programs.register is
+// reachable by anonymous clients, so empty, null, malformed and boundary
+// bodies must each get a reply and leave the endpoint serving.
+func TestRegisterEndpointSurvivesHostileBodies(t *testing.T) {
+	f := serveFixture(t, Config{Open: true})
+	bodies := []string{
+		"", "{}", "null", "not json", "[]", `"x"`,
+		`{"manifest":{}}`, `{"manifest":{"Name":"notify"},"public_key":""}`,
+		`{"manifest":{"Name":"notify","TaskTypes":["notify.x"]},"public_key":"U"}`,
+		`{"manifest":{"Name":"notify","Streams":[{"Name":"NOTIFY_X","MaxBytesFloor":-1}]}}`,
+	}
+	for _, body := range bodies {
+		reply, err := f.nc.Request(program.RegisterSubject, []byte(body), 5*time.Second)
+		if err != nil {
+			t.Fatalf("%q: no answer: %v", body, err)
+		}
+		var answer program.RegisterReply
+		if err := json.Unmarshal(reply.Data, &answer); err != nil || answer.Grant != nil {
+			t.Fatalf("%q: reply %s, %v; want a refusal or error", body, reply.Data, err)
+		}
+	}
 }
