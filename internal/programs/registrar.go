@@ -12,7 +12,10 @@
 // Name reservation is a KV Create, so the first registration of a name
 // wins. Re-registering a name with the same public key and manifest
 // returns the stored Grant and spends nothing, which is what a
-// restarting program does until attach exists (D4).
+// restarting program does until attach exists (D4). The same key with a
+// changed manifest is re-admitted (update.go): a new Version alone is
+// recorded, additions are checked and provisioned, and changes that
+// would destroy data the program holds are refused.
 //
 // In open mode anonymous NATS clients are root, and that includes this
 // endpoint: any client can subscribe to program.RegisterSubject or join
@@ -161,8 +164,9 @@ func (r *Registrar) checkRequest(req program.RegisterRequest) error {
 }
 
 // existing settles a request for a name already registered: the same
-// key and manifest get the stored Grant; anything else is refused.
-// settled is false when the name is free.
+// key and manifest get the stored Grant, the same key with a changed
+// manifest is re-admitted, and another key is refused. settled is false
+// when the name is free.
 func (r *Registrar) existing(
 	ctx context.Context, req program.RegisterRequest,
 ) (grant program.Grant, settled bool, err error) {
@@ -173,16 +177,29 @@ func (r *Registrar) existing(
 	if !found {
 		return program.Grant{}, false, nil
 	}
+	grant, changed, err := settle(record, req)
+	if err != nil || !changed {
+		return grant, true, err
+	}
+	grant, err = r.update(ctx, req)
+	return grant, true, err
+}
+
+// settle judges a request against its name's record: another key is
+// name_taken, the same manifest gets the stored Grant, and changed
+// reports a manifest that needs re-admitting.
+func settle(record Record, req program.RegisterRequest) (program.Grant, bool, error) {
+	if record.Manifest.Name != req.Manifest.Name {
+		panic("programs.settle: record and request name the same program")
+	}
 	if record.PublicKey != req.PublicKey {
-		return program.Grant{}, true, refused(program.RefusedNameTaken,
+		return program.Grant{}, false, refused(program.RefusedNameTaken,
 			"program %q is taken", req.Manifest.Name)
 	}
 	if !sameManifest(record.Manifest, req.Manifest) {
-		return program.Grant{}, true, refused(program.RefusedManifestChanged,
-			"program %q is registered with a different manifest; manifest changes "+
-				"are not admitted yet", req.Manifest.Name)
+		return program.Grant{}, true, nil
 	}
-	return record.Grant, true, nil
+	return record.Grant, false, nil
 }
 
 // sameManifest compares by JSON encoding, the form the stored record

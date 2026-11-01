@@ -24,7 +24,7 @@ func (r *Registrar) grantFor(
 	if err != nil {
 		return program.Grant{}, err
 	}
-	reserved, err := r.reservedBytes(ctx, records)
+	reserved, err := r.reservedBytes(ctx, records, m)
 	if err != nil {
 		return program.Grant{}, err
 	}
@@ -90,10 +90,21 @@ func addSaturating(a, b int64) int64 {
 // registered program's Grant, plus the MaxBytes of every stream no
 // program owns (dagnats' own and any an operator made). A program's
 // streams are counted through its Grant, not their configs, so one
-// registered but not yet provisioned is still counted.
-func (r *Registrar) reservedBytes(ctx context.Context, records []Record) (int64, error) {
+// registered but not yet provisioned is still counted. The streams and
+// buckets candidate declares are left out: its own Grant sizes them, so
+// a program migrating streams it made before registering, or updating,
+// is not charged for them twice.
+func (r *Registrar) reservedBytes(
+	ctx context.Context, records []Record, candidate program.Manifest,
+) (int64, error) {
 	var reserved int64
 	owned := make(map[string]bool)
+	for _, s := range candidate.Streams {
+		owned[s.Name] = true
+	}
+	for _, b := range candidate.Buckets {
+		owned["KV_"+b.Name] = true
+	}
 	for _, record := range records {
 		reserved = addSaturating(reserved, max(record.Grant.StoreBudgetBytes, 0))
 		for _, s := range record.Manifest.Streams {

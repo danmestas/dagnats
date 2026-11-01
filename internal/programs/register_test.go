@@ -1,6 +1,7 @@
 // register_test.go
 // Tests for program registration: the open-mode happy path, first come
-// first served with idempotent same-key re-registration, every join-key
+// first served with idempotent same-key re-registration (manifest
+// updates have their own file, update_test.go), every join-key
 // refusal, refunds on every failure after the use is reserved, exactly
 // UsesMax admissions under concurrency, budget and version refusals, and
 // the required-auth-mode refusal.
@@ -210,8 +211,12 @@ func TestRegister_FirstComeFirstServed(t *testing.T) {
 	}
 	changed := first
 	changed.Manifest.TaskTypes = append(changed.Manifest.TaskTypes, "notify.more")
-	_, err = f.register(t, changed)
-	wantRefused(t, err, program.RefusedManifestChanged)
+	if _, err := f.register(t, changed); err != nil {
+		t.Fatalf("same-key changed manifest: %v; want it re-admitted", err)
+	}
+	if got := f.usesLeft(t, key.ID); got != 4 {
+		t.Fatalf("UsesLeft = %d, want 4: an update spends no use", got)
+	}
 	record, _, err := f.registrar.lookup(context.Background(), "notify")
 	if err != nil || record.JoinKeyID != key.ID {
 		t.Fatalf("record join key = %q, %v; want %q", record.JoinKeyID, err, key.ID)

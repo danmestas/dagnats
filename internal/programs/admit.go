@@ -75,6 +75,9 @@ func (r *Registrar) reserveName(
 	if err != nil {
 		return program.Grant{}, 0, err
 	}
+	if err := r.checkLive(ctx, req.Manifest, grant); err != nil {
+		return program.Grant{}, 0, err
+	}
 	data, err := json.Marshal(Record{
 		Manifest: req.Manifest, PublicKey: req.PublicKey,
 		Permissions: program.PermissionsFor(req.Manifest), Grant: grant,
@@ -85,11 +88,30 @@ func (r *Registrar) reserveName(
 	}
 	revision, err = r.kv.Create(ctx, req.Manifest.Name, data)
 	if errors.Is(err, jetstream.ErrKeyExists) {
-		grant, _, err = r.existing(ctx, req)
-		return grant, 0, err
+		return r.lostCreate(ctx, req)
 	}
 	if err != nil {
 		return program.Grant{}, 0, fmt.Errorf("store program %q: %w", req.Manifest.Name, err)
 	}
 	return grant, revision, nil
+}
+
+// lostCreate settles a registration whose Create lost to a concurrent
+// one, still under admitMu, so it cannot re-admit here: a changed
+// manifest is refused and its next registration is an update.
+func (r *Registrar) lostCreate(
+	ctx context.Context, req program.RegisterRequest,
+) (program.Grant, uint64, error) {
+	record, found, err := r.lookup(ctx, req.Manifest.Name)
+	if err != nil || !found {
+		return program.Grant{}, 0, errors.Join(err,
+			fmt.Errorf("program %q: Create lost but no record found", req.Manifest.Name))
+	}
+	grant, changed, err := settle(record, req)
+	if changed {
+		return program.Grant{}, 0, refused(program.RefusedManifestChanged,
+			"program %q was registered at the same moment with a different "+
+				"manifest; register again to update it", req.Manifest.Name)
+	}
+	return grant, 0, err
 }
