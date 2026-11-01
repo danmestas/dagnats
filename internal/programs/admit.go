@@ -1,0 +1,95 @@
+package programs
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/danmestas/dagnats/program"
+	"github.com/nats-io/nats.go/jetstream"
+)
+
+// admit checks the version range, claims the name and provisions the
+// program's streams and buckets. committed reports whether this call's
+// registration now stands, so the caller refunds the reserved use
+// exactly when it does not.
+func (r *Registrar) admit(
+	ctx context.Context, req program.RegisterRequest, keyID string,
+) (grant program.Grant, committed bool, err error) {
+	m := req.Manifest
+	if err := checkVersion(m.Dagnats, r.cfg.ServerVersion); err != nil {
+		return program.Grant{}, false, err
+	}
+	grant, revision, err := r.reserveName(ctx, req, keyID)
+	if err != nil || revision == 0 {
+		// revision 0: a concurrent registration of the same program won
+		// the Create; err is its stored Grant's outcome.
+		return grant, false, err
+	}
+	if err := program.Provision(ctx, r.js, m, grant); err != nil {
+		return program.Grant{}, false, r.rollBack(m.Name, revision, err)
+	}
+	return grant, true, nil
+}
+
+// rollBack removes the record a failed provisioning left, but only at
+// the revision this call created: a record rewritten since then belongs
+// to a later registration and must survive.
+func (r *Registrar) rollBack(name string, revision uint64, cause error) error {
+	if name == "" || revision == 0 {
+		panic("programs.rollBack: name and revision must be set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err := fmt.Errorf("provision program %q: %w", name, cause)
+	deleteErr := r.kv.Delete(ctx, name, jetstream.LastRevision(revision))
+	if deleteErr != nil && !errors.Is(deleteErr, jetstream.ErrKeyRevisionMismatch) {
+		err = errors.Join(err, fmt.Errorf("roll back program %q: %w", name, deleteErr))
+	}
+	return err
+}
+
+// reserveName checks the manifest against every registered program
+// (protocol clashes, the store budget, the program count) and writes the
+// record with KV Create, all under admitMu. It returns the record's
+// revision, or 0 when another registration of the name got there first,
+// in which case that registration's outcome is returned.
+func (r *Registrar) reserveName(
+	ctx context.Context, req program.RegisterRequest, keyID string,
+) (grant program.Grant, revision uint64, err error) {
+	if req.Manifest.Name == "" {
+		panic("programs.reserveName: name was validated")
+	}
+	r.admitMu.Lock()
+	defer r.admitMu.Unlock()
+	records, err := r.records(ctx)
+	if err != nil {
+		return program.Grant{}, 0, err
+	}
+	if err := checkProtocols(req.Manifest, records); err != nil {
+		return program.Grant{}, 0, err
+	}
+	grant, err = r.grantFor(ctx, req.Manifest, records)
+	if err != nil {
+		return program.Grant{}, 0, err
+	}
+	data, err := json.Marshal(Record{
+		Manifest: req.Manifest, PublicKey: req.PublicKey,
+		Permissions: program.PermissionsFor(req.Manifest), Grant: grant,
+		JoinKeyID: keyID, RegisteredAt: time.Now().UTC(),
+	})
+	if err != nil {
+		return program.Grant{}, 0, fmt.Errorf("encode program record: %w", err)
+	}
+	revision, err = r.kv.Create(ctx, req.Manifest.Name, data)
+	if errors.Is(err, jetstream.ErrKeyExists) {
+		grant, _, err = r.existing(ctx, req)
+		return grant, 0, err
+	}
+	if err != nil {
+		return program.Grant{}, 0, fmt.Errorf("store program %q: %w", req.Manifest.Name, err)
+	}
+	return grant, revision, nil
+}

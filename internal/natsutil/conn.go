@@ -320,6 +320,9 @@ func setupKVBuckets(
 		// worker_tokens: explicit revoke, revoked records kept for
 		// audit, readers need only the latest state.
 		{Bucket: "join_keys", History: 1, Replicas: replicas},
+		// programs: registered programs (#885), keyed by name; the
+		// name is reserved by Create, so the first registration wins.
+		{Bucket: "programs", History: 1, Replicas: replicas},
 		// worker_status: per-worker counter snapshots (cancelled-task
 		// skip count, etc.) used by `dagnats status --detail`. TTL'd
 		// so dead workers' entries age out of the aggregate (#182).

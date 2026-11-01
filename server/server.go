@@ -33,6 +33,7 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nats.go/micro"
 )
 
 const shutdownDeadline = 15 * time.Second
@@ -55,7 +56,9 @@ type Server struct {
 	tokenStore *workertoken.Store
 	// joinKeyStore backs the /v1/programs/join-keys admin routes (#885);
 	// program registration verifies against the same cache.
-	joinKeyStore       *joinkey.Store
+	joinKeyStore *joinkey.Store
+	// programsService answers program registration (#885).
+	programsService    micro.Service
 	httpSrv            *http.Server
 	telShutdown        func(context.Context)
 	metricsAgg         *metrics.Aggregator
@@ -322,6 +325,16 @@ func (s *Server) startComponents() error {
 		s.nc.Close()
 		s.ns.Shutdown()
 		return fmt.Errorf("worker token store init: %w", err)
+	}
+	if err := s.startPrograms(bridgeJS); err != nil {
+		s.joinKeyStore.Close()
+		s.tokenStore.Close()
+		s.orch.Stop()
+		s.natsAPI.Stop()
+		s.telShutdown(context.Background())
+		s.nc.Close()
+		s.ns.Shutdown()
+		return err
 	}
 	bridgePub := natsutil.NewTracingPublisher(s.nc, bridgeJS)
 	s.bridge = bridge.NewBridge(bridgePub)
@@ -792,6 +805,11 @@ func (s *Server) shutdown() error {
 		}
 		if s.tokenStore != nil {
 			s.tokenStore.Close()
+		}
+		if s.programsService != nil {
+			if err := s.programsService.Stop(); err != nil {
+				slog.Warn("stop programs service", "error", err)
+			}
 		}
 		if s.joinKeyStore != nil {
 			s.joinKeyStore.Close()
