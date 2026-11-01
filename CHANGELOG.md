@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A program can follow its own live output (#912).** `program.PermissionsFor` granted publish on `stream.p.<name>.>` and `logs.p.<name>.>` but not subscribe, so under enforcement a program could not watch its own build's live output (`stream.p.<name>.<run>.build`) and the view stayed silently empty. It now may subscribe there too; another program's output stays denied.
+
 ## [0.0.43] - 2026-11-01
 
 ### Upgrade notes
