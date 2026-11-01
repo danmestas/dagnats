@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -87,6 +89,9 @@ func (n *NATSAPI) relayHandler(class relayClass, op relayOp) micro.HandlerFunc {
 		}
 		go func() {
 			defer n.relayGate.release(prefix, class)
+			// No program request may take the node down, whatever the
+			// bug: a panic becomes an "internal" refusal and a log line.
+			defer recoverRelay(req)
 			ctx, cancel := context.WithTimeout(
 				observe.ExtractTraceContextHeader(nats.Header(req.Headers())), relayTimeout)
 			defer cancel()
@@ -94,6 +99,17 @@ func (n *NATSAPI) relayHandler(class relayClass, op relayOp) micro.HandlerFunc {
 			respondRelay(req, result, err)
 		}()
 	}
+}
+
+// recoverRelay turns a panic in a relay op into an internal refusal.
+func recoverRelay(req micro.Request) {
+	recovered := recover()
+	if recovered == nil {
+		return
+	}
+	slog.Error("program relay op panicked; refused it",
+		"subject", req.Subject(), "panic", recovered, "stack", string(debug.Stack()))
+	respondRelay(req, relayResult{}, refuse(natsutil.RefusalInternal, "relay failed"))
 }
 
 func respondRelay(req micro.Request, result relayResult, err error) {

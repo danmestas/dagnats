@@ -19,8 +19,8 @@ import (
 //
 //   - checkpoint: its own step's checkpoint (key "<run>.<step>"), with
 //     the step's current dispatch nonce;
-//   - signal: signals ("<run>.<name>") to and from runs it takes part
-//     in, meaning a step of the run has a task under its prefix;
+//   - signal: its own signals, named "<name>.*": sent to a run it takes
+//     part in, read only with its own current dispatch in that run;
 //   - inputs: its own step's agent inputs, with the current nonce.
 //
 // The operation is the Dagnats-Relay-Op header.
@@ -29,7 +29,7 @@ func (n *NATSAPI) storeEndpoints() []endpointSpec {
 		{"program-checkpoint", "api.p.*.checkpoint",
 			n.relayHandler(relayClassOther, n.relayCheckpoint), programQueueGroup},
 		{"program-signal", "api.p.*.signal",
-			n.relayHandler(relayClassOther, n.relaySignal), programQueueGroup},
+			n.relayHandler(relayClassSignals, n.relaySignal), programQueueGroup},
 		{"program-inputs", "api.p.*.inputs",
 			n.relayHandler(relayClassOther, n.relayInputs), programQueueGroup},
 	}
@@ -85,9 +85,13 @@ func (n *NATSAPI) relayCheckpoint(
 	return relayResult{}, refuse(natsutil.RefusalBadRequest, "checkpoint op")
 }
 
-// relaySignal sends or reads a signal on a run the program takes part
-// in. Signals cross runs by design (a step wakes another run), so there
-// is no nonce, but the run must have a step that is the program's.
+// relaySignal sends or reads a signal. Signal names are namespaced by
+// program: a program sends and reads only signals named "<name>.*", so
+// one program in a composed run cannot read or forge another's (an
+// "approved" a human sends through the API to another program's step).
+// A send also needs a run the program takes part in; a read needs the
+// caller's own current dispatch in that run (run, step, nonce), so it
+// only ever reads its own run's signals.
 func (n *NATSAPI) relaySignal(
 	ctx context.Context, prefix string, req micro.Request,
 ) (relayResult, error) {
@@ -96,22 +100,33 @@ func (n *NATSAPI) relaySignal(
 	if runID == "" || name == "" {
 		return relayResult{}, refuse(natsutil.RefusalBadRequest, "run and signal name are required")
 	}
-	if err := n.takesPart(ctx, prefix, runID); err != nil {
-		return relayResult{}, err
+	if !underPrefix(name, prefix) {
+		return relayResult{}, refuse(natsutil.RefusalNotYours,
+			"a program's signals are named under its prefix")
+	}
+	op := header.Get(natsutil.RelayOpHeader)
+	switch op {
+	case "put":
+		if err := n.takesPart(ctx, prefix, runID); err != nil {
+			return relayResult{}, err
+		}
+	case "get":
+		if _, err := n.ownedDispatch(ctx, prefix, header); err != nil {
+			return relayResult{}, err
+		}
+	default:
+		return relayResult{}, refuse(natsutil.RefusalBadRequest, "signal op")
 	}
 	kv, err := n.bucket(ctx, "signals")
 	if err != nil {
 		return relayResult{}, err
 	}
 	key := runID + "." + name
-	switch header.Get(natsutil.RelayOpHeader) {
-	case "get":
+	if op == "get" {
 		return kvGetResult(ctx, kv, key)
-	case "put":
-		_, err := kv.Put(ctx, key, req.Data())
-		return relayResult{}, err
 	}
-	return relayResult{}, refuse(natsutil.RefusalBadRequest, "signal op")
+	_, err = kv.Put(ctx, key, req.Data())
+	return relayResult{}, err
 }
 
 // takesPart reports nil when a step of runID has a task under prefix.
@@ -176,9 +191,12 @@ func (n *NATSAPI) relayInputs(
 	return relayResult{data: data}, nil
 }
 
-// inputsOp runs one inputs operation on the owned step. An entry passed
-// in must be for that step, so a transition or claim cannot reach
-// another step's submission.
+// inputsOp runs one inputs operation on the owned step. Every value
+// that reaches an inputs.Store assertion is checked here first: the
+// request id's shape, a positive revision, a known status. A transition
+// or claim applies to the stored submission, never a body the program
+// sends; only the revision it read (the compare-and-set) comes from the
+// request, so a stale one fails as a conflict.
 func (n *NATSAPI) inputsOp(
 	ctx context.Context, store *inputs.Store, owned ownedStepState, op string, body inputsRequest,
 ) ([]inputsRequest, error) {
@@ -186,39 +204,74 @@ func (n *NATSAPI) inputsOp(
 		panic("inputsOp: store must be open")
 	}
 	runID, stepID := owned.runID, owned.step.ID
-	entry := inputs.Entry{Submission: body.Entry, Revision: body.Revision}
-	if (op == "transition" || op == "claim") &&
-		(entry.RunID != runID || entry.StepID != stepID) {
-		return nil, errNotYours
+	if op == "list" {
+		entries, err := store.List(ctx, runID, stepID)
+		return entriesReply(entries), inputsError(err)
 	}
-	var result []inputs.Entry
-	var err error
+	requestID := body.RequestID
+	if op == "transition" || op == "claim" {
+		requestID = body.Entry.RequestID
+		if body.Entry.RunID != runID || body.Entry.StepID != stepID {
+			return nil, errNotYours
+		}
+		if body.Revision == 0 || body.Iteration < 0 {
+			return nil, refuse(natsutil.RefusalBadRequest, "revision and iteration are required")
+		}
+	}
+	if err := inputs.ValidateRequestID(requestID); err != nil {
+		return nil, refuse(natsutil.RefusalBadRequest, err.Error())
+	}
+	stored, err := store.Get(ctx, runID, stepID, requestID)
+	if err != nil {
+		return nil, inputsError(err)
+	}
 	switch op {
 	case "get":
-		var one inputs.Entry
-		one, err = store.Get(ctx, runID, stepID, body.RequestID)
-		result = []inputs.Entry{one}
-	case "list":
-		result, err = store.List(ctx, runID, stepID)
+		return entriesReply([]inputs.Entry{stored}), nil
 	case "transition":
-		var one inputs.Entry
-		one, err = store.Transition(ctx, entry, body.Status, body.Iteration)
-		result = []inputs.Entry{one}
+		if !knownStatus(body.Status) {
+			return nil, refuse(natsutil.RefusalBadRequest, "unknown status")
+		}
+		stored.Revision = body.Revision
+		next, err := store.Transition(ctx, stored, body.Status, body.Iteration)
+		return entriesReply([]inputs.Entry{next}), inputsError(err)
 	case "claim":
-		var one inputs.Entry
-		one, err = store.Claim(ctx, entry, body.Iteration)
-		result = []inputs.Entry{one}
-	default:
-		return nil, refuse(natsutil.RefusalBadRequest, "inputs op")
+		stored.Revision = body.Revision
+		next, err := store.Claim(ctx, stored, body.Iteration)
+		return entriesReply([]inputs.Entry{next}), inputsError(err)
 	}
-	if err != nil {
-		return nil, err
+	return nil, refuse(natsutil.RefusalBadRequest, "inputs op")
+}
+
+func knownStatus(status inputs.Status) bool {
+	switch status {
+	case inputs.StatusQueued, inputs.StatusPlaced, inputs.StatusDone, inputs.StatusUnanswered:
+		return true
 	}
-	out := make([]inputsRequest, len(result))
-	for i, e := range result {
+	return false
+}
+
+func entriesReply(entries []inputs.Entry) []inputsRequest {
+	out := make([]inputsRequest, len(entries))
+	for i, e := range entries {
 		out[i] = inputsRequest{Entry: e.Submission, Revision: e.Revision}
 	}
-	return out, nil
+	return out
+}
+
+// inputsError carries the store's typed outcomes as refusal codes.
+func inputsError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, inputs.ErrConflict):
+		return refuse(natsutil.RefusalInputsConflict, err.Error())
+	case errors.Is(err, inputs.ErrNotFound):
+		return refuse(natsutil.RefusalInputsNotFound, err.Error())
+	case errors.Is(err, inputs.ErrNotQueued):
+		return refuse(natsutil.RefusalInputsNotQueued, err.Error())
+	}
+	return err
 }
 
 // kvGetResult replies with a key's value and revision, or empty.

@@ -193,6 +193,10 @@ type WorkerRegistration struct {
 // the bucket's TTL ensures stale entries are purged automatically.
 type Directory struct {
 	kv jetstream.KeyValue
+	// keyPrefix ("<program>.") keys a program's worker entries under its
+	// own name, the only directory keys its NATS user may write (#885).
+	// Readers list keys and decode the entry, so the key shape is free.
+	keyPrefix string
 	// stream is the KV bucket's backing stream, resolved once at
 	// construction: List() reads the bucket's key set from its
 	// subject state, and re-resolving it per call would cost a
@@ -382,7 +386,7 @@ func (d *Directory) Register(reg WorkerRegistration) error {
 		context.Background(), 5*time.Second,
 	)
 	defer cancel()
-	_, err = d.kv.Put(ctx, reg.WorkerID, data)
+	_, err = d.kv.Put(ctx, d.keyPrefix+reg.WorkerID, data)
 	return err
 }
 
@@ -400,7 +404,7 @@ func (d *Directory) Deregister(workerID string) error {
 		context.Background(), 5*time.Second,
 	)
 	defer cancel()
-	err := d.kv.Delete(ctx, workerID)
+	err := d.kv.Delete(ctx, d.keyPrefix+workerID)
 	if err == jetstream.ErrKeyNotFound {
 		return nil
 	}

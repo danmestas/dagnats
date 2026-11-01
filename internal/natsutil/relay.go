@@ -62,6 +62,14 @@ const (
 	RefusalMsgID      = "bad_msg_id"
 	RefusalNotYours   = "not_yours"
 	RefusalBusy       = "busy"
+	// RefusalInternal: the relay failed on the engine's side (a recovered
+	// panic). The request is not applied.
+	RefusalInternal = "internal"
+	// The inputs store's own outcomes, carried so the worker's placer can
+	// tell them apart (inputs.ErrConflict, ErrNotFound, ErrNotQueued).
+	RefusalInputsConflict  = "inputs_conflict"
+	RefusalInputsNotFound  = "inputs_not_found"
+	RefusalInputsNotQueued = "inputs_not_queued"
 )
 
 // relayTimeout bounds one relay round trip when ctx has no deadline.

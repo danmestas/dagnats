@@ -652,6 +652,16 @@ func (w *Worker) bindOptionalKV() {
 	w.bindWorkerStatusKV()
 }
 
+// programKeyPrefix is "<program>." for a relayed worker, whose NATS user
+// may write the workers, worker_status and services buckets only under
+// its own name (#885), and "" for a native worker.
+func (w *Worker) programKeyPrefix() string {
+	if w.tp == nil || !w.tp.Relayed() {
+		return ""
+	}
+	return w.tp.RelayProgram() + "."
+}
+
 // bindWorkerStatusKV binds the per-worker counter snapshots; a missing
 // bucket disables drain-progress aggregation.
 func (w *Worker) bindWorkerStatusKV() {
@@ -694,6 +704,7 @@ func (w *Worker) registerDirectory() {
 	if err != nil {
 		return
 	}
+	d.keyPrefix = w.programKeyPrefix()
 	w.dir = d
 	w.stopHeartbeat = make(chan struct{})
 	taskTypes := make([]string, 0, len(w.handlers))
@@ -1473,7 +1484,7 @@ func (w *Worker) publishWorkerStatus(skipped uint64) {
 		context.Background(), writeTimeout,
 	)
 	defer cancel()
-	_, err = w.workerStatusKV.Put(ctx, w.workerID, data)
+	_, err = w.workerStatusKV.Put(ctx, w.programKeyPrefix()+w.workerID, data)
 	if err != nil {
 		slog.Warn("worker_status KV write failed",
 			"error", err,

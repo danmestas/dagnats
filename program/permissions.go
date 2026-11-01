@@ -31,26 +31,17 @@ type Permissions struct {
 	Subscribe SubjectPermission
 }
 
-// sharedBuckets are the engine buckets every program reads and writes
-// through the worker SDK: the worker and service directories and worker
-// status. Coarse-shared in v1: they are observational, and a program can
-// read a sibling's entries (design §2.3, accepted).
-//
-// Buckets the engine or another worker acts on are not here (#885):
-// workflow_runs (every step's nonce and output), checkpoints, signals
-// and submissions go through the engine relay, checked against the
-// program's own step or run; leases is not used by the SDK.
-var sharedBuckets = []string{"workers", "services", "worker_status"}
-
 // readOnlyBuckets are shared buckets the SDK only reads: triggers
 // (WatchTriggers' catch-up). Writing one would make the trigger service
 // fire another program's workflow.
 var readOnlyBuckets = []string{"triggers"}
 
-// scopedBuckets are shared buckets a program writes only under its own
-// "<name>." keys: trigger_types (RegisterTriggerType), so one program
-// cannot replace another's trigger type.
-var scopedBuckets = []string{"trigger_types"}
+// scopedBuckets are shared buckets a program reads in full but writes
+// only under its own "<name>." keys: trigger_types (RegisterTriggerType)
+// and the worker, service and status directories, which a relayed
+// worker keys as "<name>.<id>", so one program cannot replace or delete
+// another's entries.
+var scopedBuckets = []string{"trigger_types", "workers", "services", "worker_status"}
 
 // engineEventSubjects are the shared subject roots a worker publishes on
 // directly, each only under its program's own namespace
@@ -79,9 +70,6 @@ func PermissionsFor(m Manifest) Permissions {
 		pub = append(pub, root+".p."+m.Name+".>")
 	}
 	pub = append(pub, "api.p."+m.Name+".>")
-	for _, b := range sharedBuckets {
-		pub = append(pub, sharedBucketPublish(b)...)
-	}
 	for _, b := range readOnlyBuckets {
 		pub = append(pub, readBucketPublish(b)...)
 	}
@@ -159,32 +147,6 @@ func stickyPublish(taskTypes []string) []string {
 	}
 	for _, t := range taskTypes {
 		out = append(out, "$JS.API.CONSUMER.CREATE.STICKY_TASKS.*.sticky."+t+".*.>")
-	}
-	return out
-}
-
-// sharedBucketPublish grants open, get, watch and put on one engine
-// bucket, but not create, update, purge or delete of the bucket.
-// Consumer delete is granted because nats.go deletes a KV watcher's
-// ephemeral consumer on Stop; denying it would make every Stop wait out
-// the JetStream timeout. The exposure is gated by the consumer name: a
-// generated NUID, which a program cannot list (no CONSUMER.LIST, NAMES
-// or INFO on these streams), so it can delete only watchers it created.
-func sharedBucketPublish(bucket string) []string {
-	if bucket == "" {
-		panic("program.sharedBucketPublish: bucket must not be empty")
-	}
-	stream := "KV_" + bucket
-	out := []string{
-		"$JS.API.STREAM.INFO." + stream,
-		"$JS.API.DIRECT.GET." + stream + ".>",
-		"$JS.API.CONSUMER.CREATE." + stream + ".>",
-		"$JS.API.CONSUMER.DELETE." + stream + ".*",
-		"$JS.FC." + stream + ".>",
-		"$KV." + bucket + ".>",
-	}
-	if strings.ContainsAny(bucket, ".*>") {
-		panic("program.sharedBucketPublish: bucket must be one literal token")
 	}
 	return out
 }

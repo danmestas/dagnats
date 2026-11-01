@@ -24,7 +24,7 @@ import (
 )
 
 // sharedBuckets is the engine's coarse-shared bucket list (design §2.1).
-var sharedBuckets = []string{"workers", "services", "worker_status"}
+var sharedBuckets = []string{}
 
 type crossing struct {
 	name    string
@@ -63,6 +63,11 @@ func crossingTable() []crossing {
 		{"inputs relay", true, "api.p.toy.inputs"},
 		{"trigger types read", true, "$JS.API.DIRECT.GET.KV_trigger_types.$KV.trigger_types.k"},
 		{"own trigger type put", true, "$KV.trigger_types.toy.webhook"},
+		{"own directory entry", true, "$KV.workers.toy.worker-1"},
+		{"own service entry", true, "$KV.services.toy.svc"},
+		{"own status entry", true, "$KV.worker_status.toy.worker-1"},
+		{"directory read", true, "$JS.API.DIRECT.GET.KV_workers.$KV.workers.k"},
+		{"directory listing", true, "$JS.API.STREAM.INFO.KV_workers"},
 		{"triggers read", true, "$JS.API.DIRECT.GET.KV_triggers.$KV.triggers.k"},
 		{"run cancel", false, "dagnats.cancel.run1"},
 		{"account info", true, "$JS.API.INFO"},
@@ -159,6 +164,10 @@ func TestPermissions_EngineRecordsGoThroughTheRelay(t *testing.T) {
 		"$KV.signals.run1.go", "$JS.API.DIRECT.GET.KV_signals.$KV.signals.k",
 		"$KV.submissions.run1.step1.r1", "$KV.leases.k", "$KV.triggers.k",
 		"$KV.trigger_types.other.webhook", "$KV.trigger_types.k",
+		// Another program's directory, service and status entries.
+		"$KV.workers.worker-1", "$KV.workers.other.worker-1",
+		"$KV.services.svc", "$KV.services.other.svc",
+		"$KV.worker_status.worker-1", "$KV.worker_status.other.worker-1",
 		// Output only in the program's own namespace.
 		"stream.run1.step1", "logs.run1.step1.1.0",
 		"stream.p.other.run1.step1", "logs.p.other.run1.step1.1.0",

@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -58,8 +59,9 @@ func (c *taskContext) relaySignal(
 	if runID == "" || name == "" {
 		panic("relaySignal: run and name must be set")
 	}
-	header := nats.Header{}
-	header.Set(natsutil.RelayOpHeader, op)
+	// A read carries this task's own dispatch (the engine serves signal
+	// reads only for it); a send names just the target run.
+	header := c.stepHeader(op)
 	header.Set(natsutil.RelayRunHeader, runID)
 	header.Set(natsutil.RelayKeyHeader, name)
 	reply, err := c.tp.RelayCall(ctx, natsutil.RelaySignalOp, header, data)
@@ -127,7 +129,7 @@ func (r relayInputs) call(
 	}
 	reply, err := r.c.tp.RelayCall(ctx, natsutil.RelayInputsOp, r.c.stepHeader(op), data)
 	if err != nil {
-		return nil, err
+		return nil, inputsOutcome(err)
 	}
 	var decoded struct {
 		Entries []relayInputsBody `json:"entries"`
@@ -178,6 +180,25 @@ func (r relayInputs) Claim(
 	return r.one(r.call(ctx, "claim", relayInputsBody{
 		Entry: entry.Submission, Revision: entry.Revision, Iteration: iteration,
 	}))
+}
+
+// inputsOutcome turns the relay's inputs refusal codes back into the
+// inputs errors the placer branches on, so a lost claim over the relay is
+// inputs.ErrConflict exactly as it is against the store.
+func inputsOutcome(err error) error {
+	var refusal *natsutil.RelayRefusal
+	if !errors.As(err, &refusal) {
+		return err
+	}
+	switch refusal.Code {
+	case natsutil.RefusalInputsConflict:
+		return fmt.Errorf("%w: %s", inputs.ErrConflict, refusal.Detail)
+	case natsutil.RefusalInputsNotFound:
+		return fmt.Errorf("%w: %s", inputs.ErrNotFound, refusal.Detail)
+	case natsutil.RefusalInputsNotQueued:
+		return fmt.Errorf("%w: %s", inputs.ErrNotQueued, refusal.Detail)
+	}
+	return err
 }
 
 // mustBeOwnStep asserts the placer asks about this task's step, the

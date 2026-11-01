@@ -2,19 +2,22 @@ package api
 
 import "sync"
 
-// Relay concurrency bounds (#885). Each program has two shares on a
-// node, one per class of relay: step events (relayEventsPerProgramMax)
-// and everything else, journal and stores (relayPerProgramMax). A
+// Relay concurrency bounds (#885). Each program has three shares on a
+// node, one per class of relay: step events (relayEventsPerProgramMax),
+// signal reads and sends, which WaitForSignal polls
+// (relaySignalsPerProgramMax), and everything else, journal and stores
+// (relayPerProgramMax). A
 // request beyond its share is refused busy at once instead of queueing,
 // so one program flooding the relay cannot delay another's, and a long
 // journal replay (one view per record) cannot starve the same program's
 // step events, which carry its runs forward. relayTotalMax caps the
 // whole node, and relayProgramsMax how many distinct shares are tracked.
 const (
-	relayEventsPerProgramMax = 8
-	relayPerProgramMax       = 16
-	relayTotalMax            = 256
-	relayProgramsMax         = 1024
+	relayEventsPerProgramMax  = 8
+	relaySignalsPerProgramMax = 4
+	relayPerProgramMax        = 16
+	relayTotalMax             = 256
+	relayProgramsMax          = 1024
 )
 
 // relayClass is which share of a program's bound a relay op draws on.
@@ -22,12 +25,16 @@ type relayClass int
 
 const (
 	relayClassEvents relayClass = iota
+	relayClassSignals
 	relayClassOther
 )
 
 func (c relayClass) limit() int {
-	if c == relayClassEvents {
+	switch c {
+	case relayClassEvents:
 		return relayEventsPerProgramMax
+	case relayClassSignals:
+		return relaySignalsPerProgramMax
 	}
 	return relayPerProgramMax
 }
