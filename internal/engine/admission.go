@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
@@ -121,13 +122,18 @@ type singletonLock struct {
 	Displaced string `json:"displaced,omitempty"`
 }
 
+// singletonDigestPrefix starts every encoded lock key. The namespace
+// is exclusive: no raw key is used as is when it starts with it.
+const singletonDigestPrefix = "h."
+
 // singletonLockKey is the lock's KV key: the workflow name, plus the
 // configured key's value when there is one. A key that is already a
 // valid KV key is used as is, byte for byte, so a lock taken before
 // this encoding existed still matches. Anything else (an e-mail
 // address, a value with a space) would be refused by every Create, so
 // it is replaced by a digest of itself, which is stable across
-// deliveries and engines.
+// deliveries and engines; so is a raw key that starts with the digest
+// prefix, which keeps that namespace for digests alone.
 func singletonLockKey(
 	workflowName string, cfg *dag.SingletonConfig, input json.RawMessage,
 ) string {
@@ -144,11 +150,13 @@ func singletonLockKey(
 			kvKey = workflowName + "." + fmt.Sprintf("%v", keyVal)
 		}
 	}
-	if natsutil.ValidKVKey(kvKey) {
+	// A raw key in the digest namespace is hashed too, so a workflow
+	// named "h" can never hold another key's lock.
+	if natsutil.ValidKVKey(kvKey) && !strings.HasPrefix(kvKey, singletonDigestPrefix) {
 		return kvKey
 	}
 	sum := sha256.Sum256([]byte(kvKey))
-	return "h." + hex.EncodeToString(sum[:])
+	return singletonDigestPrefix + hex.EncodeToString(sum[:])
 }
 
 // singletonCheck verifies the singleton lock. It fails closed: an
@@ -429,6 +437,11 @@ func (ac *AdmissionController) ReleaseSingletonLock(
 	return fmt.Errorf("release singleton lock: %w", deleteErr)
 }
 
+// publishCancelHook is a test-only seam (nil in production) run before
+// the cancel publish; an error it returns stands in for a failed
+// publish, which no real fault can be made to produce on demand.
+var publishCancelHook func() error
+
 // publishWorkflowCancelledEvent publishes a cancel event
 // onto the history stream so handleWorkflowCancelled picks
 // it up through the normal event loop.
@@ -449,6 +462,11 @@ func (ac *AdmissionController) publishWorkflowCancelledEvent(
 	data, err := evt.Marshal()
 	if err != nil {
 		return fmt.Errorf("marshal cancel of %s: %w", runID, err)
+	}
+	if publishCancelHook != nil {
+		if err := publishCancelHook(); err != nil {
+			return fmt.Errorf("publish cancel of %s: %w", runID, err)
+		}
 	}
 	_, err = ac.tp.JSPublish(
 		context.Background(), evt.NATSSubject(), data,

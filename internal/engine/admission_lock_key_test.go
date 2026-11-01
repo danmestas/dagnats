@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,7 +29,10 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-const lockKeyWait = 10 * time.Second
+const (
+	lockKeyWait          = 10 * time.Second
+	lockKeyRedeliverWait = 30 * time.Second
+)
 
 func TestSingletonLockKey_ValidKeysUnchangedInvalidHashed(t *testing.T) {
 	keyed := &dag.SingletonConfig{Key: "k"}
@@ -58,6 +62,40 @@ func TestSingletonLockKey_ValidKeysUnchangedInvalidHashed(t *testing.T) {
 	again := singletonLockKey("wf", keyed, json.RawMessage(`{"k":"a@b.com"}`))
 	if again != email {
 		t.Fatalf("encoding not stable: %q then %q", email, again)
+	}
+}
+
+// Keys jetstream refuses for their dots are encoded too, not passed
+// through to fail every Create.
+func TestSingletonLockKey_DotRulesMatchJetstream(t *testing.T) {
+	keyed := &dag.SingletonConfig{Key: "k"}
+	for _, value := range []string{"a..b", ".x", "x.", ""} {
+		input := json.RawMessage(`{"k":"` + value + `"}`)
+		got := singletonLockKey("wf", keyed, input)
+		if !strings.HasPrefix(got, singletonDigestPrefix) || !natsutil.ValidKVKey(got) {
+			t.Fatalf("value %q: key %q, want an encoded valid key", value, got)
+		}
+	}
+	if got := singletonLockKey("wf", keyed, json.RawMessage(`{"k":"x.y"}`)); got != "wf.x.y" {
+		t.Fatalf("dotted valid key = %q, want wf.x.y unchanged", got)
+	}
+}
+
+// The digest namespace is exclusive: a workflow named "h" whose key
+// value is another lock's digest gets a digest of its own.
+func TestSingletonLockKey_RawKeyCannotTakeADigest(t *testing.T) {
+	keyed := &dag.SingletonConfig{Key: "k"}
+	billing := singletonLockKey("billing", keyed, json.RawMessage(`{"k":"a@b.com"}`))
+	digest := strings.TrimPrefix(billing, singletonDigestPrefix)
+	forged := singletonLockKey("h", keyed, json.RawMessage(`{"k":"`+digest+`"}`))
+	if forged == billing {
+		t.Fatalf("workflow h with value %s took billing's lock key %s", digest, billing)
+	}
+	if !strings.HasPrefix(forged, singletonDigestPrefix) || len(forged) != len(billing) {
+		t.Fatalf("raw key in the digest namespace = %q, want it encoded", forged)
+	}
+	if got := singletonLockKey("h", &dag.SingletonConfig{}, nil); got != "h" {
+		t.Fatalf("unkeyed workflow h = %q, want h unchanged", got)
 	}
 }
 
@@ -176,4 +214,41 @@ func TestSingleton_RedeliveredStartFinishesTheCancelItsLockRecords(t *testing.T)
 	startAdmissionRun(t, js, wfDef, "run-new", nil)
 	waitRunStatus(t, orch, "run-new", dag.RunStatusRunning)
 	waitRunStatus(t, orch, "run-old", dag.RunStatusCancelled)
+}
+
+// A cancel that fails to publish must not be acked away: the start is
+// redelivered, finds its own claim, and publishes the cancel again.
+func TestSingleton_FailedCancelPublishRedeliversTheStart(t *testing.T) {
+	wfDef := singletonDef("publish-fail-singleton", dag.SingletonModeCancel, "")
+	orch, js := startLockKeyOrchestrator(t, wfDef)
+	failures := &atomic.Int32{}
+	publishCancelHook = func() error {
+		if failures.Add(1) == 1 {
+			return errLockBoom
+		}
+		return nil
+	}
+	t.Cleanup(func() { publishCancelHook = nil })
+	orch.Start()
+	defer orch.Stop()
+	startAdmissionRun(t, js, wfDef, "run-old", nil)
+	waitRunStatus(t, orch, "run-old", dag.RunStatusRunning)
+	startAdmissionRun(t, js, wfDef, "run-new", nil)
+	// The first redelivery waits historyRedeliverSchedule[0] (5s).
+	deadline := time.Now().Add(lockKeyRedeliverWait)
+	for {
+		old, err := orch.store.Load(context.Background(), "run-old")
+		if err == nil && old.Status == dag.RunStatusCancelled {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("run-old = %v, %v after %d publishes; want cancelled by the redelivery",
+				old.Status, err, failures.Load())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if failures.Load() < 2 {
+		t.Fatalf("cancel published %d times, want a retry after the failure", failures.Load())
+	}
+	waitRunStatus(t, orch, "run-new", dag.RunStatusRunning)
 }

@@ -118,3 +118,28 @@ func TestLeaderReadKV_GetMatchesKeyValueGet(t *testing.T) {
 		}
 	}
 }
+
+// ValidKVKey must agree with jetstream's own rule on every key: jetstream
+// refuses an invalid key with ErrInvalidKey before any request.
+func TestValidKVKey_MatchesJetstream(t *testing.T) {
+	_, nc := StartTestServer(t)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "key_rules"})
+	if err != nil {
+		t.Fatalf("CreateKeyValue: %v", err)
+	}
+	keys := []string{"a", "a.b", "a/b_c=d-e", "A9", "a..b", ".a", "a.", "", ".",
+		"a b", "a@b", "a*", "a.>", "h.0f", "..", "a.b.c"}
+	for _, key := range keys {
+		_, err := kv.Get(ctx, key)
+		jetstreamValid := !errors.Is(err, jetstream.ErrInvalidKey)
+		if got := ValidKVKey(key); got != jetstreamValid {
+			t.Fatalf("ValidKVKey(%q) = %v, jetstream says %v", key, got, jetstreamValid)
+		}
+	}
+}
