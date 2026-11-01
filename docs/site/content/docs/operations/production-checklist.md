@@ -20,7 +20,7 @@ JetStream data lives in `{data_dir}/jetstream/`. Use fast storage (SSD or NVMe) 
 
 ### Stream Retention
 
-Each file-backed stream has a max age and a byte ceiling that is a share of `max_store_bytes` (see [NATS Infrastructure]({{< ref "/docs/operations/nats-infrastructure" >}})). Raising `max_store_bytes` raises every ceiling with it.
+Each file-backed stream has a max age and a byte ceiling that is a share of `max_store_bytes` (see [NATS Infrastructure]({{< ref "/docs/operations/nats-infrastructure" >}})). Raising `max_store_bytes` raises every ceiling with it. In a cluster, raise it one node at a time: a replicated stream needs its ceiling reserved on every replica, so a node restarted with a larger budget than its peers keeps the existing ceilings, logs a warning naming each stream, and keeps running. The ceilings grow when a node starts after every peer has the larger budget, normally the last one you restart.
 
 - **WORKFLOW_HISTORY**: 30-day max age, 25% of the store budget. Events older than your recovery window are safe to discard.
 - **EVENTS**: 14-day max age, 15% of the budget.
