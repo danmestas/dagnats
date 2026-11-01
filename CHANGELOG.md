@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`program.ErrRelayUnavailable`.** `program.Run` and `program.Attach` return it when no dagnats control plane answers the program relay (a server older than v0.0.42, or one running without its NATS API), so a host can test for it with `errors.Is` and tell its operator to upgrade or start the server.
 
+- **With `nats_user` set, anonymous NATS clients now connect, as a restricted join user.** They used to be refused. The join user may only publish `api.programs.register` and subscribe to `_JOIN.>`, so it reaches nothing else. Clients that log in with `nats_user` are unaffected.
+- **Programs now log in as their own NKey users, in open mode too, with only the permissions their manifest derives.** A program that calls the global `api.workflows.register` or `api.runs.*` must switch to the scoped `api.p.<name>.*` subjects first, or those calls stop working once it runs on this release. Plain anonymous clients (the CLI, the console, the bridge, workers) are unchanged in open mode: anonymous is still root.
+- **Registration works on a `nats_user` (required-auth) dagnats (#885).** A registered program gets an NKey user with `program.PermissionsFor` its manifest, on every node. Each node loads the users from the `programs` bucket at start, watches the bucket, and reloads its own NATS options on every change. The registering node reloads before it replies, and `program.Run` retries its first dial for up to 10 seconds on an authorization error while other nodes catch up. A reload re-authorizes connected clients: an unchanged program stays connected, and a removed or replaced key is disconnected. The `auth_mode_unsupported` refusal is gone; in required mode a join key is required.
 ## [0.0.42] - 2026-11-01
 
 ### Upgrade notes

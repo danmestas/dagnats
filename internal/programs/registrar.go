@@ -54,9 +54,8 @@ const ProgramsCountMax = 256
 type Config struct {
 	// Open is true when the server's NATS clients need no login, so
 	// anonymous connections are root and a join key is optional. When
-	// false (a client login is configured), registration is refused
-	// with auth_mode_unsupported until programs get NKey users: an
-	// admitted program could not log in.
+	// false (a client login is configured), anonymous is the join user
+	// and every registration needs a join key.
 	Open bool
 	// MaxStoreBytes is the JetStream store budget streams are sized
 	// from and admitted against.
@@ -65,6 +64,11 @@ type Config struct {
 	// ServerVersion is checked against Manifest.Dagnats. "dev" (an
 	// unstamped build) admits every range.
 	ServerVersion string
+	// Bind, when set, makes a newly stored program's NKey user live on
+	// this node before Register replies, so the program's first dial
+	// here can log in. A failure rolls the registration back. Nil in
+	// tests that do not dial as the program.
+	Bind func(Record) error
 }
 
 // Record is one registered program, as stored.
@@ -159,11 +163,6 @@ func (r *Registrar) checkRequest(req program.RegisterRequest) error {
 	}
 	if !nkeys.IsValidPublicUserKey(req.PublicKey) {
 		return refused(program.RefusedRequestInvalid, "public key is not an NKey user key")
-	}
-	if !r.cfg.Open {
-		return refused(program.RefusedAuthModeUnsupported,
-			"this dagnats requires a NATS login, and program NKey users are "+
-				"not supported yet; run it with no client login to register programs")
 	}
 	return nil
 }

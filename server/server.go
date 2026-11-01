@@ -58,7 +58,12 @@ type Server struct {
 	// program registration verifies against the same cache.
 	joinKeyStore *joinkey.Store
 	// programsService answers program registration (#885).
-	programsService    micro.Service
+	programsService micro.Service
+	// programUsers is this node's program NKey users, kept current by a
+	// watch on the programs bucket (stopped by programUsersStop).
+	programUsers       *userSet
+	programUsersStop   context.CancelFunc
+	programUsersDone   chan struct{}
 	httpSrv            *http.Server
 	telShutdown        func(context.Context)
 	metricsAgg         *metrics.Aggregator
@@ -811,6 +816,7 @@ func (s *Server) shutdown() error {
 				slog.Warn("stop programs service", "error", err)
 			}
 		}
+		s.stopProgramUsers()
 		if s.joinKeyStore != nil {
 			s.joinKeyStore.Close()
 		}
@@ -856,6 +862,7 @@ func (s *Server) shutdown() error {
 
 		s.ns.Shutdown()
 		s.ns.WaitForShutdown()
+		forgetOptions(s.ns)
 		if s.tempCreds != "" {
 			os.Remove(s.tempCreds)
 		}

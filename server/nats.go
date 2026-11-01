@@ -91,11 +91,10 @@ func natsOptions(cfg Config) (*natsserver.Options, error) {
 		NoLog:              true,
 		NoSigs:             true,
 	}
-	// One user for every client; the WebSocket listener inherits it.
-	if cfg.NATSUser != "" {
-		opts.Username = cfg.NATSUser
-		opts.Password = cfg.natsPassword
-	}
+	// The operator's login (when set), the built-in anonymous user and,
+	// once programs register, their NKey users. The WebSocket listener
+	// inherits them.
+	applyAuth(opts, cfg.NATSUser, cfg.natsPassword)
 	if len(cfg.LeafRemotes) > 0 || cfg.LeafPort != 0 {
 		if err := configureLeafNode(opts, cfg); err != nil {
 			return nil, err
@@ -310,6 +309,7 @@ func tryStartNATS(opts *natsserver.Options) (*natsserver.Server, error) {
 		ns.Shutdown()
 		return nil, fmt.Errorf("NATS server not ready after %v", natsReadyTimeout)
 	}
+	rememberOptions(ns, opts)
 
 	return ns, nil
 }

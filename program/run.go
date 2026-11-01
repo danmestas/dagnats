@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -104,6 +105,13 @@ func Run(ctx context.Context, prog Program, opts Options) (*Running, error) {
 	return running, nil
 }
 
+// firstDialRetryWindow bounds how long Run waits for its new NKey user
+// to reach the node it dials; firstDialRetryWait paces the attempts.
+const (
+	firstDialRetryWindow = 10 * time.Second
+	firstDialRetryWait   = 250 * time.Millisecond
+)
+
 // Reconnect policy for the program's connection: forever, a bounded
 // wait with jitter so a fleet of programs does not reconnect in step.
 const (
@@ -133,7 +141,7 @@ func dialAsProgram(opts Options, name string, key Key, running *Running) (*nats.
 		nats.ClosedHandler(running.closedHandler(callerClosed)),
 		nats.CustomInboxPrefix(InboxPrefix(name)), nats.Name("program "+name),
 	)
-	nc, err := nats.Connect(opts.URL, append(options, key.ConnectOption())...)
+	nc, err := connectAsKey(opts.URL, options, key)
 	if errors.Is(err, nats.ErrNkeysNotSupported) {
 		nc, err = nats.Connect(opts.URL, options...)
 	}
@@ -141,6 +149,26 @@ func dialAsProgram(opts Options, name string, key Key, running *Running) (*nats.
 		return nil, fmt.Errorf("program %s: dial as its own user: %w", name, err)
 	}
 	return nc, nil
+}
+
+// connectAsKey dials with the program's NKey, retrying an authorization
+// failure for up to firstDialRetryWindow. The registering node adds the
+// user before it replies, but a cluster's other nodes add it when their
+// watch of the programs bucket catches up, and the dial may land on one
+// of those first.
+func connectAsKey(url string, options []nats.Option, key Key) (*nats.Conn, error) {
+	if url == "" {
+		panic("program.connectAsKey: url must be set")
+	}
+	withKey := append(slices.Clone(options), key.ConnectOption())
+	deadline := time.Now().Add(firstDialRetryWindow)
+	for {
+		nc, err := nats.Connect(url, withKey...)
+		if !errors.Is(err, nats.ErrAuthorization) || time.Now().After(deadline) {
+			return nc, err
+		}
+		time.Sleep(firstDialRetryWait)
+	}
 }
 
 // closedHandlerOf returns the ClosedHandler options sets, if any, by

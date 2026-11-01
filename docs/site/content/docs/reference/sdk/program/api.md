@@ -92,7 +92,6 @@ const (
     RefusedJoinKeyExhausted    = "join_key_exhausted"
     RefusedBudgetExceeded      = "budget_exceeded"
     RefusedVersionIncompatible = "version_incompatible"
-    RefusedAuthModeUnsupported = "auth_mode_unsupported"
     RefusedProtocolClash       = "protocol_clash"
     RefusedProtocolNotAllowed  = "protocol_not_allowed"
 )
@@ -174,7 +173,7 @@ type BucketSpec struct {
 ```
 
 <a name="ErrRefused"></a>
-## type [ErrRefused](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L56-L59>)
+## type [ErrRefused](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L55-L58>)
 
 ErrRefused is dagnats declining to admit the program, with one of the Refused\* codes and a human\-readable detail.
 
@@ -186,7 +185,7 @@ type ErrRefused struct {
 ```
 
 <a name="ErrRefused.Error"></a>
-### func \(\*ErrRefused\) [Error](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L61>)
+### func \(\*ErrRefused\) [Error](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L60>)
 
 ```go
 func (e *ErrRefused) Error() string
@@ -238,7 +237,7 @@ type Host struct {
 ```
 
 <a name="Instance"></a>
-## type [Instance](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L30-L33>)
+## type [Instance](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L29-L32>)
 
 Instance identifies the process registering, for the operator.
 
@@ -361,7 +360,7 @@ type Manifest struct {
 ```
 
 <a name="Options"></a>
-## type [Options](<https://github.com/danmestas/dagnats/blob/main/program/run.go#L21-L35>)
+## type [Options](<https://github.com/danmestas/dagnats/blob/main/program/run.go#L22-L36>)
 
 Options is where a connected program finds its dagnats.
 
@@ -384,7 +383,7 @@ type Options struct {
 ```
 
 <a name="OptionsFromEnv"></a>
-### func [OptionsFromEnv](<https://github.com/danmestas/dagnats/blob/main/program/run.go#L41>)
+### func [OptionsFromEnv](<https://github.com/danmestas/dagnats/blob/main/program/run.go#L42>)
 
 ```go
 func OptionsFromEnv(name string) Options
@@ -433,7 +432,7 @@ type Program interface {
 ```
 
 <a name="RegisterReply"></a>
-## type [RegisterReply](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L48-L52>)
+## type [RegisterReply](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L47-L51>)
 
 RegisterReply is the reply: exactly one of Grant, Refused or Error. Error is a server fault \(a KV write failed\), not a refusal, and may succeed on retry.
 
@@ -446,7 +445,7 @@ type RegisterReply struct {
 ```
 
 <a name="RegisterRequest"></a>
-## type [RegisterRequest](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L38-L43>)
+## type [RegisterRequest](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L37-L42>)
 
 RegisterRequest is the body of a RegisterSubject request. JoinKey may be empty on an open\-mode server. Only the public key is sent; the seed never leaves the program.
 
@@ -471,7 +470,7 @@ type Running struct {
 ```
 
 <a name="Run"></a>
-### func [Run](<https://github.com/danmestas/dagnats/blob/main/program/run.go#L71>)
+### func [Run](<https://github.com/danmestas/dagnats/blob/main/program/run.go#L72>)
 
 ```go
 func Run(ctx context.Context, prog Program, opts Options) (*Running, error)

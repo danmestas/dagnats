@@ -27,19 +27,26 @@ func (r *Registrar) admit(
 	lock := r.programLock(m.Name)
 	lock.Lock()
 	defer lock.Unlock()
-	grant, revision, err := r.reserveName(ctx, req, keyID)
+	record, revision, err := r.reserveName(ctx, req, keyID)
 	if err != nil || revision == 0 {
 		// revision 0: a concurrent registration of the same program won
 		// the Create; err is its stored Grant's outcome.
-		return grant, false, err
+		return record.Grant, false, err
 	}
-	if before, err := r.provision(ctx, m, grant); err != nil {
+	before, err := r.provision(ctx, m, record.Grant)
+	if err != nil {
 		return program.Grant{}, false, r.rollBack(m.Name, revision, before, err)
 	}
-	return grant, true, nil
+	if r.cfg.Bind != nil {
+		if err := r.cfg.Bind(record); err != nil {
+			return program.Grant{}, false, r.rollBack(m.Name, revision, before,
+				fmt.Errorf("bind program %q's NATS user: %w", m.Name, err))
+		}
+	}
+	return record.Grant, true, nil
 }
 
-// rollBack removes the record a failed provisioning left, but only at
+// rollBack removes the record a failed admission left, but only at
 // the revision this call created: a record rewritten since then belongs
 // to a later registration and must survive, and so do the streams it
 // provisioned. Only a removal that wins puts back the configs the
@@ -52,7 +59,7 @@ func (r *Registrar) rollBack(
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	err := fmt.Errorf("provision program %q: %w", name, cause)
+	err := cause
 	deleteErr := r.kv.Delete(ctx, name, jetstream.LastRevision(revision))
 	switch {
 	case deleteErr == nil:
@@ -66,11 +73,12 @@ func (r *Registrar) rollBack(
 // reserveName checks the manifest against every registered program
 // (protocol clashes, the store budget, the program count) and writes the
 // record with KV Create, all under admitMu. It returns the record's
-// revision, or 0 when another registration of the name got there first,
-// in which case that registration's outcome is returned.
+// record and revision, or revision 0 when another registration of the
+// name got there first, in which case the record holds only that
+// registration's Grant and err its outcome.
 func (r *Registrar) reserveName(
 	ctx context.Context, req program.RegisterRequest, keyID string,
-) (grant program.Grant, revision uint64, err error) {
+) (record Record, revision uint64, err error) {
 	if req.Manifest.Name == "" {
 		panic("programs.reserveName: name was validated")
 	}
@@ -78,34 +86,36 @@ func (r *Registrar) reserveName(
 	defer r.admitMu.Unlock()
 	records, err := r.records(ctx)
 	if err != nil {
-		return program.Grant{}, 0, err
+		return Record{}, 0, err
 	}
 	if err := checkProtocols(req.Manifest, records); err != nil {
-		return program.Grant{}, 0, err
+		return Record{}, 0, err
 	}
-	grant, err = r.grantFor(ctx, req.Manifest, records)
+	grant, err := r.grantFor(ctx, req.Manifest, records)
 	if err != nil {
-		return program.Grant{}, 0, err
+		return Record{}, 0, err
 	}
 	if err := r.checkLive(ctx, req.Manifest, grant); err != nil {
-		return program.Grant{}, 0, err
+		return Record{}, 0, err
 	}
-	data, err := json.Marshal(Record{
+	record = Record{
 		Manifest: req.Manifest, PublicKey: req.PublicKey,
 		Permissions: program.PermissionsFor(req.Manifest), Grant: grant,
 		JoinKeyID: keyID, RegisteredAt: time.Now().UTC(),
-	})
+	}
+	data, err := json.Marshal(record)
 	if err != nil {
-		return program.Grant{}, 0, fmt.Errorf("encode program record: %w", err)
+		return Record{}, 0, fmt.Errorf("encode program record: %w", err)
 	}
 	revision, err = r.kv.Create(ctx, req.Manifest.Name, data)
 	if errors.Is(err, jetstream.ErrKeyExists) {
-		return r.lostCreate(ctx, req)
+		grant, _, err := r.lostCreate(ctx, req)
+		return Record{Grant: grant}, 0, err
 	}
 	if err != nil {
-		return program.Grant{}, 0, fmt.Errorf("store program %q: %w", req.Manifest.Name, err)
+		return Record{}, 0, fmt.Errorf("store program %q: %w", req.Manifest.Name, err)
 	}
-	return grant, revision, nil
+	return record, revision, nil
 }
 
 // lostCreate settles a registration whose Create lost to a concurrent

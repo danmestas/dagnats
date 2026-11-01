@@ -21,7 +21,6 @@ const (
 	RefusedJoinKeyExhausted    = "join_key_exhausted"
 	RefusedBudgetExceeded      = "budget_exceeded"
 	RefusedVersionIncompatible = "version_incompatible"
-	RefusedAuthModeUnsupported = "auth_mode_unsupported"
 	RefusedProtocolClash       = "protocol_clash"
 	RefusedProtocolNotAllowed  = "protocol_not_allowed"
 )

@@ -128,8 +128,8 @@ func TestRun_RefusalIsTypedBeforeAnythingIsCreated(t *testing.T) {
 		URL: f.nc.ConnectedUrl(), SeedPath: filepath.Join(t.TempDir(), "seed"),
 	})
 	var refusal *program.ErrRefused
-	if !errors.As(err, &refusal) || refusal.Code != program.RefusedAuthModeUnsupported {
-		t.Fatalf("Run err = %v, want auth_mode_unsupported", err)
+	if !errors.As(err, &refusal) || refusal.Code != program.RefusedJoinKeyInvalid {
+		t.Fatalf("Run err = %v, want join_key_invalid", err)
 	}
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("refusal took %v, want under a second", elapsed)
