@@ -206,3 +206,72 @@ func TestRelayDropsUnlistedHeaders(t *testing.T) {
 		t.Fatal("relay dropped the dedup id")
 	}
 }
+
+// TestRelayRefusesForgedSpawn: the engine spawns a child run from a
+// workflow.spawn event on history.<run> (internal/engine/
+// spawn_handlers.go). Relayed, it would start any workflow, another
+// program's included, bypassing registration's confinement, so it is
+// refused whatever child it names and with a valid nonce.
+func TestRelayRefusesForgedSpawn(t *testing.T) {
+	nc := startScopedAPI(t)
+	runID, nonce := dispatchedStep(t, nc)
+	notify := relayClient(t, nc, "notify")
+	for _, child := range []string{"artifact.x", "notify.relay"} {
+		payload, err := json.Marshal(map[string]any{
+			"child_run_id":   "forged" + strings.ReplaceAll(child, ".", ""),
+			"child_workflow": child, "parent_step_id": "work",
+		})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		evt := protocol.NewStepEvent(protocol.EventWorkflowSpawn, runID, "work", payload)
+		evt.DispatchNonce = nonce
+		iteration := 0
+		evt.Iteration, evt.AttemptNumber = &iteration, 1
+		if err := publishEvent(t, notify, &evt); err == nil {
+			t.Errorf("a forged workflow.spawn of %s was relayed", child)
+		}
+	}
+}
+
+// TestRelayRefusesEveryEngineEventType: only the four events a worker
+// publishes pass; every other history event type is the engine's own
+// (spawn, cancel, approval, wait, sleep, compensation, child results,
+// planner materialization, input) and is refused even with identity
+// and the step's current nonce.
+func TestRelayRefusesEveryEngineEventType(t *testing.T) {
+	nc := startScopedAPI(t)
+	runID, nonce := dispatchedStep(t, nc)
+	notify := relayClient(t, nc, "notify")
+	engineTypes := []protocol.EventType{
+		protocol.EventWorkflowStarted, protocol.EventStepQueued,
+		protocol.EventStepMapStarted, protocol.EventStepMapCompleted,
+		protocol.EventStepMapInstanceCompleted, protocol.EventStepSleepStarted,
+		protocol.EventStepSleepCompleted, protocol.EventStepWaitStarted,
+		protocol.EventStepWaitMatched, protocol.EventStepWaitTimeout,
+		protocol.EventWorkflowCompleted, protocol.EventWorkflowFailed,
+		protocol.EventWorkflowSpawn, protocol.EventWorkflowChildCompleted,
+		protocol.EventWorkflowChildFailed, protocol.EventWorkflowCancelled,
+		protocol.EventStepCancelled, protocol.EventCompensateStarted,
+		protocol.EventCompensateStepCompleted, protocol.EventCompensateFailed,
+		protocol.EventCompensateCompleted, protocol.EventApprovalRequested,
+		protocol.EventApprovalGranted, protocol.EventApprovalRejected,
+		protocol.EventApprovalExpired, protocol.EventPlannerMaterialized,
+		protocol.EventStepInputQueued, protocol.EventStepWaitElapsed,
+	}
+	for _, eventType := range engineTypes {
+		if relayedEventTypes[eventType] {
+			t.Fatalf("%s is in the relay allowlist", eventType)
+		}
+		evt := protocol.NewStepEvent(eventType, runID, "work", nil)
+		evt.DispatchNonce = nonce
+		iteration := 0
+		evt.Iteration, evt.AttemptNumber = &iteration, 1
+		if err := publishEvent(t, notify, &evt); err == nil {
+			t.Errorf("%s was relayed", eventType)
+		}
+	}
+	if len(relayedEventTypes) != 4 {
+		t.Fatalf("relay allowlist has %d types, want the 4 worker events", len(relayedEventTypes))
+	}
+}
