@@ -48,15 +48,12 @@ var sharedBuckets = []string{
 // engineEventSubjects are the shared subjects a worker publishes on
 // directly: task output streaming and build logs. Step events
 // (history.>) and journal records (journal.>) go through the engine
-// relay on api.p.<name>.events and api.p.<name>.journal.append instead
-// (worker.WithEngineRelay), which checks the step and its dispatch.
+// relay on api.p.<name>.events and api.p.<name>.journal.append, and
+// journal reads through api.p.<name>.journal.view (worker.
+// WithEngineRelay), each checked against the program's own step and
+// current dispatch. No engine stream is readable directly: the journal
+// and history hold other programs' model outputs and tool results.
 var engineEventSubjects = []string{"stream.>", "logs.>"}
-
-// engineReadStreams are the shared streams the SDK reads a tail from: a
-// journal step claims by reading its journal's last record
-// (journal/journal.go). WORKFLOW_HISTORY is not read by the SDK (only
-// the operator's journal check reads it) and holds every run's outputs.
-var engineReadStreams = []string{natsutil.AgentJournalStream}
 
 // PermissionsFor derives the NATS permission set for a manifest: every
 // crossing the worker SDK and a micro service make, the program's own
@@ -72,9 +69,6 @@ func PermissionsFor(m Manifest) Permissions {
 	pub = append(pub, taskQueuePublish(m.TaskTypes)...)
 	pub = append(pub, stickyPublish(m.TaskTypes)...)
 	pub = append(pub, engineEventSubjects...)
-	for _, s := range engineReadStreams {
-		pub = append(pub, "$JS.API.STREAM.INFO."+s, "$JS.API.STREAM.MSG.GET."+s)
-	}
 	pub = append(pub, "api.p."+m.Name+".>")
 	for _, b := range sharedBuckets {
 		pub = append(pub, sharedBucketPublish(b)...)

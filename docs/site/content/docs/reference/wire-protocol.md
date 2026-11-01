@@ -897,14 +897,23 @@ Register refuses a def that reaches outside the prefix anywhere: its name, any s
 
 ### Program step-event and journal relay
 
-A program's NATS user may not publish `history.>` or `journal.>`, read run snapshots (`workflow_runs`), or read the `WORKFLOW_HISTORY` stream: any of those would let it read another program's results or forge its steps. A program's worker (`worker.WithEngineRelay`, set by `program.Attach`) sends those publishes to the engine instead:
+A program's NATS user may not publish `history.>` or `journal.>`, read run snapshots (`workflow_runs`), or read the `WORKFLOW_HISTORY` or `AGENT_JOURNAL` streams: any of those would let it read another program's model outputs and tool results, or forge its steps. A program's worker (`worker.WithEngineRelay`, set by `program.Attach`) goes through the engine instead:
 
 | Subject | Request | Reply |
 |---------|---------|-------|
-| `api.p.<name>.events` | `{"subject","header","data"}`: the step event the worker would have published to `history.<runID>` | `{"stream","seq","duplicate"}`, `{"api_error"}`, or `{"error"}` |
-| `api.p.<name>.journal.append` | The same, for a journal record on `journal.<runID>.<step>` | The same |
+| `api.p.<name>.events` | The step event, its body and headers unchanged, plus `Dagnats-Relay-Subject: history.<runID>` | Headers `Dagnats-Relay-Stream`, `-Seq`, `-Duplicate` |
+| `api.p.<name>.journal.append` | The journal record, body and headers unchanged, plus `Dagnats-Relay-Subject: journal.<runID>.<step>` | The same |
+| `api.p.<name>.journal.view` | Headers `Dagnats-Relay-Subject`, `Dagnats-Dispatch-Nonce`, `Dagnats-Relay-From-Seq` (0 for the last record) | One record: its body and headers, plus `Dagnats-Relay-Seq` and `-Time`; or `Dagnats-Relay-Empty: true` |
 
-The engine relays a step event only if it is `step.started`, `step.continue`, `step.completed` or `step.failed`; its subject and `Nats-Msg-Id` are the event's own; it carries dispatch identity (identity-less events are refused whatever `legacy_step_events` says); and the step's task is under `<name>.` with that dispatch nonce current. A journal record needs the same step ownership and current nonce in `Dagnats-Dispatch-Nonce`. The relay keeps only `Nats-Msg-Id`, trace context and, for the journal, `Nats-Expected-Last-Subject-Sequence` and the `Dagnats-*` record headers; it returns a JetStream API error (the journal's compare-and-set rejection) as `api_error`, so the journal sees the same error code as on a direct publish. Every ownership failure is the same refusal, so a program cannot probe another's runs. Native workers with full credentials publish directly as before.
+Bodies cross unchanged, so payload limits are a direct publish's. A refusal is `Dagnats-Relay-Refusal: <code>` with `Dagnats-Relay-Detail`; a JetStream error (the journal's compare-and-set rejection) is `Dagnats-Relay-Api-Err-Code`, so the journal sees the same code as on a direct publish. Refusal codes: `bad_request`, `bad_subject`, `not_worker_event`, `no_identity`, `bad_msg_id`, `not_yours`, `busy`.
+
+- **Events:** only `step.started`, `step.continue`, `step.completed` and `step.failed`; every other history event type (spawn, cancel, approvals, waits, compensation, child results) is the engine's own and is refused. The subject and `Nats-Msg-Id` must be the event's own, the event must carry dispatch identity (`legacy_step_events` never applies), and the step's task must be under `<name>.` with that dispatch nonce current.
+- **Journal append and view:** the same step ownership and current nonce. An append's `Nats-Msg-Id` must be `journal.MsgID`'s shape for that run and step, with the attempt and iteration its headers state and the step's dispatch holds: JetStream dedup is stream-wide, so a record under another step's id would make that step's real append come back as a duplicate.
+- **Headers:** only `Nats-Msg-Id`, trace context and, for the journal, `Nats-Expected-Last-Subject-Sequence` and the `Dagnats-*` record headers are kept.
+- **Ownership failures** are all `not_yours`, so a program cannot probe another's runs.
+- **Bound:** each relay endpoint is its own subscription; a node runs at most 16 relays in flight per program and 256 in all, and refuses `busy` past that rather than queueing, so one program's flood cannot delay another's.
+
+Native workers with full credentials publish and read directly as before.
 
 ## Idempotent child-run spawn (`api.runs.spawn`)
 

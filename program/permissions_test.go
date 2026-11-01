@@ -58,11 +58,10 @@ func crossingTable() []crossing {
 		{"sticky ack", true, "$JS.ACK.STICKY_TASKS.abc.1.2.3.4.5.6"},
 		{"stream", true, "stream.run1.step1"},
 		{"logs", true, "logs.run1.step1.stdout"},
-		{"journal stream info", true, "$JS.API.STREAM.INFO.AGENT_JOURNAL"},
-		{"journal tail", true, "$JS.API.STREAM.MSG.GET.AGENT_JOURNAL"},
 		{"control plane", true, "api.p.toy.workflows.register"},
 		{"step event relay", true, "api.p.toy.events"},
 		{"journal relay", true, "api.p.toy.journal.append"},
+		{"journal view", true, "api.p.toy.journal.view"},
 		{"run cancel", false, "dagnats.cancel.run1"},
 		{"account info", true, "$JS.API.INFO"},
 		{"micro ping", false, "$SRV.PING"},
@@ -139,15 +138,19 @@ func TestPermissions_CrossingListComplete(t *testing.T) {
 
 // TestPermissions_EngineRecordsGoThroughTheRelay: a program may not
 // publish step events or journal records itself, read run snapshots
-// (every step's nonce and output), or read the history stream (every
-// run's events). The engine relay is the only way to write the first
-// two (#885).
+// (every step's nonce and output), or read the history or journal
+// streams (every run's events, model outputs and tool results). The
+// engine relay is the only way to write the first two and to read its
+// own journal (#885).
 func TestPermissions_EngineRecordsGoThroughTheRelay(t *testing.T) {
 	perms := program.PermissionsFor(validManifest())
 	denied := []string{
 		"history.run1", "journal.run1.step1",
 		"$JS.API.STREAM.MSG.GET.WORKFLOW_HISTORY",
 		"$JS.API.STREAM.INFO.WORKFLOW_HISTORY",
+		"$JS.API.STREAM.MSG.GET.AGENT_JOURNAL",
+		"$JS.API.STREAM.INFO.AGENT_JOURNAL",
+		"$JS.API.CONSUMER.CREATE.AGENT_JOURNAL.c.journal.run1.step1",
 		"$JS.API.DIRECT.GET.KV_workflow_runs.$KV.workflow_runs.run.run1",
 		"$JS.API.STREAM.MSG.GET.KV_workflow_runs",
 		"$KV.workflow_runs.run.run1",

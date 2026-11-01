@@ -15,8 +15,8 @@ import (
 
 func TestRelayOp(t *testing.T) {
 	cases := map[string]string{
-		"history.run1":         relayEventsOp,
-		"journal.run1.step":    relayJournalOp,
+		"history.run1":         RelayEventsOp,
+		"journal.run1.step":    RelayJournalOp,
 		"logs.run1.step.out.0": "",
 		"stream.run1.step":     "",
 		"historyx.run1":        "",

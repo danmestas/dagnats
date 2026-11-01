@@ -547,7 +547,7 @@ func (j *Journal) resync(ctx context.Context) error {
 	if ctx == nil {
 		panic("journal.resync: ctx must not be nil")
 	}
-	if j.stream == nil {
+	if j.stream == nil && !j.relayed() {
 		panic("journal.resync: stream must be bound")
 	}
 	if j.fenced {
