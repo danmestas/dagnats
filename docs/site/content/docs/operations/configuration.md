@@ -204,6 +204,8 @@ dagnats' embedded NATS server always has these users:
 
 In required mode a program needs a join key to register. In open mode the key is optional, because anonymous is root anyway; that includes reading other clients' registration requests, so join keys protect only a required-mode server.
 
+**Updates.** A registered program's change is authenticated by its own key (the confirmation above), so a change within its own prefix (task types, workflows, its own streams and buckets) needs no join key: a short-lived, single-use key that admitted the program does not block its later releases, and revoking it does not either. A change that widens the program's reach, a new protocol or a new read of another program's bucket, needs a join key in that request, usable and with names covering the program, every new protocol's root and every new read's owner; it spends a use, and without one it is refused `join_key_required_to_widen`, naming what widened. An open-mode server takes a keyless widening as it takes a keyless registration. Every update is still checked for protocol clashes, version range, budget and destructive changes. Like every program permission, this is a guardrail for trusted programs, not an isolation boundary: a program can already write elsewhere in the account through JetStream reply reflection, so run only trusted programs until per-program NATS accounts land ([#909](https://github.com/danmestas/dagnats/issues/909)).
+
 ## Control plane policy
 
 By default, task handlers cannot access the control plane. To allow a task to register and spawn workflows at runtime, declare `capabilities: ["control-plane"]` in the workflow definition and grant the workflow via deployment policy.

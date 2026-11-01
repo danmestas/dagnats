@@ -8,7 +8,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/danmestas/dagnats/internal/joinkey"
 	"github.com/danmestas/dagnats/program"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -23,6 +22,9 @@ type pendingUpdate struct {
 	previous  []byte
 	revision  uint64
 	provision bool
+	// keyID is the join key whose use a widening spent, refunded if the
+	// update does not land; "" when none was spent.
+	keyID string
 }
 
 // update re-admits a registered program whose key matches and whose
@@ -30,8 +32,10 @@ type pendingUpdate struct {
 // gets the stored Grant. Anything else is checked against the other
 // programs as a new registration would be, refused when it would
 // destroy data the program already holds, then recorded with a
-// compare-and-set on the record's revision and provisioned. It spends no
-// join-key use: the program was admitted already.
+// compare-and-set on the record's revision and provisioned. It is
+// authenticated by the program's own key (Confirm), so a change within
+// the program's own prefix needs no join key; one that widens its reach
+// spends a use of a covering key in the request (widen.go).
 func (r *Registrar) update(
 	ctx context.Context, req program.RegisterRequest,
 ) (program.Grant, error) {
@@ -60,7 +64,11 @@ func (r *Registrar) update(
 			if r.beforeRollBack != nil {
 				r.beforeRollBack()
 			}
-			return program.Grant{}, r.rollBackUpdate(name, pending, before, err)
+			err = r.rollBackUpdate(name, pending, before, err)
+			if pending.keyID != "" {
+				r.refund(pending.keyID, name)
+			}
+			return program.Grant{}, err
 		}
 		return pending.grant, nil
 	}
@@ -70,10 +78,11 @@ func (r *Registrar) update(
 
 // commitUpdate makes the checks and the record write under admitMu. An
 // ErrKeyRevisionMismatch means another node rewrote the record since it
-// was read; the caller reads it again.
+// was read; the caller reads it again. A use a widening spent is refunded
+// on any error here.
 func (r *Registrar) commitUpdate(
 	ctx context.Context, req program.RegisterRequest,
-) (pendingUpdate, error) {
+) (_ pendingUpdate, err error) {
 	r.admitMu.Lock()
 	defer r.admitMu.Unlock()
 	entry, record, err := r.lookupEntry(ctx, req.Manifest.Name)
@@ -86,9 +95,19 @@ func (r *Registrar) commitUpdate(
 	}
 	pending := pendingUpdate{grant: record.Grant, previous: entry.Value()}
 	if !versionOnly(record.Manifest, req.Manifest) {
-		if err := r.checkAdmittingKey(record, req.Manifest); err != nil {
+		var keyID string
+		keyID, err = r.reserveWidening(ctx, req, widened(record.Manifest, req.Manifest))
+		if err != nil {
 			return pendingUpdate{}, err
 		}
+		// keyID, not pending.keyID: each error return zeroes pending
+		// before this runs.
+		defer func() {
+			if err != nil && keyID != "" {
+				r.refund(keyID, req.Manifest.Name)
+			}
+		}()
+		pending.keyID = keyID
 		pending.grant, err = r.readmit(ctx, record.Manifest, req.Manifest)
 		if err != nil {
 			return pendingUpdate{}, err
@@ -133,32 +152,6 @@ func (r *Registrar) readmit(
 		return program.Grant{}, err
 	}
 	return grant, nil
-}
-
-// checkAdmittingKey refuses a change once the join key that admitted the
-// program could not admit it now: removed, revoked, expired, or with
-// names that do not cover a protocol root the change declares. A
-// keyless open-mode registration stays keyless. No use is spent.
-func (r *Registrar) checkAdmittingKey(record Record, changed program.Manifest) error {
-	if record.Manifest.Name != changed.Name {
-		panic("programs.checkAdmittingKey: an update keeps the program's name")
-	}
-	if record.JoinKeyID == "" {
-		return nil
-	}
-	err := r.keys.Check(record.JoinKeyID, changed.Name, changed.Protocols)
-	switch {
-	case err == nil:
-		return nil
-	case errors.Is(err, joinkey.ErrProtocolNotAllowed):
-		return refused(program.RefusedProtocolNotAllowed, "%v", err)
-	case errors.Is(err, joinkey.ErrNotFound), errors.Is(err, joinkey.ErrRevoked),
-		errors.Is(err, joinkey.ErrExpired), errors.Is(err, joinkey.ErrNameNotAllowed):
-		return refused(program.RefusedJoinKeyInvalid,
-			"the join key that admitted program %q no longer admits changes: %v",
-			changed.Name, err)
-	}
-	return fmt.Errorf("check join key of program %q: %w", changed.Name, err)
 }
 
 // lookupEntry reads a record with its KV entry, for a compare-and-set.

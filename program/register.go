@@ -40,6 +40,10 @@ const (
 	RefusedProtocolClash       = "protocol_clash"
 	RefusedProtocolNotAllowed  = "protocol_not_allowed"
 	RefusedConfirmExpired      = "confirm_expired"
+	// RefusedJoinKeyRequiredToWiden: an update adds a protocol or a read
+	// of another program's bucket, and the request carries no join key
+	// that is usable and covers it.
+	RefusedJoinKeyRequiredToWiden = "join_key_required_to_widen"
 )
 
 // Instance identifies the process registering, for the operator.
