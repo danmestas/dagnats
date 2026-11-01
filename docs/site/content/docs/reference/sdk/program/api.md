@@ -27,7 +27,7 @@ Programs on a dagnats are trusted: today they are all the operator's own, the sa
 
 - Push\-consumer delivery. A consumer's deliver subject travels in the JetStream request body, which subject permissions never see, and nats\-server does not check it against the creating user's permissions. So a program can deliver its own stream's messages, or a shared bucket's, onto any subject that has interest, including another program's task or service subjects. KV watches need push consumers, so denying consumer creates is not an option. User permissions inside one account cannot close this; one NATS account per program, or a server\-side check of the deliver subject, will. Tracked as dagnats\#862; TestAttack\_PushConsumerCannotDeliverIntoForeignSubjects is the proof, skipped until then.
 - Inbox forgery. Micro services reply by publishing to the caller's inbox, so every program may publish on "\_INBOX.\>". Inbox names are not secret: one process's inboxes share a prefix and are numbered in sequence, so a single reply subject seen from program beta \(on a shared protocol, say\) lets program alpha write forged replies into beta's next inboxes. Reading stays confined to the program's own "\_INBOX.\<name\>.\>". Tracked as dagnats\#862 and closed by the same fix as push\-consumer delivery: accounts or a server\-side check.
-- Name\-gated grants. Consumer delete on shared buckets and next/ack on STICKY\_TASKS are gated only by consumer names, which are random NUIDs that a program cannot list.
+- Name\-gated grants. Consumer delete on shared buckets and next, ack and create on STICKY\_TASKS are gated only by consumer names: random NUIDs, and for sticky consumers 128 bits from crypto/rand, which a program can neither list nor read from any bucket, reply or advisory.
 - Protocol ownership. Validate cannot see other programs, so a protocol such as "beta.x" declared by program alpha would be granted under beta's prefix. Registration must check ownership both ways: a protocol under a registered program's prefix, and a program registering a name some protocol already sits under.
 
 ## Index
@@ -423,13 +423,15 @@ type Permissions struct {
 ```
 
 <a name="PermissionsFor"></a>
-### func [PermissionsFor](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L61>)
+### func [PermissionsFor](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L67>)
 
 ```go
 func PermissionsFor(m Manifest) Permissions
 ```
 
 PermissionsFor derives the NATS permission set for a manifest: every crossing the worker SDK and a micro service make, the program's own subjects, streams and buckets, its protocols, and subscribe on "\_INBOX.\<name\>.\>" and nothing wider. Pure. Panics on a manifest that fails Validate: permissions for an invalid manifest are meaningless.
+
+Residual: next, ack and create on a STICKY\_TASKS consumer are granted for any consumer name, so a program holding a sibling's name could pull, ack or reconfigure it. The names are unguessable and never disclosed \(stickyPublish\), and TestPermissions\_StickyConsumerNamesNotDisclosed pins the disclosure surfaces.
 
 <a name="Program"></a>
 ## type [Program](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L107-L115>)

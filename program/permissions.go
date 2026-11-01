@@ -58,6 +58,12 @@ var engineEventSubjects = []string{"stream", "logs"}
 // subjects, streams and buckets, its protocols, and subscribe on
 // "_INBOX.<name>.>" and nothing wider. Pure. Panics on a manifest that
 // fails Validate: permissions for an invalid manifest are meaningless.
+//
+// Residual: next, ack and create on a STICKY_TASKS consumer are granted
+// for any consumer name, so a program holding a sibling's name could pull,
+// ack or reconfigure it. The names are unguessable and never disclosed
+// (stickyPublish), and TestPermissions_StickyConsumerNamesNotDisclosed
+// pins the disclosure surfaces.
 func PermissionsFor(m Manifest) Permissions {
 	if err := Validate(m); err != nil {
 		panic("program.PermissionsFor: " + err.Error())
@@ -130,12 +136,15 @@ func taskQueuePublish(taskTypes []string) []string {
 }
 
 // stickyPublish grants the SDK's optional worker-affinity consumer on
-// STICKY_TASKS. It is durable with a random name, so the name token of
-// next and ack is a wildcard: a program that learned a
-// sibling's sticky consumer name could pull from it. Names are not
-// listable (no CONSUMER.LIST or NAMES on STICKY_TASKS), which is the
-// whole gate. The create filter "sticky.<type>.<worker id>.>" is pinned
-// to the declared type.
+// STICKY_TASKS. Its durable name is per Worker and made at run time, and
+// a NATS wildcard matches only a whole token, so next, ack and the
+// create's name token are wildcards: the name is the capability. It
+// carries 128 bits from crypto/rand (worker.stickyConsumerConfig) and is
+// never disclosed: no CONSUMER.LIST or NAMES on STICKY_TASKS, stream info
+// carries only a consumer count, no bucket or reply holds one, and no
+// "$JS.EVENT" advisory is subscribable. The create filter
+// "sticky.<type>.<worker id>.>" is pinned to the declared types, so no
+// program can make a consumer that reads another's sticky tasks.
 func stickyPublish(taskTypes []string) []string {
 	if len(taskTypes) == 0 {
 		return nil

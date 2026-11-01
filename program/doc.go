@@ -63,9 +63,11 @@
 //     beta's next inboxes. Reading stays confined to the program's own
 //     "_INBOX.<name>.>". Tracked as dagnats#862 and closed by the same fix
 //     as push-consumer delivery: accounts or a server-side check.
-//   - Name-gated grants. Consumer delete on shared buckets and next/ack
-//     on STICKY_TASKS are gated only by consumer names, which are random
-//     NUIDs that a program cannot list.
+//   - Name-gated grants. Consumer delete on shared buckets and next, ack
+//     and create on STICKY_TASKS are gated only by consumer names: random
+//     NUIDs, and for sticky consumers 128 bits from crypto/rand, which a
+//     program can neither list nor read from any bucket, reply or
+//     advisory.
 //   - Protocol ownership. Validate cannot see other programs, so a
 //     protocol such as "beta.x" declared by program alpha would be
 //     granted under beta's prefix. Registration must check ownership both
