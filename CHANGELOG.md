@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.40] - 2026-10-31
+
+### Upgrade notes
+
+- **Program registration works on an open-auth dagnats only.** On a server with a NATS client login (`nats_auth: required`), `api.programs.register` refuses with `auth_mode_unsupported` until NKey user binding lands (#885).
+- **The sticky consumer is now durable and replicated.** A Go worker built on this release creates a randomly named durable sticky consumer, reaped 5 minutes after its worker stops pulling; workers on older SDKs keep their ephemeral one until rebuilt.
+- **`@dagnats/bridge` ships as `dagnats-bridge-0.0.40.tgz`** on this release.
+
 ### Added
 
 - **Programs register themselves: `program.Run` and `api.programs.register`.** `program.Run(ctx, prog, program.OptionsFromEnv("notify"))` reads `NOTIFY_DAGNATS_URL`, `NOTIFY_SEED` and `NOTIFY_JOIN_KEY`, creates the program's NKey at the seed path on first start (the seed never leaves the process), registers over an anonymous connection on the `_JOIN` inbox prefix, dials as the program with its `_INBOX.<name>.` prefix, and attaches. A refusal comes back as `*program.ErrRefused{Code, Detail}` before any stream or consumer exists; the codes are `request_invalid`, `name_invalid`, `name_taken`, `manifest_changed`, `protocol_clash`, `protocol_not_allowed`, `join_key_invalid`, `join_key_exhausted`, `budget_exceeded`, `version_incompatible` and `auth_mode_unsupported`. dagnats verifies the join key, reserves one of its uses before committing and refunds it if registration then fails, so a key limited to N uses admits at most N programs even under concurrent registrations. It claims the name in the new `programs` KV bucket (first come, first served), sizes the program's streams and buckets against the store budget, checks the manifest's `Dagnats` version range, provisions them, and returns the Grant. Restarting with the same key and manifest returns the stored Grant and spends no use. With no NATS client login configured, a join key is optional; with a login, registration is refused `auth_mode_unsupported` until programs get NKey users. Run returns a `*program.Running`: `Stop` makes no control-plane request, and `Done()` fires with the reason when the connection closes for good, so a host can exit and let its supervisor restart it. The program connection reconnects forever with jittered waits. `Options.NATSOptions` are applied before Run's own options, so they cannot replace the inbox prefix or login, and a `ClosedHandler` among them is chained. A protocol that would reach another program's subjects, in either direction, is refused `protocol_clash`; a join key limited with `--names` may only declare protocols whose root its glob covers (`protocol_not_allowed`), and sizes larger than the store budget are refused rather than overflowing.
