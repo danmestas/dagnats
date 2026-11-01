@@ -895,6 +895,26 @@ A program (#885) manages its own workflows on these subjects. Its NATS permissio
 
 Register refuses a def that reaches outside the prefix anywhere: its name, any step's `task` (normal, agent, agent loop, map), a sub-workflow target, a `wait_for_event` event type, or a `cancel_on` event type. It refuses planner steps outright for now: the engine checks a planner's run-time fragment only against `allowed_tasks`, not the fragment steps' types or configs, so a fragment could still reach outside the prefix. It also refuses a workflow the operator's control-plane policy grants or lets promote: grants name a workflow, not a definition, so the operator registers those. The check runs at registration only: a grant added later by hot reload does not evict a definition the program already registered under that name, so review a program's registered definition before granting it. `runs.get` and `runs.cancel` answer a run of another program's workflow with the same `{"error":"workflow run not found"}` as a run that does not exist. These endpoints share the queue group `dagnats-program-api`, so one instance serves each request. Workflow names under the prefix need not be declared in `Manifest.Workflows`.
 
+### Program step-event and journal relay
+
+A program's NATS user may not publish `history.>` or `journal.>`, read run snapshots (`workflow_runs`), or read the `WORKFLOW_HISTORY` or `AGENT_JOURNAL` streams: any of those would let it read another program's model outputs and tool results, or forge its steps. A program's worker (`worker.WithEngineRelay`, set by `program.Attach`) goes through the engine instead:
+
+| Subject | Request | Reply |
+|---------|---------|-------|
+| `api.p.<name>.events` | The step event, its body and headers unchanged, plus `Dagnats-Relay-Subject: history.<runID>` | Headers `Dagnats-Relay-Stream`, `-Seq`, `-Duplicate` |
+| `api.p.<name>.journal.append` | The journal record, body and headers unchanged, plus `Dagnats-Relay-Subject: journal.<runID>.<step>` | The same |
+| `api.p.<name>.journal.view` | Headers `Dagnats-Relay-Subject`, `Dagnats-Dispatch-Nonce`, `Dagnats-Relay-From-Seq` (0 for the last record) | One record: its body and headers, plus `Dagnats-Relay-Seq` and `-Time`; or `Dagnats-Relay-Empty: true` |
+
+Bodies cross unchanged, so payload limits are a direct publish's. A refusal is `Dagnats-Relay-Refusal: <code>` with `Dagnats-Relay-Detail`; a JetStream error (the journal's compare-and-set rejection) is `Dagnats-Relay-Api-Err-Code`, so the journal sees the same code as on a direct publish. Refusal codes: `bad_request`, `bad_subject`, `not_worker_event`, `no_identity`, `bad_msg_id`, `not_yours`, `busy`.
+
+- **Events:** only `step.started`, `step.continue`, `step.completed` and `step.failed`; every other history event type (spawn, cancel, approvals, waits, compensation, child results) is the engine's own and is refused. The subject and `Nats-Msg-Id` must be the event's own, the event must carry dispatch identity (`legacy_step_events` never applies), and the step's task must be under `<name>.` with that dispatch nonce current.
+- **Journal append and view:** the same step ownership and current nonce. An append's `Nats-Msg-Id` must be `journal.MsgID`'s shape for that run and step, with the attempt and iteration its headers state and the step's dispatch holds: JetStream dedup is stream-wide, so a record under another step's id would make that step's real append come back as a duplicate.
+- **Headers:** only `Nats-Msg-Id`, trace context and, for the journal, `Nats-Expected-Last-Subject-Sequence` and the `Dagnats-*` record headers are kept.
+- **Ownership failures** are all `not_yours`, so a program cannot probe another's runs.
+- **Bound:** each relay endpoint is its own subscription; a node runs at most 16 relays in flight per program and 256 in all, and refuses `busy` past that rather than queueing, so one program's flood cannot delay another's.
+
+Native workers with full credentials publish and read directly as before.
+
 ## Idempotent child-run spawn (`api.runs.spawn`)
 
 A gated handler spawns a child run with `api.runs.spawn`. The request is

@@ -26,7 +26,7 @@ import (
 // sharedBuckets is the engine's coarse-shared bucket list (design §2.1).
 var sharedBuckets = []string{
 	"workers", "services", "triggers", "trigger_types", "checkpoints",
-	"signals", "workflow_runs", "worker_status", "submissions", "leases",
+	"signals", "worker_status", "submissions", "leases",
 }
 
 type crossing struct {
@@ -56,15 +56,12 @@ func crossingTable() []crossing {
 			"$JS.API.CONSUMER.CREATE.STICKY_TASKS.abc.sticky.toy.echo.wid.>"},
 		{"sticky consumer next", true, "$JS.API.CONSUMER.MSG.NEXT.STICKY_TASKS.abc"},
 		{"sticky ack", true, "$JS.ACK.STICKY_TASKS.abc.1.2.3.4.5.6"},
-		{"history", true, "history.run1"},
 		{"stream", true, "stream.run1.step1"},
 		{"logs", true, "logs.run1.step1.stdout"},
-		{"journal", true, "journal.run1.step1"},
-		{"journal stream info", true, "$JS.API.STREAM.INFO.AGENT_JOURNAL"},
-		{"journal tail", true, "$JS.API.STREAM.MSG.GET.AGENT_JOURNAL"},
-		{"history stream info", true, "$JS.API.STREAM.INFO.WORKFLOW_HISTORY"},
-		{"history tail", true, "$JS.API.STREAM.MSG.GET.WORKFLOW_HISTORY"},
 		{"control plane", true, "api.p.toy.workflows.register"},
+		{"step event relay", true, "api.p.toy.events"},
+		{"journal relay", true, "api.p.toy.journal.append"},
+		{"journal view", true, "api.p.toy.journal.view"},
 		{"run cancel", false, "dagnats.cancel.run1"},
 		{"account info", true, "$JS.API.INFO"},
 		{"micro ping", false, "$SRV.PING"},
@@ -137,6 +134,40 @@ func TestPermissions_CrossingListComplete(t *testing.T) {
 		t.FailNow()
 	}
 	runToyEndToEnd(t, m)
+}
+
+// TestPermissions_EngineRecordsGoThroughTheRelay: a program may not
+// publish step events or journal records itself, read run snapshots
+// (every step's nonce and output), or read the history or journal
+// streams (every run's events, model outputs and tool results). The
+// engine relay is the only way to write the first two and to read its
+// own journal (#885).
+func TestPermissions_EngineRecordsGoThroughTheRelay(t *testing.T) {
+	perms := program.PermissionsFor(validManifest())
+	denied := []string{
+		"history.run1", "journal.run1.step1",
+		"$JS.API.STREAM.MSG.GET.WORKFLOW_HISTORY",
+		"$JS.API.STREAM.INFO.WORKFLOW_HISTORY",
+		"$JS.API.STREAM.MSG.GET.AGENT_JOURNAL",
+		"$JS.API.STREAM.INFO.AGENT_JOURNAL",
+		"$JS.API.CONSUMER.CREATE.AGENT_JOURNAL.c.journal.run1.step1",
+		"$JS.API.DIRECT.GET.KV_workflow_runs.$KV.workflow_runs.run.run1",
+		"$JS.API.STREAM.MSG.GET.KV_workflow_runs",
+		"$KV.workflow_runs.run.run1",
+		"$JS.API.CONSUMER.CREATE.KV_workflow_runs.c.$KV.workflow_runs.>",
+	}
+	for _, subject := range denied {
+		if allowedBy(perms.Publish, subject) {
+			t.Errorf("publish %q granted", subject)
+		}
+	}
+	if !allowedBy(perms.Publish, "api.p.toy.events") ||
+		!allowedBy(perms.Publish, "api.p.toy.journal.append") {
+		t.Fatal("the relay subjects are not granted")
+	}
+	if allowedBy(perms.Publish, "api.p.other.events") {
+		t.Fatal("another program's relay subject is granted")
+	}
 }
 
 // runToyEndToEnd runs the toy program as its restricted user through a

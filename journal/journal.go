@@ -372,7 +372,9 @@ func (j *Journal) bind(ctx context.Context) error {
 	if j.js == nil {
 		panic("journal.bind: js must not be nil")
 	}
-	if j.stream != nil {
+	if j.stream != nil || j.relayed() {
+		// A relayed journal (a program's) reads through the engine's
+		// journal.view, never the stream itself (#885).
 		return nil
 	}
 	stream, err := j.js.Stream(ctx, natsutil.AgentJournalStream)
@@ -607,11 +609,14 @@ type tailRecord struct {
 // JetStream API path, which only the leader answers. Seq 0 means the
 // subject is empty.
 func (j *Journal) readTail(ctx context.Context) (tailRecord, error) {
-	if j.stream == nil {
+	if j.stream == nil && !j.relayed() {
 		panic("journal.readTail: stream must be bound")
 	}
 	if ctx == nil {
 		panic("journal.readTail: ctx must not be nil")
+	}
+	if j.relayed() {
+		return j.relayedTail(ctx)
 	}
 	var raw *jetstream.RawStreamMsg
 	err := retryTransient(ctx, func() error {
@@ -642,7 +647,72 @@ func (j *Journal) readUpTo(ctx context.Context, tailSeq uint64) ([]Record, error
 	if tailSeq == 0 {
 		return nil, nil
 	}
+	if j.relayed() {
+		return j.relayedUpTo(ctx, tailSeq)
+	}
 	return readSubject(ctx, j.js, j.task.RunID, j.task.StepID, tailSeq)
+}
+
+// relayed reports whether this journal belongs to a program, whose
+// reads and writes go through the engine relay.
+func (j *Journal) relayed() bool {
+	return j.pub != nil && j.pub.Relayed()
+}
+
+// relayedTail is readTail through journal.view.
+func (j *Journal) relayedTail(ctx context.Context) (tailRecord, error) {
+	if ctx == nil || j.task.DispatchNonce == "" {
+		panic("journal.relayedTail: ctx and the dispatch nonce must be set")
+	}
+	subject := natsutil.JournalSubject(j.task.RunID, j.task.StepID)
+	var raw natsutil.RelayedRecord
+	var found bool
+	err := retryTransient(ctx, func() error {
+		var viewErr error
+		raw, found, viewErr = j.pub.RelayView(ctx, subject, j.task.DispatchNonce, 0)
+		return viewErr
+	})
+	if err != nil {
+		return tailRecord{}, fmt.Errorf("journal: read tail: %w", err)
+	}
+	if !found {
+		return tailRecord{}, nil
+	}
+	return tailRecord{
+		Record: decodeRecord(raw.Seq, raw.Header, raw.Data, raw.Time),
+		msgID:  raw.Header.Get(headerMsgID),
+	}, nil
+}
+
+// relayedUpTo is readUpTo through journal.view, one record per request,
+// bounded by recordsMax.
+func (j *Journal) relayedUpTo(ctx context.Context, tailSeq uint64) ([]Record, error) {
+	if ctx == nil || tailSeq == 0 {
+		panic("journal.relayedUpTo: ctx and tailSeq must be set")
+	}
+	subject := natsutil.JournalSubject(j.task.RunID, j.task.StepID)
+	var records []Record
+	for from := uint64(1); from <= tailSeq; {
+		if len(records) >= recordsMax {
+			return nil, fmt.Errorf("journal: more than %d records", recordsMax)
+		}
+		var raw natsutil.RelayedRecord
+		var found bool
+		err := retryTransient(ctx, func() error {
+			var viewErr error
+			raw, found, viewErr = j.pub.RelayView(ctx, subject, j.task.DispatchNonce, from)
+			return viewErr
+		})
+		if err != nil {
+			return nil, fmt.Errorf("journal: read: %w", err)
+		}
+		if !found || raw.Seq > tailSeq {
+			break
+		}
+		records = append(records, decodeRecord(raw.Seq, raw.Header, raw.Data, raw.Time))
+		from = raw.Seq + 1
+	}
+	return records, nil
 }
 
 // rebuild derives the recovery view from the records before the

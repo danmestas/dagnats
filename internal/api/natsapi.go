@@ -13,11 +13,13 @@ import (
 	"encoding/json"
 	"log/slog"
 	"regexp"
+	"sync"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/lease"
 	"github.com/danmestas/dagnats/observe"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nats.go/micro"
 )
 
@@ -55,6 +57,11 @@ type NATSAPI struct {
 	// stopForwards cancels in-flight api.leases.forward calls on Stop.
 	stopForwards context.CancelFunc
 	cluster      *ClusterReporter
+	// relayGate bounds the program relay's in-flight work (#885).
+	relayGate relayGate
+	// journal is AGENT_JOURNAL, bound on the first journal view.
+	journalMu sync.Mutex
+	journal   jetstream.Stream
 }
 
 // NewNATSAPI constructs a NATSAPI bound to svc and nc. version is the
@@ -119,6 +126,7 @@ func (n *NATSAPI) Start() {
 	}, n.leaseEndpoints()...)
 	endpoints = append(endpoints, n.inputEndpoints()...)
 	endpoints = append(endpoints, n.programEndpoints()...)
+	endpoints = append(endpoints, n.relayEndpoints()...)
 	for _, e := range endpoints {
 		// Without a queue group, every running INSTANCE receives each
 		// message -- preserving pre-micro behavior (raw nc.Subscribe).

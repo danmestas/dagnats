@@ -152,6 +152,11 @@ func startEngineFixture(t *testing.T, m program.Manifest) (*fixture, *api.Servic
 		t.Fatalf("Provision: %v", err)
 	}
 	svc := api.NewService(f.admin)
+	// The program's step events and journal records go through the
+	// engine relay NATSAPI serves.
+	natsAPI := api.NewNATSAPI(svc, f.admin, "1.0.0")
+	natsAPI.Start()
+	t.Cleanup(natsAPI.Stop)
 	wb := dag.NewWorkflow("toy.echo")
 	send := wb.Task("send", "toy.send.email").After(wb.Task("echo", "toy.echo"))
 	wb.Task("wait", "toy.wait").After(send)

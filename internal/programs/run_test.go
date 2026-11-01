@@ -148,6 +148,10 @@ func TestRun_ServesTasks(t *testing.T) {
 	}
 	t.Cleanup(orch.Stop)
 	svc := api.NewService(f.nc)
+	// The program's step events go through the engine relay.
+	natsAPI := api.NewNATSAPI(svc, f.nc, "1.0.0")
+	natsAPI.Start()
+	t.Cleanup(natsAPI.Stop)
 	wb := dag.NewWorkflow("notify.send")
 	wb.Task("work", "notify.work")
 	dagnatstest.Workflow(t, svc, wb)
