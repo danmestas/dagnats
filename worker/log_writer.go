@@ -126,6 +126,18 @@ type logLane struct {
 // this codebase is engine- or nuid-generated (never raw user input),
 // so this is a programmer-error guard, not a defense against untrusted
 // input (mirrors internal/engine's runEventSubject).
+// laneSubject is a log lane's subject: the program's namespace for a
+// relayed worker (its NATS user may publish no other), else the native
+// subject.
+func laneSubject(
+	tp *natsutil.TracingPublisher, runID, stepID string, attempt, iteration int,
+) string {
+	if tp != nil && tp.Relayed() {
+		return natsutil.ProgramLogSubject(tp.RelayProgram(), runID, stepID, attempt, iteration)
+	}
+	return natsutil.LogSubject(runID, stepID, attempt, iteration)
+}
+
 func newLogLane(
 	ctx context.Context,
 	tp *natsutil.TracingPublisher,
@@ -151,7 +163,7 @@ func newLogLane(
 	lane := &logLane{
 		tp:        tp,
 		ctx:       ctx,
-		subject:   natsutil.LogSubject(runID, stepID, attempt, iteration),
+		subject:   laneSubject(tp, runID, stepID, attempt, iteration),
 		runID:     runID,
 		stepID:    stepID,
 		attempt:   attempt,

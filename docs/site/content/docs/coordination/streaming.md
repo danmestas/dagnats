@@ -13,6 +13,8 @@ Streaming uses core NATS publish (not JetStream). Messages are ephemeral, fire-a
 
 The subject format is `stream.{runID}.{stepID}`. Any NATS client can subscribe to this subject to receive live data from a specific step, or use a wildcard like `stream.{runID}.>` to receive all streaming output from a run.
 
+A program's worker (one started by `program.Attach` or `program.Run`) publishes in its program's namespace instead, `stream.p.{program}.{runID}.{stepID}`: its NATS user may publish no other stream subject, so it cannot pass output off as another program's step. To follow a program's step, subscribe to `stream.p.{program}.{runID}.{stepID}`, where `{program}` is the first segment of the step's task type.
+
 ## API
 
 ### PutStream

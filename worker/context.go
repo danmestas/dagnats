@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/danmestas/dagnats/inputs"
 	"github.com/danmestas/dagnats/internal/chaos"
 	"github.com/danmestas/dagnats/internal/inputplace"
 	"github.com/danmestas/dagnats/internal/natsutil"
@@ -134,7 +133,7 @@ type taskContext struct {
 	// places inputs and settles them to done when the iteration
 	// commits (ADR-027); it also remembers what it returned to this
 	// delivery.
-	inputs *inputs.Store
+	inputs inputplace.Store
 	placer *inputplace.Placer
 	// Test seams: beforeClaim runs between reading the inputs and
 	// claiming them; placeFault fails an append by request id.
@@ -619,7 +618,18 @@ func (c *taskContext) clearShadowingCheckpoint() {
 	if c.stepID == "" {
 		panic("clearShadowingCheckpoint: stepID must not be empty")
 	}
-	if !c.kvCheckpointSeen || c.checkpointKV == nil || c.legacyEngine {
+	if !c.kvCheckpointSeen || c.legacyEngine {
+		return
+	}
+	if c.relayed() {
+		if _, _, err := c.relayCheckpoint("delete", nil); err != nil {
+			slog.WarnContext(c.ctx, "delete checkpoint after continue",
+				"run_id", c.runID, "step_id", c.stepID, "error", err)
+		}
+		c.kvCheckpointSeen = false
+		return
+	}
+	if c.checkpointKV == nil {
 		return
 	}
 	key := c.runID + "." + c.stepID
@@ -648,6 +658,9 @@ func (c *taskContext) PutStream(data []byte) error {
 	subject := fmt.Sprintf(
 		"stream.%s.%s", c.runID, c.stepID,
 	)
+	if c.relayed() {
+		subject = c.relayStreamSubject()
+	}
 	return c.tp.Publish(c.ctx, subject, data)
 }
 
@@ -748,7 +761,16 @@ func (c *taskContext) LoadCheckpoint() ([]byte, error) {
 	if c.journal != nil {
 		return c.journalCheckpoint()
 	}
-	if c.checkpointKV != nil {
+	if c.relayed() {
+		value, found, err := c.relayCheckpoint("get", nil)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			c.kvCheckpointSeen = true
+			return value, nil
+		}
+	} else if c.checkpointKV != nil {
 		key := c.runID + "." + c.stepID
 		entry, err := c.checkpointKV.Get(c.ctx, key)
 		if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
@@ -772,6 +794,10 @@ func (c *taskContext) writeCheckpointKV(state []byte) error {
 	if c.stepID == "" {
 		panic("writeCheckpointKV: stepID must not be empty")
 	}
+	if c.relayed() {
+		_, _, err := c.relayCheckpoint("put", state)
+		return err
+	}
 	if c.checkpointKV == nil {
 		return errCheckpointKVNotConfigured
 	}
@@ -790,6 +816,9 @@ func (c *taskContext) WaitForSignal(
 	}
 	if timeout <= 0 || timeout > 1*time.Hour {
 		panic("WaitForSignal: timeout must be in (0, 1h]")
+	}
+	if c.relayed() {
+		return c.relayWaitForSignal(name, timeout)
 	}
 	if c.signalKV == nil {
 		return nil, errSignalKVNotConfigured
@@ -868,6 +897,10 @@ func (c *taskContext) SendSignal(
 	}
 	if name == "" {
 		panic("SendSignal: name must not be empty")
+	}
+	if c.relayed() {
+		_, _, err := c.relaySignal(c.ctx, "put", runID, name, data)
+		return err
 	}
 	if c.signalKV == nil {
 		return errSignalKVNotConfigured

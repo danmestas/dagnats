@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/joinkey"
 	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
@@ -28,6 +29,8 @@ import (
 )
 
 type fixture struct {
+	// svc is the API service a serveFixture's NATSAPI runs on.
+	svc       *api.Service
 	nc        *nats.Conn
 	js        jetstream.JetStream
 	keys      *joinkey.Store

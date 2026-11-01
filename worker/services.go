@@ -92,7 +92,7 @@ func (w *Worker) RegisterService(def ServiceDef) error {
 	defer cancel()
 
 	// Put (not Create): last-write-wins is the documented contract.
-	_, err = kv.Put(ctx, def.Name, data)
+	_, err = kv.Put(ctx, w.programKeyPrefix()+def.Name, data)
 	return err
 }
 

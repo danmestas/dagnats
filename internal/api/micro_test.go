@@ -51,7 +51,7 @@ func TestMicroPingRespondsAfterStartTimesOutAfterStop(t *testing.T) {
 	}
 }
 
-func TestMicroInfoListsExactlyTwentyOneEndpointSubjects(t *testing.T) {
+func TestMicroInfoListsExactlyTwentyFourEndpointSubjects(t *testing.T) {
 	_, nc := natstest.StartServer(t)
 	natsutil.SetupAll(nc)
 	svc := NewService(nc)
@@ -71,7 +71,8 @@ func TestMicroInfoListsExactlyTwentyOneEndpointSubjects(t *testing.T) {
 	// The original three (#456), the two control-plane runtime endpoints
 	// (#376), the additive budget read (#378), the five lease subjects,
 	// the three input endpoints (ADR-027), the four program-scoped
-	// endpoints and the three program relay endpoints (#885).
+	// endpoints, the three program relay endpoints and the three
+	// program store relays (#885).
 	want := map[string]bool{
 		"api.workflows.register": true,
 		"api.runs.start":         true,
@@ -98,6 +99,10 @@ func TestMicroInfoListsExactlyTwentyOneEndpointSubjects(t *testing.T) {
 		"api.p.*.events":         true,
 		"api.p.*.journal.append": true,
 		"api.p.*.journal.view":   true,
+		// Program store relays (#885).
+		"api.p.*.checkpoint": true,
+		"api.p.*.signal":     true,
+		"api.p.*.inputs":     true,
 	}
 	got := make(map[string]bool, len(info.Endpoints))
 	for _, ep := range info.Endpoints {

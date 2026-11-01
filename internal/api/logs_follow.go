@@ -88,7 +88,7 @@ func isAttemptEndingMarker(marker string) bool {
 // and gated by logFollowConcurrentMax.
 func serveLogsFollow(
 	svc *Service, w http.ResponseWriter, r *http.Request,
-	runID, stepID string, attempt, iteration int,
+	runID, stepID string, attempt, iteration int, owner string,
 ) {
 	release, flusher, ok := beginFollow(
 		w, &logFollowActive, logFollowConcurrentMax, "too many concurrent log follows",
@@ -102,7 +102,7 @@ func serveLogsFollow(
 	defer cancel()
 
 	cons, err := openLogsFollowConsumer(
-		ctx, svc.js, runID, stepID, attempt, iteration, cursorParam(r),
+		ctx, svc.js, runID, stepID, attempt, iteration, owner, cursorParam(r),
 	)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -159,14 +159,14 @@ func startSSE(w http.ResponseWriter, flusher http.Flusher) {
 // like fetchLogsPage's non-follow counterpart.
 func openLogsFollowConsumer(
 	ctx context.Context, js jetstream.JetStream,
-	runID, stepID string, attempt, iteration int, cursor uint64,
+	runID, stepID string, attempt, iteration int, owner string, cursor uint64,
 ) (*natsutil.OrderedConsumer, error) {
 	if js == nil {
 		panic("openLogsFollowConsumer: js must not be nil")
 	}
 	cons, err := natsutil.OpenConsumer(
 		ctx, js, "BUILD_LOGS",
-		logsOrderedConsumerSpec(runID, stepID, attempt, iteration, cursor),
+		logsOrderedConsumerSpec(runID, stepID, attempt, iteration, owner, cursor),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("open BUILD_LOGS consumer: %w", err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -26,8 +27,19 @@ const (
 	RelayEventsOp  = "events"
 	RelayJournalOp = "journal.append"
 	RelayViewOp    = "journal.view"
+	// The stores a program reaches only through the engine: its step's
+	// checkpoint, signals to runs it takes part in, and its step's agent
+	// inputs. The operation is RelayOpHeader.
+	RelayCheckpointOp = "checkpoint"
+	RelaySignalOp     = "signal"
+	RelayInputsOp     = "inputs"
 
 	RelaySubjectHeader   = "Dagnats-Relay-Subject"
+	RelayOpHeader        = "Dagnats-Relay-Op"
+	RelayRunHeader       = "Dagnats-Relay-Run"
+	RelayStepHeader      = "Dagnats-Relay-Step"
+	RelayKeyHeader       = "Dagnats-Relay-Key"
+	RelayRevisionHeader  = "Dagnats-Relay-Revision"
 	RelayFromSeqHeader   = "Dagnats-Relay-From-Seq"
 	RelayStreamHeader    = "Dagnats-Relay-Stream"
 	RelaySeqHeader       = "Dagnats-Relay-Seq"
@@ -50,6 +62,14 @@ const (
 	RefusalMsgID      = "bad_msg_id"
 	RefusalNotYours   = "not_yours"
 	RefusalBusy       = "busy"
+	// RefusalInternal: the relay failed on the engine's side (a recovered
+	// panic). The request is not applied.
+	RefusalInternal = "internal"
+	// The inputs store's own outcomes, carried so the worker's placer can
+	// tell them apart (inputs.ErrConflict, ErrNotFound, ErrNotQueued).
+	RefusalInputsConflict  = "inputs_conflict"
+	RefusalInputsNotFound  = "inputs_not_found"
+	RefusalInputsNotQueued = "inputs_not_queued"
 )
 
 // relayTimeout bounds one relay round trip when ctx has no deadline.
@@ -57,6 +77,13 @@ const relayTimeout = 10 * time.Second
 
 // ErrRelayRefused matches every *RelayRefusal.
 var ErrRelayRefused = errors.New("relay refused")
+
+// ErrRelayUnavailable: no dagnats control plane answered the relay (its
+// NATS API is not running, not yet up, or unreachable). A program's step
+// events, journal and stores cannot be written without it, so callers
+// fail the publish (the worker NAKs the task for redelivery) instead of
+// losing it.
+var ErrRelayUnavailable = errors.New("no dagnats control plane answers the program relay")
 
 // RelayRefusal is the engine declining to relay, with the check that
 // fired.
@@ -105,6 +132,38 @@ func (tp *TracingPublisher) WithRelay(prefix string) *TracingPublisher {
 	relayed := *tp
 	relayed.relay = prefix
 	return &relayed
+}
+
+// RelayProgram returns the program name tp relays for, or "" when it is
+// not relayed.
+func (tp *TracingPublisher) RelayProgram() string {
+	if tp == nil {
+		panic("TracingPublisher.RelayProgram: tp must not be nil")
+	}
+	name := strings.TrimPrefix(tp.relay, "api.p.")
+	return strings.TrimSuffix(name, ".")
+}
+
+// RelayCall sends one store operation to the relay op and returns the
+// reply, or the refusal or JetStream error it carries. It is the
+// building block for the relayed checkpoint, signal and input stores.
+func (tp *TracingPublisher) RelayCall(
+	ctx context.Context, op string, header nats.Header, data []byte,
+) (*nats.Msg, error) {
+	if tp == nil || tp.relay == "" {
+		panic("TracingPublisher.RelayCall: tp is not relayed")
+	}
+	if op == "" || header == nil {
+		panic("TracingPublisher.RelayCall: op and header must be set")
+	}
+	reply, err := tp.relayRequest(ctx, op, header, data)
+	if err != nil {
+		return nil, fmt.Errorf("relay %s: %w", op, err)
+	}
+	if err := relayError(reply.Header); err != nil {
+		return nil, err
+	}
+	return reply, nil
 }
 
 // Relayed reports whether tp goes through the engine relay.
@@ -206,7 +265,26 @@ func (tp *TracingPublisher) relayRequest(
 		defer cancel()
 	}
 	request := &nats.Msg{Subject: tp.relay + op, Header: header, Data: data}
-	return tp.nc.RequestMsgWithContext(ctx, request)
+	reply, err := tp.nc.RequestMsgWithContext(ctx, request)
+	if errors.Is(err, nats.ErrNoResponders) || errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, nats.ErrTimeout) {
+		slog.Error("program relay unreachable: is dagnats running with its NATS API?",
+			"subject", request.Subject, "error", err)
+		return nil, fmt.Errorf("%w: %s: %w", ErrRelayUnavailable, request.Subject, err)
+	}
+	return reply, err
+}
+
+// ProbeRelay checks that a dagnats control plane answers this program's
+// relay, with one request it refuses: any reply proves it is there.
+// program.Attach calls it so a program fails at start, not by stalling
+// its first run.
+func (tp *TracingPublisher) ProbeRelay(ctx context.Context) error {
+	if tp == nil || tp.relay == "" {
+		panic("TracingPublisher.ProbeRelay: tp is not relayed")
+	}
+	_, err := tp.relayRequest(ctx, RelayEventsOp, nats.Header{}, nil)
+	return err
 }
 
 // relayError decodes a refusal or a JetStream API error from a reply's

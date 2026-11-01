@@ -62,6 +62,7 @@ type NATSAPI struct {
 	// journal is AGENT_JOURNAL, bound on the first journal view.
 	journalMu sync.Mutex
 	journal   jetstream.Stream
+	buckets   map[string]jetstream.KeyValue
 }
 
 // NewNATSAPI constructs a NATSAPI bound to svc and nc. version is the
@@ -127,6 +128,7 @@ func (n *NATSAPI) Start() {
 	endpoints = append(endpoints, n.inputEndpoints()...)
 	endpoints = append(endpoints, n.programEndpoints()...)
 	endpoints = append(endpoints, n.relayEndpoints()...)
+	endpoints = append(endpoints, n.storeEndpoints()...)
 	for _, e := range endpoints {
 		// Without a queue group, every running INSTANCE receives each
 		// message -- preserving pre-micro behavior (raw nc.Subscribe).

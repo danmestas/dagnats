@@ -31,6 +31,7 @@ import (
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/program"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -124,12 +125,13 @@ func handleGetRunLogs(svc *Service, w http.ResponseWriter, r *http.Request) {
 	}
 	attempt := attemptParam(r, stepState)
 	iteration := iterationParam(r, stepState)
+	owner := svc.stepOwner(lookupCtx, runID, stepID)
 
 	if r.URL.Query().Get("follow") == "1" {
-		serveLogsFollow(svc, w, r, runID, stepID, attempt, iteration)
+		serveLogsFollow(svc, w, r, runID, stepID, attempt, iteration, owner)
 		return
 	}
-	serveLogsPage(svc, w, r, runID, stepID, attempt, iteration, stepState)
+	serveLogsPage(svc, w, r, runID, stepID, attempt, iteration, owner, stepState)
 }
 
 // attemptParam parses "attempt"; absent/invalid resolves to the step's
@@ -218,14 +220,15 @@ func cursorParam(r *http.Request) uint64 {
 // bounded page, and report next_cursor/eof.
 func serveLogsPage(
 	svc *Service, w http.ResponseWriter, r *http.Request,
-	runID, stepID string, attempt, iteration int, stepState dag.StepState,
+	runID, stepID string, attempt, iteration int, owner string, stepState dag.StepState,
 ) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	startCursor := cursorParam(r)
 	if r.URL.Query().Get("from") == "failure" {
-		found, seq, err := lastFailureMarkerSeq(ctx, svc.js, runID, stepID, attempt, iteration)
+		subjects := logSubjects(owner, runID, stepID, attempt, iteration)
+		found, seq, err := lastFailureMarkerSeq(ctx, svc.js, subjects)
 		if err != nil {
 			writeLogsReadError(w, err)
 			return
@@ -247,7 +250,8 @@ func serveLogsPage(
 	}
 
 	page, lastStreamSeq, err := fetchLogsPage(
-		ctx, svc.js, runID, stepID, attempt, iteration, startCursor, protocol.LogReadChunksMax,
+		ctx, svc.js, runID, stepID, attempt, iteration, owner, startCursor,
+		protocol.LogReadChunksMax,
 	)
 	if err != nil {
 		writeLogsReadError(w, err)
@@ -348,23 +352,34 @@ func stepTerminal(status dag.StepStatus) bool {
 // to be last") — the caller does not need to distinguish the two; both
 // mean "there is no recorded failure position to start from".
 func lastFailureMarkerSeq(
-	ctx context.Context, js jetstream.JetStream, runID, stepID string, attempt, iteration int,
+	ctx context.Context, js jetstream.JetStream, subjects []string,
 ) (found bool, seq uint64, err error) {
-	if js == nil {
-		panic("lastFailureMarkerSeq: js must not be nil")
+	if js == nil || len(subjects) == 0 {
+		panic("lastFailureMarkerSeq: js and subjects must be set")
 	}
 	stream, err := js.Stream(ctx, "BUILD_LOGS")
 	if err != nil {
 		return false, 0, fmt.Errorf("open BUILD_LOGS stream: %w", err)
 	}
-	subject := natsutil.LogSubject(runID, stepID, attempt, iteration)
-	msg, err := stream.GetLastMsgForSubject(ctx, subject)
-	if err != nil {
-		if errors.Is(err, jetstream.ErrMsgNotFound) {
-			return false, 0, nil
+	// The attempt's last message is the newest across its subjects (a
+	// step's logs are under one of them, native or its program's).
+	var msg *jetstream.RawStreamMsg
+	for _, subject := range subjects {
+		last, getErr := stream.GetLastMsgForSubject(ctx, subject)
+		if errors.Is(getErr, jetstream.ErrMsgNotFound) {
+			continue
 		}
-		return false, 0, fmt.Errorf("get last message for %s: %w", subject, err)
+		if getErr != nil {
+			return false, 0, fmt.Errorf("get last message for %s: %w", subject, getErr)
+		}
+		if msg == nil || last.Sequence > msg.Sequence {
+			msg = last
+		}
 	}
+	if msg == nil {
+		return false, 0, nil
+	}
+	subject := msg.Subject
 	var chunk protocol.LogChunk
 	if unmarshalErr := json.Unmarshal(msg.Data, &chunk); unmarshalErr != nil {
 		return false, 0, fmt.Errorf("unmarshal last message for %s: %w", subject, unmarshalErr)
@@ -384,7 +399,7 @@ func lastFailureMarkerSeq(
 // nats.go footgun this works around) — keeping that in a single
 // constructor is the point of this function.
 func logsOrderedConsumerSpec(
-	runID, stepID string, attempt, iteration int, cursor uint64,
+	runID, stepID string, attempt, iteration int, owner string, cursor uint64,
 ) natsutil.OrderedConsumerSpec {
 	if runID == "" {
 		panic("logsOrderedConsumerSpec: runID must not be empty")
@@ -393,7 +408,7 @@ func logsOrderedConsumerSpec(
 		panic("logsOrderedConsumerSpec: stepID must not be empty")
 	}
 	spec := natsutil.OrderedConsumerSpec{
-		FilterSubjects: []string{natsutil.LogSubject(runID, stepID, attempt, iteration)},
+		FilterSubjects: logSubjects(owner, runID, stepID, attempt, iteration),
 	}
 	if cursor > 0 {
 		spec.DeliverPolicy = jetstream.DeliverByStartSequencePolicy
@@ -413,7 +428,7 @@ func logsOrderedConsumerSpec(
 // more buffered right now", not "the subject is done forever".
 func fetchLogsPage(
 	ctx context.Context, js jetstream.JetStream,
-	runID, stepID string, attempt, iteration int, cursor uint64, max int,
+	runID, stepID string, attempt, iteration int, owner string, cursor uint64, max int,
 ) ([]protocol.LogChunk, uint64, error) {
 	if js == nil {
 		panic("fetchLogsPage: js must not be nil")
@@ -426,7 +441,7 @@ func fetchLogsPage(
 	}
 	cons, err := natsutil.OpenConsumer(
 		ctx, js, "BUILD_LOGS",
-		logsOrderedConsumerSpec(runID, stepID, attempt, iteration, cursor),
+		logsOrderedConsumerSpec(runID, stepID, attempt, iteration, owner, cursor),
 	)
 	if err != nil {
 		return nil, 0, fmt.Errorf("open BUILD_LOGS consumer: %w", err)
@@ -497,4 +512,42 @@ func decodeLogsMsg(
 		return protocol.LogChunk{}, meta.Sequence.Stream, false
 	}
 	return chunk, meta.Sequence.Stream, true
+}
+
+// logSubjects are the BUILD_LOGS subjects an attempt's logs can be on:
+// the native subject, which only fully credentialed workers may publish,
+// and, when the step's task belongs to a program, that program's
+// namespace (#885). Another program's namespace is never read, so a
+// program cannot pass its output off as this step's.
+func logSubjects(owner, runID, stepID string, attempt, iteration int) []string {
+	subjects := []string{natsutil.LogSubject(runID, stepID, attempt, iteration)}
+	if owner != "" {
+		subjects = append(subjects,
+			natsutil.ProgramLogSubject(owner, runID, stepID, attempt, iteration))
+	}
+	return subjects
+}
+
+// stepOwner names the program a step's task belongs to (the task's first
+// segment), or "" when the run or step cannot be resolved or the task
+// has no namespace.
+func (s *Service) stepOwner(ctx context.Context, runID, stepID string) string {
+	if runID == "" || stepID == "" {
+		panic("stepOwner: run and step must be set")
+	}
+	def, _, err := s.runAndDef(ctx, runID)
+	if err != nil {
+		return ""
+	}
+	for _, step := range def.Steps {
+		if step.ID != stepID {
+			continue
+		}
+		owner, _, namespaced := strings.Cut(step.Task, ".")
+		if !namespaced || program.ValidateName(owner) != nil {
+			return ""
+		}
+		return owner
+	}
+	return ""
 }

@@ -621,6 +621,13 @@ func (w *Worker) Start() error {
 // exist. Missing buckets are fine — features degrade gracefully.
 // Logs warnings so operators know which features are unavailable.
 func (w *Worker) bindOptionalKV() {
+	if w.tp.Relayed() {
+		// A relayed worker is a program: its checkpoints, signals and
+		// inputs go through the engine, and its NATS user may not open
+		// those buckets or read run snapshots.
+		w.bindWorkerStatusKV()
+		return
+	}
 	w.checkpointKV, _ = w.js.KeyValue(
 		context.Background(), "checkpoints",
 	)
@@ -641,10 +648,25 @@ func (w *Worker) bindOptionalKV() {
 				" will return errors",
 		)
 	}
-	// A relayed worker is a program: its NATS user may not read run
-	// snapshots, so the cancelled-run fast-skip stays off.
-	if !w.tp.Relayed() {
-		w.bindWorkflowRunsKV()
+	w.bindWorkflowRunsKV()
+	w.bindWorkerStatusKV()
+}
+
+// programKeyPrefix is "<program>." for a relayed worker, whose NATS user
+// may write the workers, worker_status and services buckets only under
+// its own name (#885), and "" for a native worker.
+func (w *Worker) programKeyPrefix() string {
+	if w.tp == nil || !w.tp.Relayed() {
+		return ""
+	}
+	return w.tp.RelayProgram() + "."
+}
+
+// bindWorkerStatusKV binds the per-worker counter snapshots; a missing
+// bucket disables drain-progress aggregation.
+func (w *Worker) bindWorkerStatusKV() {
+	if w.js == nil {
+		panic("bindWorkerStatusKV: js must not be nil")
 	}
 	w.workerStatusKV, _ = w.js.KeyValue(
 		context.Background(), "worker_status",
@@ -682,6 +704,7 @@ func (w *Worker) registerDirectory() {
 	if err != nil {
 		return
 	}
+	d.keyPrefix = w.programKeyPrefix()
 	w.dir = d
 	w.stopHeartbeat = make(chan struct{})
 	taskTypes := make([]string, 0, len(w.handlers))
@@ -1461,7 +1484,7 @@ func (w *Worker) publishWorkerStatus(skipped uint64) {
 		context.Background(), writeTimeout,
 	)
 	defer cancel()
-	_, err = w.workerStatusKV.Put(ctx, w.workerID, data)
+	_, err = w.workerStatusKV.Put(ctx, w.programKeyPrefix()+w.workerID, data)
 	if err != nil {
 		slog.Warn("worker_status KV write failed",
 			"error", err,

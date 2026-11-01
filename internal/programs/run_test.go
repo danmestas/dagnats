@@ -23,6 +23,7 @@ import (
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/joinkey"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/program"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
@@ -56,6 +57,20 @@ func (p *countingProgram) Stop(context.Context) error {
 }
 
 func serveFixture(t *testing.T, cfg Config) *fixture {
+	t.Helper()
+	f := registrationOnlyFixture(t, cfg)
+	// A program's step events, journal and stores go through the engine
+	// relay dagnats-api serves; Attach refuses to start without it.
+	f.svc = api.NewService(f.nc)
+	natsAPI := api.NewNATSAPI(f.svc, f.nc, "1.0.0")
+	natsAPI.Start()
+	t.Cleanup(natsAPI.Stop)
+	return f
+}
+
+// registrationOnlyFixture serves registration but no control plane, as a
+// dagnats whose NATS API is not up yet.
+func registrationOnlyFixture(t *testing.T, cfg Config) *fixture {
 	t.Helper()
 	f := newFixture(t, cfg)
 	service, err := Serve(f.nc, f.registrar)
@@ -147,11 +162,7 @@ func TestRun_ServesTasks(t *testing.T) {
 		t.Fatalf("orch.Start: %v", err)
 	}
 	t.Cleanup(orch.Stop)
-	svc := api.NewService(f.nc)
-	// The program's step events go through the engine relay.
-	natsAPI := api.NewNATSAPI(svc, f.nc, "1.0.0")
-	natsAPI.Start()
-	t.Cleanup(natsAPI.Stop)
+	svc := f.svc
 	wb := dag.NewWorkflow("notify.send")
 	wb.Task("work", "notify.work")
 	dagnatstest.Workflow(t, svc, wb)
@@ -239,6 +250,25 @@ func waitDone(t *testing.T, running *program.Running) error {
 		t.Fatal("Done never fired")
 	}
 	return nil
+}
+
+// TestRun_FailsWithoutAControlPlane: registration answers but nothing
+// serves the program relay; Run returns an error naming it rather than
+// attaching a worker whose every run would stall at running.
+func TestRun_FailsWithoutAControlPlane(t *testing.T) {
+	f := registrationOnlyFixture(t, Config{Open: true})
+	prog := &countingProgram{manifest: manifest("notify")}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := program.Run(ctx, prog, program.Options{
+		URL: f.nc.ConnectedUrl(), SeedPath: filepath.Join(t.TempDir(), "seed"),
+	})
+	if !errors.Is(err, natsutil.ErrRelayUnavailable) {
+		t.Fatalf("Run err = %v, want ErrRelayUnavailable", err)
+	}
+	if prog.conn.Load() != nil {
+		t.Fatal("Start ran with no control plane")
+	}
 }
 
 // watchControlPlane counts requests on api.> from now on.

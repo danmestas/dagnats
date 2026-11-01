@@ -911,7 +911,19 @@ Bodies cross unchanged, so payload limits are a direct publish's. A refusal is `
 - **Journal append and view:** the same step ownership and current nonce. An append's `Nats-Msg-Id` must be `journal.MsgID`'s shape for that run and step, with the attempt and iteration its headers state and the step's dispatch holds: JetStream dedup is stream-wide, so a record under another step's id would make that step's real append come back as a duplicate.
 - **Headers:** only `Nats-Msg-Id`, trace context and, for the journal, `Nats-Expected-Last-Subject-Sequence` and the `Dagnats-*` record headers are kept.
 - **Ownership failures** are all `not_yours`, so a program cannot probe another's runs.
-- **Bound:** each relay endpoint is its own subscription; a node runs at most 16 relays in flight per program and 256 in all, and refuses `busy` past that rather than queueing, so one program's flood cannot delay another's.
+- **Bound:** each relay endpoint is its own subscription. A node runs at most 8 step-event relays, 4 signal relays (a waiting `WaitForSignal` polls) and 16 other relays (journal, stores) in flight per program, and 256 in all, and refuses `busy` past that rather than queueing: one program's flood cannot delay another's, and a long journal replay cannot starve the same program's step events.
+- **Hardening:** every value that reaches a store assertion is checked at the relay boundary, and every relay op runs under a recover that refuses with `internal` and logs the panic, so no program request can take a node down.
+- **No control plane:** with nothing answering the relay, a relayed publish fails with `ErrRelayUnavailable` and logs an error naming the missing control plane; the worker NAKs the task for redelivery, so the step is not lost. `program.Attach` (and so `program.Run`) probes the relay once and refuses to start without it.
+
+The stores another worker or the engine acts on go the same way, each a request/reply subject with the operation in `Dagnats-Relay-Op`:
+
+| Subject | Operations | Served only for |
+|---------|-----------|-----------------|
+| `api.p.<name>.checkpoint` | `get`, `put`, `delete` | The program's own step (`Dagnats-Relay-Run`, `-Step`) with its current `Dagnats-Dispatch-Nonce` |
+| `api.p.<name>.signal` | `get`, `put` | Signals named `<name>.*` (`Dagnats-Relay-Key`) only: a `put` to a run (`Dagnats-Relay-Run`) with a step whose task is under `<name>.`, a `get` only with the caller's own current dispatch in that run (`-Run`, `-Step`, `Dagnats-Dispatch-Nonce`) |
+| `api.p.<name>.inputs` | `get`, `list`, `transition`, `claim` | The program's own step with its current nonce. A transition or claim applies to the stored submission (only the status, iteration and the revision the program read come from the request); its outcomes come back as `inputs_conflict`, `inputs_not_found` or `inputs_not_queued` |
+
+A program may only read `triggers`, may write `trigger_types` and the `workers`, `services` and `worker_status` directories only under its own `<name>.` keys (a program's worker keys its entries `<name>.<id>`), and may publish live output and logs only in its own namespace, `stream.p.<name>.>` and `logs.p.<name>.>`. Readers of a step's output read the native subject and the step owner's namespace only.
 
 Native workers with full credentials publish and read directly as before.
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -58,18 +60,20 @@ type relayOp func(ctx context.Context, prefix string, req micro.Request) (relayR
 // not queue the others.
 func (n *NATSAPI) relayEndpoints() []endpointSpec {
 	return []endpointSpec{
-		{"program-events", "api.p.*.events", n.relayHandler(n.relayEvent), programQueueGroup},
+		{"program-events", "api.p.*.events",
+			n.relayHandler(relayClassEvents, n.relayEvent), programQueueGroup},
 		{"program-journal-append", "api.p.*.journal.append",
-			n.relayHandler(n.relayJournalAppend), programQueueGroup},
+			n.relayHandler(relayClassOther, n.relayJournalAppend), programQueueGroup},
 		{"program-journal-view", "api.p.*.journal.view",
-			n.relayHandler(n.relayJournalView), programQueueGroup},
+			n.relayHandler(relayClassOther, n.relayJournalView), programQueueGroup},
 	}
 }
 
 // relayHandler runs op off the subscription's goroutine, within the
-// program's share of relayGate, so one program flooding the relay is
-// refused busy while the others keep their slots.
-func (n *NATSAPI) relayHandler(op relayOp) micro.HandlerFunc {
+// program's share of relayGate for class, so one program flooding the
+// relay is refused busy while the others keep their slots, and its own
+// step events keep theirs while its journal or stores are busy.
+func (n *NATSAPI) relayHandler(class relayClass, op relayOp) micro.HandlerFunc {
 	if op == nil {
 		panic("relayHandler: op must not be nil")
 	}
@@ -79,12 +83,15 @@ func (n *NATSAPI) relayHandler(op relayOp) micro.HandlerFunc {
 			respondRelay(req, relayResult{}, refuse(natsutil.RefusalBadRequest, err.Error()))
 			return
 		}
-		if !n.relayGate.acquire(prefix) {
+		if !n.relayGate.acquire(prefix, class) {
 			respondRelay(req, relayResult{}, refuse(natsutil.RefusalBusy, "relay at its bound"))
 			return
 		}
 		go func() {
-			defer n.relayGate.release(prefix)
+			defer n.relayGate.release(prefix, class)
+			// No program request may take the node down, whatever the
+			// bug: a panic becomes an "internal" refusal and a log line.
+			defer recoverRelay(req)
 			ctx, cancel := context.WithTimeout(
 				observe.ExtractTraceContextHeader(nats.Header(req.Headers())), relayTimeout)
 			defer cancel()
@@ -92,6 +99,17 @@ func (n *NATSAPI) relayHandler(op relayOp) micro.HandlerFunc {
 			respondRelay(req, result, err)
 		}()
 	}
+}
+
+// recoverRelay turns a panic in a relay op into an internal refusal.
+func recoverRelay(req micro.Request) {
+	recovered := recover()
+	if recovered == nil {
+		return
+	}
+	slog.Error("program relay op panicked; refused it",
+		"subject", req.Subject(), "panic", recovered, "stack", string(debug.Stack()))
+	respondRelay(req, relayResult{}, refuse(natsutil.RefusalInternal, "relay failed"))
 }
 
 func respondRelay(req micro.Request, result relayResult, err error) {

@@ -102,7 +102,7 @@ Call exactly one of these per execution:
 
 | Method | Purpose |
 |--------|---------|
-| `PutStream(data)` | Publish data to `stream.{runID}.{stepID}` via core NATS (ephemeral, fire-and-forget) |
+| `PutStream(data)` | Publish data to `stream.{runID}.{stepID}` via core NATS (ephemeral, fire-and-forget); a program's worker publishes to `stream.p.{program}.{runID}.{stepID}` |
 | `Heartbeat()` | Extend the AckWait claim to prevent redelivery during long work (does not extend the step timeout) |
 
 ### Logs

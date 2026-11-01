@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	"github.com/danmestas/dagnats/internal/consumername"
-	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 )
 
@@ -32,28 +31,27 @@ type Permissions struct {
 	Subscribe SubjectPermission
 }
 
-// sharedBuckets are the engine buckets every program reads and writes
-// through the worker SDK. Coarse-shared in v1: a program can read a
-// sibling's keys (design §2.3, accepted). workflow_runs is not among
-// them: run snapshots hold every step's dispatch nonce and output, so a
-// program could read another's results and forge its steps. The SDK
-// only read it to skip a cancelled run early; without it that check is
-// off and cancels arrive on the cancel subject (#885).
-var sharedBuckets = []string{
-	"workers", "services", "triggers", "trigger_types", "checkpoints",
-	"signals", "worker_status", natsutil.SubmissionsBucket,
-	natsutil.LeasesBucket,
-}
+// readOnlyBuckets are shared buckets the SDK only reads: triggers
+// (WatchTriggers' catch-up). Writing one would make the trigger service
+// fire another program's workflow.
+var readOnlyBuckets = []string{"triggers"}
 
-// engineEventSubjects are the shared subjects a worker publishes on
-// directly: task output streaming and build logs. Step events
-// (history.>) and journal records (journal.>) go through the engine
-// relay on api.p.<name>.events and api.p.<name>.journal.append, and
-// journal reads through api.p.<name>.journal.view (worker.
-// WithEngineRelay), each checked against the program's own step and
-// current dispatch. No engine stream is readable directly: the journal
+// scopedBuckets are shared buckets a program reads in full but writes
+// only under its own "<name>." keys: trigger_types (RegisterTriggerType)
+// and the worker, service and status directories, which a relayed
+// worker keys as "<name>.<id>", so one program cannot replace or delete
+// another's entries.
+var scopedBuckets = []string{"trigger_types", "workers", "services", "worker_status"}
+
+// engineEventSubjects are the shared subject roots a worker publishes on
+// directly, each only under its program's own namespace
+// "<root>.p.<name>.>": task output streaming and build logs. Readers
+// accept the namespace of the program that owns the step, so a program
+// cannot pass its output off as another's. Step events, journal records
+// and the buckets above go through the engine relay (worker.
+// WithEngineRelay). No engine stream is readable directly: the journal
 // and history hold other programs' model outputs and tool results.
-var engineEventSubjects = []string{"stream.>", "logs.>"}
+var engineEventSubjects = []string{"stream", "logs"}
 
 // PermissionsFor derives the NATS permission set for a manifest: every
 // crossing the worker SDK and a micro service make, the program's own
@@ -68,10 +66,16 @@ func PermissionsFor(m Manifest) Permissions {
 	pub = append(pub, "$JS.API.INFO")
 	pub = append(pub, taskQueuePublish(m.TaskTypes)...)
 	pub = append(pub, stickyPublish(m.TaskTypes)...)
-	pub = append(pub, engineEventSubjects...)
+	for _, root := range engineEventSubjects {
+		pub = append(pub, root+".p."+m.Name+".>")
+	}
 	pub = append(pub, "api.p."+m.Name+".>")
-	for _, b := range sharedBuckets {
-		pub = append(pub, sharedBucketPublish(b)...)
+	for _, b := range readOnlyBuckets {
+		pub = append(pub, readBucketPublish(b)...)
+	}
+	for _, b := range scopedBuckets {
+		pub = append(pub, readBucketPublish(b)...)
+		pub = append(pub, "$KV."+b+"."+m.Name+".>")
 	}
 	for _, s := range m.Streams {
 		pub = append(pub, ownStreamPublish(s.Name)...)
@@ -143,32 +147,6 @@ func stickyPublish(taskTypes []string) []string {
 	}
 	for _, t := range taskTypes {
 		out = append(out, "$JS.API.CONSUMER.CREATE.STICKY_TASKS.*.sticky."+t+".*.>")
-	}
-	return out
-}
-
-// sharedBucketPublish grants open, get, watch and put on one engine
-// bucket, but not create, update, purge or delete of the bucket.
-// Consumer delete is granted because nats.go deletes a KV watcher's
-// ephemeral consumer on Stop; denying it would make every Stop wait out
-// the JetStream timeout. The exposure is gated by the consumer name: a
-// generated NUID, which a program cannot list (no CONSUMER.LIST, NAMES
-// or INFO on these streams), so it can delete only watchers it created.
-func sharedBucketPublish(bucket string) []string {
-	if bucket == "" {
-		panic("program.sharedBucketPublish: bucket must not be empty")
-	}
-	stream := "KV_" + bucket
-	out := []string{
-		"$JS.API.STREAM.INFO." + stream,
-		"$JS.API.DIRECT.GET." + stream + ".>",
-		"$JS.API.CONSUMER.CREATE." + stream + ".>",
-		"$JS.API.CONSUMER.DELETE." + stream + ".*",
-		"$JS.FC." + stream + ".>",
-		"$KV." + bucket + ".>",
-	}
-	if strings.ContainsAny(bucket, ".*>") {
-		panic("program.sharedBucketPublish: bucket must be one literal token")
 	}
 	return out
 }

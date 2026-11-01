@@ -1252,3 +1252,48 @@ func TestAgentLoop_RetryAfterIterationsKeepsIterationOnDefaultRead(t *testing.T)
 			page.Chunks)
 	}
 }
+
+// TestGetRunLogs_ReadsOnlyTheOwningProgramsNamespace: a program's
+// worker logs under logs.p.<program>... (#885). The API reads the
+// native subject and the step owner's namespace (the task's first
+// segment), never another program's, so a program cannot pass its
+// output off as another program's step.
+func TestGetRunLogs_ReadsOnlyTheOwningProgramsNamespace(t *testing.T) {
+	svc, server, nc, _ := newLogsRestFixture(t, "notify.logs", "notify.work",
+		func(worker.TaskContext) error { return nil }, true)
+	runID := startLogsTestRun(t, svc, "notify.logs")
+	waitForStepKnown(t, svc, runID, "a", 5*time.Second)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	subjects := map[string]string{
+		natsutil.LogSubject(runID, "a", 1, 0):                    "native",
+		natsutil.ProgramLogSubject("notify", runID, "a", 1, 0):   "owner",
+		natsutil.ProgramLogSubject("artifact", runID, "a", 1, 0): "spoof",
+	}
+	for subject, text := range subjects {
+		data, err := json.Marshal(protocol.LogChunk{
+			Attempt: 1, Stream: protocol.LogStreamOut, Data: []byte(text), TS: time.Now(),
+		})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if _, err := js.Publish(ctx, subject, data); err != nil {
+			t.Fatalf("publish %s: %v", subject, err)
+		}
+	}
+	page, _ := getLogsPage(t, server.URL, runID, "?step=a&attempt=1")
+	got := map[string]bool{}
+	for _, chunk := range page.Chunks {
+		got[string(chunk.Data)] = true
+	}
+	if !got["native"] || !got["owner"] {
+		t.Fatalf("logs = %+v, want the native and the owner's chunks", page.Chunks)
+	}
+	if got["spoof"] {
+		t.Fatal("another program's namespace was read as this step's logs")
+	}
+}
