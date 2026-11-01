@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.47] - 2026-11-01
+
 ### Fixed
 
 - **A program's connection survives a dagnats node restarting.** A node serves clients before it has loaded its program users from the `programs` bucket (that needs JetStream, which starts with the node), so for a while it refuses every program key: about 22 seconds on a 3-node mesh. nats.go gives up after the same authorization error twice, so the program's connection closed for good, the process exited, and `program.Run`'s first dial gave up after 10 seconds. The connection now keeps retrying through refusals of its key, at first dial and on reconnect, for up to `program.Options.AuthRetryWindow` (default `program.AuthRetryWindowDefault`, two minutes), logging one warning per streak. It closes only if the refusals outlast the window, so a program whose key was really removed still ends.
