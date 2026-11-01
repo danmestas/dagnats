@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.41] - 2026-11-01
+
+### Upgrade notes
+
+- **Upgrade every node that serves the NATS control plane.** Before this release, an `api.workflows.register`, `api.runs.start` or `api.runs.get` request with an empty name crashed the dagnats process; any client able to publish those subjects could take a node down.
+- **Singleton admission now fails closed.** A singleton start that can't read or update its lock is refused and redelivered rather than admitted; a lock bucket outage longer than about 5.6 minutes dead-letters those starts. Lock keys that aren't valid KV keys, or start with `h.`, are now stored hashed, so a lock held under such a key across the upgrade is looked up under its new form.
+- **`@dagnats/bridge` ships as `dagnats-bridge-0.0.41.tgz`** on this release.
+
 ### Fixed
 
 - **A NATS control-plane request with an empty name no longer crashes the server.** `api.workflows.register` with no workflow name, `api.runs.start` with no workflow, and `api.runs.get` with an empty body each reached an assertion inside the handler and panicked the whole dagnats process, so any client able to publish those subjects could take a node down. They now reply with an `error`, and `POST /workflows` with no name answers 400 instead of a recovered panic. A test sends empty, `null`, `{}` and malformed bodies to every control-plane endpoint and checks the server keeps answering.
