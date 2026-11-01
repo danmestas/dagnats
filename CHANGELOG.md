@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Re-registering an unchanged workflow writes nothing.** A program re-registers every workflow on each boot, and each `workflow_defs` write is a replicated round trip (about 160 to 430 ms on a high-latency R3 mesh). When the definition's version is already retained and the latest pointer already holds the same bytes, a register is now two reads (the pointer read from the stream leader, as since #895) and no writes. A changed definition still writes its version and moves the pointer, and concurrent registers are still last-writer-wins.
+
 ## [0.0.45] - 2026-11-01
 
 ### Fixed

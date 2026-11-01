@@ -8,6 +8,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -68,6 +69,13 @@ func (e *ErrTooManyLiveWorkflowVersions) Error() string {
 // registers of the same name are last-writer-wins on the pointer, as
 // RegisterWorkflow has always been -- persistDef adds a version
 // record alongside that, it does not add locking.
+//
+// Re-registering byte-identical content writes nothing: a program
+// re-registers every workflow on each boot, and on a replicated bucket
+// each write is a round trip to a quorum. When the version is already
+// retained and the pointer already holds data, the register is two
+// reads. A concurrent register of other content may still land after
+// either read; last-writer-wins is unchanged.
 func (s *Service) persistDef(
 	ctx context.Context, def dag.WorkflowDef, data []byte,
 ) error {
@@ -80,10 +88,22 @@ func (s *Service) persistDef(
 	if def.Name == "" {
 		panic("persistDef: def.Name must not be empty")
 	}
-	if err := s.persistDefVersion(ctx, def, data); err != nil {
+	retained, err := s.persistDefVersion(ctx, def, data)
+	if err != nil {
 		return err
 	}
-	_, err := s.defKV.Put(ctx, def.Name, data)
+	if retained {
+		// defKV reads from the stream leader (#895), so a pointer just
+		// moved by another node is not mistaken for this content.
+		current, err := s.defKV.Get(ctx, def.Name)
+		if err == nil && bytes.Equal(current.Value(), data) {
+			return nil
+		}
+		if err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+			return err
+		}
+	}
+	_, err = s.defKV.Put(ctx, def.Name, data)
 	return err
 }
 
@@ -93,10 +113,11 @@ func (s *Service) persistDef(
 // name too). A no-op when that exact content hash is already stored
 // -- re-registering byte-identical content across an idempotent
 // forge poll must not grow the retained-version count or touch
-// retention accounting.
+// retention accounting. retained reports that the version was already
+// stored before this call.
 func (s *Service) persistDefVersion(
 	ctx context.Context, def dag.WorkflowDef, data []byte,
-) error {
+) (retained bool, err error) {
 	if ctx == nil {
 		panic("persistDefVersion: ctx must not be nil")
 	}
@@ -105,18 +126,18 @@ func (s *Service) persistDefVersion(
 	}
 	versionKey := dag.DefVersionKey(def.Name, dag.DefHash(def))
 	if _, err := s.defKV.Get(ctx, versionKey); err == nil {
-		return nil // already retained -- no growth, no eviction needed
+		return true, nil // already retained -- no growth, no eviction needed
 	} else if !errors.Is(err, jetstream.ErrKeyNotFound) {
-		return err
+		return false, err
 	}
 	if err := s.reserveDefVersionSlot(ctx, def.Name); err != nil {
-		return err
+		return false, err
 	}
-	_, err := s.defKV.Create(ctx, versionKey, data)
-	if err != nil && !errors.Is(err, jetstream.ErrKeyExists) {
-		return err
+	_, err = s.defKV.Create(ctx, versionKey, data)
+	if errors.Is(err, jetstream.ErrKeyExists) {
+		return true, nil // a concurrent register stored it first
 	}
-	return nil
+	return false, err
 }
 
 // reserveDefVersionSlot makes room for one new, not-yet-written
