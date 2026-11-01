@@ -27,6 +27,10 @@ import (
 // suffix used on $SRV.{PING,INFO,STATS}.<name> control subjects.
 const microServiceName = "dagnats-api"
 
+// apiQueueGroup is the queue group of every control-plane endpoint that
+// does not name its own, so one node answers each request.
+const apiQueueGroup = "dagnats-api"
+
 // microVersionRegexp mirrors the SemVer pattern micro enforces in
 // Config.valid (nats.go@v1.50.0/micro/service.go). We validate the build
 // string ourselves so we can substitute a safe sentinel instead of
@@ -130,11 +134,14 @@ func (n *NATSAPI) Start() {
 	endpoints = append(endpoints, n.relayEndpoints()...)
 	endpoints = append(endpoints, n.storeEndpoints()...)
 	for _, e := range endpoints {
-		// Without a queue group, every running INSTANCE receives each
-		// message -- preserving pre-micro behavior (raw nc.Subscribe).
-		// An endpoint that names a group is served by exactly one
-		// instance per request instead (leases: see leaseQueueGroup).
-		queue := micro.WithEndpointQueueGroupDisabled()
+		// Every node runs a NATSAPI, so an endpoint outside a queue group
+		// is handled once per node: one api.runs.start minted a run on
+		// each, and an idempotency key's check-then-create raced across
+		// them. Each request is served by exactly one instance instead,
+		// in apiQueueGroup unless the endpoint names its own (leases: see
+		// leaseQueueGroup). api.cluster.health stays broadcast
+		// (addClusterEndpoint): it reports the node that answers.
+		queue := micro.WithEndpointQueueGroup(apiQueueGroup)
 		if e.queueGroup != "" {
 			queue = micro.WithEndpointQueueGroup(e.queueGroup)
 		}

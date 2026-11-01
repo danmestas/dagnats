@@ -7,9 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **NATS control-plane requests are now answered by one node.** On a cluster every node used to handle each `api.*` request (the endpoints had no queue group). Now one node handles each, through the queue group `dagnats-api`. A client that relied on that, for example `nats req --replies 0` to reach every node, now gets one reply. `api.cluster.health` is still answered by every node.
+
 ### Changed
 
 - **Re-registering an unchanged workflow writes nothing.** A program re-registers every workflow on each boot, and each `workflow_defs` write is a replicated round trip (about 160 to 430 ms on a high-latency R3 mesh). When the definition's version is already retained and the latest pointer already holds the same bytes, a register is now two reads (the pointer read from the stream leader, as since #895) and no writes. A changed definition still writes its version and moves the pointer, and concurrent registers are still last-writer-wins.
+
+### Fixed
+
+- **One `api.runs.start` over NATS started a run on every node of a cluster.** Every node handled each unscoped control-plane request, so one start minted a run per node, an idempotency key's check-then-create raced across nodes, `api.runs.spawn` without a key spawned one child per node, and `api.workflows.register` and `api.runtimes.register` spent a rate-limit token and wrote an audit row on every node. Every `api.*` endpoint is now in one queue group, as `api.p.*` and `api.leases.*` already were.
 
 ## [0.0.45] - 2026-11-01
 

@@ -17,10 +17,9 @@ import (
 )
 
 // leaseQueueGroup makes each lease request land on exactly ONE dagnats
-// instance. The other control-plane endpoints fan out to every instance;
-// for a lease that would be wrong rather than wasteful -- N instances
-// racing the same acquire would hand the caller whichever reply arrives
-// first, not necessarily the one that reflects the grant.
+// instance, in a group of its own rather than apiQueueGroup's. N
+// instances racing the same acquire would hand the caller whichever
+// reply arrives first, not necessarily the one that reflects the grant.
 const leaseQueueGroup = "dagnats-leases"
 
 // leaseRequestTimeout bounds one lease call's NATS round trips (a read
@@ -37,8 +36,8 @@ const (
 	leaseKindUnsupported = "unsupported"
 )
 
-// endpointSpec is one micro endpoint. queueGroup "" means every
-// instance receives each request (the pre-micro behavior).
+// endpointSpec is one micro endpoint. queueGroup "" means apiQueueGroup:
+// one instance serves each request.
 type endpointSpec struct {
 	name       string
 	subject    string
