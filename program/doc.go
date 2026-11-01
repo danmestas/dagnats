@@ -40,6 +40,14 @@
 // Permissions is a plain struct. Converting it to nats-server options is
 // the server's job, so a program never links nats-server.
 //
+// A dagnats node starts serving before it has loaded its program users:
+// they come from the programs bucket, which needs JetStream, which
+// starts with the node. So a node that restarts refuses every program's
+// key for a while (about 22 seconds on a 3-node mesh). Run's connection
+// keeps retrying through that, at first dial and on reconnect, for up to
+// Options.AuthRetryWindow (AuthRetryWindowDefault, two minutes), and
+// closes only if the refusals outlast it.
+//
 // # Known limitations / threat model
 //
 // Programs on a dagnats are trusted: today they are all the operator's

@@ -457,6 +457,8 @@ func TestServer_RemovedUserIsDisconnected(t *testing.T) {
 	running, err := program.Run(ctx, prog, program.Options{
 		URL: srv.ns.ClientURL(), SeedPath: filepath.Join(t.TempDir(), "seed"),
 		JoinKey: createJoinKey(t, srv),
+		// A removed key is refused from then on; end the retry quickly.
+		AuthRetryWindow: time.Second,
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)

@@ -33,6 +33,13 @@ type Options struct {
 	// so they cannot override those. A ClosedHandler here is chained,
 	// not replaced.
 	NATSOptions []nats.Option
+	// AuthRetryWindow is how long the program's connection keeps
+	// retrying while the server refuses its key, at first dial and on
+	// reconnect: a restarting node serves before it has loaded its
+	// program users. Refusals that outlast it close the connection for
+	// good (Running.Done), as for a key that was removed. Zero means
+	// AuthRetryWindowDefault.
+	AuthRetryWindow time.Duration
 }
 
 // OptionsFromEnv reads <NAME>_DAGNATS_URL, <NAME>_SEED and
@@ -66,7 +73,9 @@ func OptionsFromEnv(name string) Options {
 // stream, consumer or handler exists.
 //
 // The program's connection reconnects forever, so a dagnats that is down
-// for a long upgrade does not strand the process. Hosts should still
+// for a long upgrade does not strand the process. It also rides out a
+// node that refuses its key while restarting (Options.AuthRetryWindow),
+// and closes only if the refusals outlast that window. Hosts should still
 // watch Running.Done and exit when it fires, so their supervisor
 // restarts them: it reports a connection closed for good.
 func Run(ctx context.Context, prog Program, opts Options) (*Running, error) {
@@ -146,17 +155,21 @@ func dialAsProgram(opts Options, name string, key Key, running *Running) (*nats.
 	if name == "" || running == nil {
 		panic("program.dialAsProgram: name and running must be set")
 	}
-	callerClosed, err := closedHandlerOf(opts.NATSOptions)
+	caller, err := callerHandlers(opts.NATSOptions)
 	if err != nil {
 		return nil, fmt.Errorf("program %s: NATSOptions: %w", name, err)
 	}
+	streak := newAuthStreak(name, opts.AuthRetryWindow)
 	options := append(append([]nats.Option(nil), opts.NATSOptions...),
 		nats.MaxReconnects(-1), nats.ReconnectWait(reconnectWait),
 		nats.ReconnectJitter(reconnectJitter, reconnectJitterForTLS),
-		nats.ClosedHandler(running.closedHandler(callerClosed)),
+		nats.IgnoreAuthErrorAbort(),
+		nats.ErrorHandler(streak.errorHandler(caller.AsyncErrorCB)),
+		nats.ReconnectHandler(streak.reconnectedHandler(caller.ReconnectedCB)),
+		nats.ClosedHandler(running.closedHandler(caller.ClosedCB)),
 		nats.CustomInboxPrefix(InboxPrefix(name)), nats.Name("program "+name),
 	)
-	nc, err := connectAsKey(opts.URL, options, key)
+	nc, err := connectAsKey(opts.URL, options, key, streak.window)
 	if errors.Is(err, nats.ErrNkeysNotSupported) {
 		nc, err = nats.Connect(opts.URL, options...)
 	}
@@ -167,16 +180,18 @@ func dialAsProgram(opts Options, name string, key Key, running *Running) (*nats.
 }
 
 // connectAsKey dials with the program's NKey, retrying an authorization
-// failure for up to firstDialRetryWindow. The registering node adds the
-// user before it replies, but a cluster's other nodes add it when their
-// watch of the programs bucket catches up, and the dial may land on one
-// of those first.
-func connectAsKey(url string, options []nats.Option, key Key) (*nats.Conn, error) {
-	if url == "" {
-		panic("program.connectAsKey: url must be set")
+// failure for up to window. The registering node adds the user before it
+// replies, but a cluster's other nodes add it when their watch of the
+// programs bucket catches up, and a node that is restarting adds it only
+// once that watch loads; the dial may land on one of those first.
+func connectAsKey(
+	url string, options []nats.Option, key Key, window time.Duration,
+) (*nats.Conn, error) {
+	if url == "" || window <= 0 {
+		panic("program.connectAsKey: url and window must be set")
 	}
 	withKey := append(slices.Clone(options), key.ConnectOption())
-	deadline := time.Now().Add(firstDialRetryWindow)
+	deadline := time.Now().Add(window)
 	for {
 		nc, err := nats.Connect(url, withKey...)
 		if !errors.Is(err, nats.ErrAuthorization) || time.Now().After(deadline) {
@@ -186,19 +201,20 @@ func connectAsKey(url string, options []nats.Option, key Key) (*nats.Conn, error
 	}
 }
 
-// closedHandlerOf returns the ClosedHandler options sets, if any, by
-// applying them to a scratch nats.Options.
-func closedHandlerOf(options []nats.Option) (nats.ConnHandler, error) {
+// callerHandlers returns the handlers options set (ClosedCB,
+// AsyncErrorCB, ReconnectedCB), by applying them to a scratch
+// nats.Options, so Run chains them rather than replacing them.
+func callerHandlers(options []nats.Option) (nats.Options, error) {
 	scratch := nats.GetDefaultOptions()
 	for _, option := range options {
 		if option == nil {
 			continue
 		}
 		if err := option(&scratch); err != nil {
-			return nil, err
+			return nats.Options{}, err
 		}
 	}
-	return scratch.ClosedCB, nil
+	return scratch, nil
 }
 
 // register sends req over a short-lived anonymous connection dialed
