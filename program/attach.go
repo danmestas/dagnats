@@ -50,7 +50,8 @@ func Attach(
 		return nil, err
 	}
 	a := &attachment{
-		manifest: m, prog: prog, worker: worker.NewWorker(nc),
+		manifest: m, prog: prog,
+		worker: worker.NewWorker(nc, worker.WithEngineRelay("api.p."+m.Name+".")),
 		logger: slog.Default().With("program", m.Name),
 	}
 	host := Host{Conn: nc, Grant: g, Logger: a.logger, Handle: a.handle}

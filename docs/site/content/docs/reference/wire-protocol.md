@@ -895,6 +895,17 @@ A program (#885) manages its own workflows on these subjects. Its NATS permissio
 
 Register refuses a def that reaches outside the prefix anywhere: its name, any step's `task` (normal, agent, agent loop, map), a sub-workflow target, a `wait_for_event` event type, or a `cancel_on` event type. It refuses planner steps outright for now: the engine checks a planner's run-time fragment only against `allowed_tasks`, not the fragment steps' types or configs, so a fragment could still reach outside the prefix. It also refuses a workflow the operator's control-plane policy grants or lets promote: grants name a workflow, not a definition, so the operator registers those. The check runs at registration only: a grant added later by hot reload does not evict a definition the program already registered under that name, so review a program's registered definition before granting it. `runs.get` and `runs.cancel` answer a run of another program's workflow with the same `{"error":"workflow run not found"}` as a run that does not exist. These endpoints share the queue group `dagnats-program-api`, so one instance serves each request. Workflow names under the prefix need not be declared in `Manifest.Workflows`.
 
+### Program step-event and journal relay
+
+A program's NATS user may not publish `history.>` or `journal.>`, read run snapshots (`workflow_runs`), or read the `WORKFLOW_HISTORY` stream: any of those would let it read another program's results or forge its steps. A program's worker (`worker.WithEngineRelay`, set by `program.Attach`) sends those publishes to the engine instead:
+
+| Subject | Request | Reply |
+|---------|---------|-------|
+| `api.p.<name>.events` | `{"subject","header","data"}`: the step event the worker would have published to `history.<runID>` | `{"stream","seq","duplicate"}`, `{"api_error"}`, or `{"error"}` |
+| `api.p.<name>.journal.append` | The same, for a journal record on `journal.<runID>.<step>` | The same |
+
+The engine relays a step event only if it is `step.started`, `step.continue`, `step.completed` or `step.failed`; its subject and `Nats-Msg-Id` are the event's own; it carries dispatch identity (identity-less events are refused whatever `legacy_step_events` says); and the step's task is under `<name>.` with that dispatch nonce current. A journal record needs the same step ownership and current nonce in `Dagnats-Dispatch-Nonce`. The relay keeps only `Nats-Msg-Id`, trace context and, for the journal, `Nats-Expected-Last-Subject-Sequence` and the `Dagnats-*` record headers; it returns a JetStream API error (the journal's compare-and-set rejection) as `api_error`, so the journal sees the same error code as on a direct publish. Every ownership failure is the same refusal, so a program cannot probe another's runs. Native workers with full credentials publish directly as before.
+
 ## Idempotent child-run spawn (`api.runs.spawn`)
 
 A gated handler spawns a child run with `api.runs.spawn`. The request is

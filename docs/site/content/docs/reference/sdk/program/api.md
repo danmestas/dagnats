@@ -398,7 +398,7 @@ type Permissions struct {
 ```
 
 <a name="PermissionsFor"></a>
-### func [PermissionsFor](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L58>)
+### func [PermissionsFor](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L66>)
 
 ```go
 func PermissionsFor(m Manifest) Permissions

@@ -37,6 +37,9 @@ import (
 type TracingPublisher struct {
 	nc *nats.Conn
 	js jetstream.JetStream
+	// relay, when set ("api.p.<name>."), sends history.> and journal.>
+	// publishes through the engine relay instead (WithRelay).
+	relay string
 }
 
 // NewTracingPublisher constructs a TracingPublisher. Panics on
@@ -177,6 +180,9 @@ func (tp *TracingPublisher) JSPublish(
 		Header:  nats.Header{},
 	}
 	observe.InjectTraceContext(ctx, msg, nil)
+	if op := RelayOp(msg.Subject); tp.relay != "" && op != "" {
+		return tp.relayPublish(ctx, msg, op, len(opts))
+	}
 	return tp.js.PublishMsg(ctx, msg, opts...)
 }
 
@@ -197,6 +203,9 @@ func (tp *TracingPublisher) JSPublishMsg(
 		panic("TracingPublisher.JSPublishMsg: msg must not be nil")
 	}
 	observe.InjectTraceContext(ctx, msg, nil)
+	if op := RelayOp(msg.Subject); tp.relay != "" && op != "" {
+		return tp.relayPublish(ctx, msg, op, len(opts))
+	}
 	return tp.js.PublishMsg(ctx, msg, opts...)
 }
 
@@ -246,6 +255,9 @@ func (tp *TracingPublisher) JSPublishMsgEvent(
 		return nil, err
 	}
 	msg.Data = data
+	if op := RelayOp(msg.Subject); tp.relay != "" && op != "" {
+		return tp.relayPublish(ctx, msg, op, len(opts))
+	}
 	return tp.js.PublishMsg(ctx, msg, opts...)
 }
 

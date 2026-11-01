@@ -287,6 +287,26 @@ type Worker struct {
 // WorkerOption configures optional Worker behavior.
 type WorkerOption func(*Worker)
 
+// WithEngineRelay routes the worker's step events and journal records
+// through the engine relay at prefix ("api.p.<program>.") instead of
+// publishing history.> and journal.> directly. program.Attach sets it:
+// a program's NATS user may not publish those subjects, because the
+// engine must check that each one is for the program's own step and its
+// current dispatch (#885). Native workers with full credentials keep the
+// direct path.
+func WithEngineRelay(prefix string) WorkerOption {
+	if prefix == "" {
+		panic("WithEngineRelay: prefix must not be empty")
+	}
+	return func(w *Worker) {
+		if w.tp == nil {
+			panic("WithEngineRelay: worker has no publisher")
+		}
+		w.tp = w.tp.WithRelay(prefix)
+		w.publishMsg = w.tp.JSPublishMsg
+	}
+}
+
 // WithGroups configures the worker to subscribe only to specific
 // worker groups. When provided, the worker subscribes to
 // task.{taskType}.{group}.> instead of task.{taskType}.>.
@@ -621,14 +641,10 @@ func (w *Worker) bindOptionalKV() {
 				" will return errors",
 		)
 	}
-	w.workflowRunsKV, _ = w.js.KeyValue(
-		context.Background(), "workflow_runs",
-	)
-	if w.workflowRunsKV == nil {
-		slog.Warn(
-			"workflow_runs KV bucket not found" +
-				" — cancelled-run fast-skip disabled",
-		)
+	// A relayed worker is a program: its NATS user may not read run
+	// snapshots, so the cancelled-run fast-skip stays off.
+	if !w.tp.Relayed() {
+		w.bindWorkflowRunsKV()
 	}
 	w.workerStatusKV, _ = w.js.KeyValue(
 		context.Background(), "worker_status",
@@ -637,6 +653,23 @@ func (w *Worker) bindOptionalKV() {
 		slog.Warn(
 			"worker_status KV bucket not found" +
 				" — drain-progress aggregation disabled",
+		)
+	}
+}
+
+// bindWorkflowRunsKV binds the run snapshots the cancelled-run
+// fast-skip reads; a missing bucket disables the skip.
+func (w *Worker) bindWorkflowRunsKV() {
+	if w.js == nil {
+		panic("bindWorkflowRunsKV: js must not be nil")
+	}
+	w.workflowRunsKV, _ = w.js.KeyValue(
+		context.Background(), "workflow_runs",
+	)
+	if w.workflowRunsKV == nil {
+		slog.Warn(
+			"workflow_runs KV bucket not found" +
+				" — cancelled-run fast-skip disabled",
 		)
 	}
 }
@@ -1351,6 +1384,9 @@ func (w *Worker) startTaskSpan(
 	tc.workerID = w.workerID
 	tc.restartLimit = w.restartLimit
 	tc.publishMsg = w.publishMsg
+	// The task publishes through the worker's publisher, so a relayed
+	// worker (WithEngineRelay) relays its step events and journal too.
+	tc.tp = w.tp
 	tc.logChunkFailures = w.logChunkFailures
 	// Deny-by-default gate: grant a control-plane handle only when the
 	// deployment wired one (w.controlPlane != nil) AND this step declared

@@ -119,6 +119,7 @@ func (n *NATSAPI) Start() {
 	}, n.leaseEndpoints()...)
 	endpoints = append(endpoints, n.inputEndpoints()...)
 	endpoints = append(endpoints, n.programEndpoints()...)
+	endpoints = append(endpoints, n.relayEndpoints()...)
 	for _, e := range endpoints {
 		// Without a queue group, every running INSTANCE receives each
 		// message -- preserving pre-micro behavior (raw nc.Subscribe).
