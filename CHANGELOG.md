@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.46] - 2026-11-01
+
 ### Upgrade notes
 
 - **NATS control-plane requests are now answered by one node.** On a cluster every node used to handle each `api.*` request (the endpoints had no queue group). Now one node handles each, through the queue group `dagnats-api`. A client that relied on that, for example `nats req --replies 0` to reach every node, now gets one reply. `api.cluster.health` is still answered by every node.
