@@ -97,6 +97,10 @@ const (
     RefusedProtocolClash       = "protocol_clash"
     RefusedProtocolNotAllowed  = "protocol_not_allowed"
     RefusedConfirmExpired      = "confirm_expired"
+    // RefusedJoinKeyRequiredToWiden: an update adds a protocol or a read
+    // of another program's bucket, and the request carries no join key
+    // that is usable and covers it.
+    RefusedJoinKeyRequiredToWiden = "join_key_required_to_widen"
 )
 ```
 
@@ -191,7 +195,7 @@ type BucketSpec struct {
 ```
 
 <a name="ErrRefused"></a>
-## type [ErrRefused](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L75-L78>)
+## type [ErrRefused](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L79-L82>)
 
 ErrRefused is dagnats declining to admit the program, with one of the Refused\* codes and a human\-readable detail.
 
@@ -203,7 +207,7 @@ type ErrRefused struct {
 ```
 
 <a name="ErrRefused.Error"></a>
-### func \(\*ErrRefused\) [Error](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L80>)
+### func \(\*ErrRefused\) [Error](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L84>)
 
 ```go
 func (e *ErrRefused) Error() string
@@ -255,7 +259,7 @@ type Host struct {
 ```
 
 <a name="Instance"></a>
-## type [Instance](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L46-L49>)
+## type [Instance](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L50-L53>)
 
 Instance identifies the process registering, for the operator.
 
@@ -454,7 +458,7 @@ type Program interface {
 ```
 
 <a name="RegisterReply"></a>
-## type [RegisterReply](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L66-L71>)
+## type [RegisterReply](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L70-L75>)
 
 RegisterReply is the reply: a Grant, Refused or Error. Error is a server fault \(a KV write failed\), not a refusal, and may succeed on retry. Confirm, when set, is the subject the program must confirm on after logging in with its key: a new registration is pending until then, and a manifest change is applied only then \(Grant may be nil\).
 
@@ -468,7 +472,7 @@ type RegisterReply struct {
 ```
 
 <a name="RegisterRequest"></a>
-## type [RegisterRequest](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L54-L59>)
+## type [RegisterRequest](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L58-L63>)
 
 RegisterRequest is the body of a RegisterSubject request. JoinKey may be empty on an open\-mode server. Only the public key is sent; the seed never leaves the program.
 

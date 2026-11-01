@@ -334,61 +334,102 @@ func TestUpdate_NewStreamFirstDoesNotHideALaterChange(t *testing.T) {
 	}
 }
 
-// TestUpdate_RechecksTheAdmittingJoinKey: a change other than Version is
-// refused once the key that admitted the program could not admit it
-// now. A Version-only rebuild is not a change to what was admitted and
-// still goes through.
-func TestUpdate_RechecksTheAdmittingJoinKey(t *testing.T) {
-	grow := func(m program.Manifest) program.Manifest {
-		m = cloneManifest(m)
-		m.TaskTypes = append(m.TaskTypes, "notify.more")
-		return m
+// TestUpdate_OwnPrefixGrowthNeedsNoJoinKey: a confirmed change that
+// stays under the program's own prefix is admitted on its NKey alone,
+// even once the key that admitted it is revoked, and spends no use.
+func TestUpdate_OwnPrefixGrowthNeedsNoJoinKey(t *testing.T) {
+	f := newFixture(t, Config{})
+	key, plaintext := f.createKey(t, joinkey.Spec{Label: "k", UsesMax: 1})
+	req := request(t, "notify", plaintext)
+	f.mustRegister(t, req)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := f.keys.Revoke(ctx, key.ID); err != nil {
+		t.Fatalf("Revoke: %v", err)
 	}
-	t.Run("revoked", func(t *testing.T) {
-		f := newFixture(t, Config{Open: true})
-		key, plaintext := f.createKey(t, joinkey.Spec{Label: "k", UsesMax: 1})
-		req := request(t, "notify", plaintext)
-		f.mustRegister(t, req)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := f.keys.Revoke(ctx, key.ID); err != nil {
-			t.Fatalf("Revoke: %v", err)
-		}
+	changed := req
+	changed.JoinKey = ""
+	changed.Manifest = cloneManifest(req.Manifest)
+	changed.Manifest.TaskTypes = append(changed.Manifest.TaskTypes, "notify.more")
+	changed.Manifest.Workflows = append(changed.Manifest.Workflows, "notify.flow")
+	changed.Manifest.Buckets = append(changed.Manifest.Buckets,
+		program.BucketSpec{Name: "notify_more", MaxBytes: 1 << 20})
+	f.mustRegister(t, changed)
+	stored := f.record(t, "notify").Manifest
+	if !slices.Contains(stored.TaskTypes, "notify.more") || len(stored.Buckets) != 2 {
+		t.Fatalf("stored manifest = %+v, want the growth applied", stored)
+	}
+	if _, err := f.js.KeyValue(ctx, "notify_more"); err != nil {
+		t.Fatalf("new bucket not provisioned: %v", err)
+	}
+}
+
+// TestUpdate_WideningNeedsACoveringJoinKey: a change that adds a protocol
+// or a read of another program's bucket is refused without a join key
+// that covers it, and admitted with one, spending a use. Reach already
+// granted is not widening again.
+func TestUpdate_WideningNeedsACoveringJoinKey(t *testing.T) {
+	f := newFixture(t, Config{})
+	_, plaintext := f.createKey(t, joinkey.Spec{Label: "k", UsesMax: 1})
+	req := request(t, "notify", plaintext)
+	f.mustRegister(t, req)
+	widen := func(joinKey string, protocols, reads []string) program.RegisterRequest {
 		changed := req
-		changed.Manifest = grow(req.Manifest)
-		_, err := f.register(t, changed)
-		wantRefused(t, err, program.RefusedJoinKeyInvalid)
-		rebuilt := req
-		rebuilt.Manifest = cloneManifest(req.Manifest)
-		rebuilt.Manifest.Version = "1.0.1"
-		f.mustRegister(t, rebuilt)
-	})
-	t.Run("expired", func(t *testing.T) {
-		f := newFixture(t, Config{Open: true})
-		expires := time.Now().Add(500 * time.Millisecond)
-		_, plaintext := f.createKey(t, joinkey.Spec{Label: "k", ExpiresAt: &expires})
-		req := request(t, "notify", plaintext)
-		f.mustRegister(t, req)
-		time.Sleep(time.Until(expires) + 50*time.Millisecond)
-		changed := req
-		changed.Manifest = grow(req.Manifest)
-		_, err := f.register(t, changed)
-		wantRefused(t, err, program.RefusedJoinKeyInvalid)
-	})
-	t.Run("protocol outside glob", func(t *testing.T) {
-		f := newFixture(t, Config{Open: true})
-		_, plaintext := f.createKey(t, joinkey.Spec{Label: "k", NameGlob: "notify*"})
-		req := request(t, "notify", plaintext)
-		f.mustRegister(t, req)
-		changed := req
-		changed.Manifest = grow(req.Manifest)
-		changed.Manifest.Protocols = []string{"tool.exec"}
-		_, err := f.register(t, changed)
-		wantRefused(t, err, program.RefusedProtocolNotAllowed)
-		if slices.Contains(f.record(t, "notify").Manifest.Protocols, "tool.exec") {
-			t.Fatal("a refused protocol was stored")
-		}
-	})
+		changed.JoinKey = joinKey
+		changed.Manifest = cloneManifest(req.Manifest)
+		changed.Manifest.Protocols, changed.Manifest.Reads = protocols, reads
+		return changed
+	}
+	_, err := f.register(t, widen("", []string{"tool.exec"}, nil))
+	wantRefusedNaming(t, err, "tool.exec")
+	_, err = f.register(t, widen("", nil, []string{"tool_registry"}))
+	wantRefusedNaming(t, err, "tool_registry")
+	narrow, narrowPlain := f.createKey(t, joinkey.Spec{Label: "n", NameGlob: "notify*"})
+	_, err = f.register(t, widen(narrowPlain, []string{"tool.exec"}, nil))
+	wantRefusedNaming(t, err, "tool.exec")
+	_, err = f.register(t, widen(narrowPlain, nil, []string{"tool_registry"}))
+	wantRefusedNaming(t, err, "tool_registry")
+	if got := f.usesLeft(t, narrow.ID); got != narrow.UsesLeft {
+		t.Fatalf("UsesLeft = %d, want %d: a refused widening spends no use", got, narrow.UsesLeft)
+	}
+	if stored := f.record(t, "notify").Manifest; len(stored.Protocols)+len(stored.Reads) != 0 {
+		t.Fatalf("refused widening stored: %+v", stored)
+	}
+
+	wide, widePlain := f.createKey(t, joinkey.Spec{Label: "w", UsesMax: 2})
+	f.mustRegister(t, widen(widePlain, []string{"tool.exec"}, []string{"tool_registry"}))
+	if got := f.usesLeft(t, wide.ID); got != 1 {
+		t.Fatalf("UsesLeft = %d, want 1: a widening spends a use", got)
+	}
+	grown := widen("", []string{"tool.exec"}, []string{"tool_registry"})
+	grown.Manifest.TaskTypes = append(grown.Manifest.TaskTypes, "notify.more")
+	f.mustRegister(t, grown)
+	if got := f.usesLeft(t, wide.ID); got != 1 {
+		t.Fatalf("UsesLeft = %d, want 1: granted reach is not widened again", got)
+	}
+}
+
+// TestUpdate_OpenModeWidensWithoutAKey: an open server admits a keyless
+// program with protocols, so it admits a keyless widening too.
+func TestUpdate_OpenModeWidensWithoutAKey(t *testing.T) {
+	f := newFixture(t, Config{Open: true})
+	req := request(t, "notify", "")
+	f.mustRegister(t, req)
+	changed := req
+	changed.Manifest = cloneManifest(req.Manifest)
+	changed.Manifest.Protocols = []string{"tool.exec"}
+	f.mustRegister(t, changed)
+	if got := f.record(t, "notify").Manifest.Protocols; !slices.Equal(got, []string{"tool.exec"}) {
+		t.Fatalf("stored protocols = %v, want [tool.exec]", got)
+	}
+}
+
+func wantRefusedNaming(t *testing.T, err error, widened string) {
+	t.Helper()
+	wantRefused(t, err, program.RefusedJoinKeyRequiredToWiden)
+	if !strings.Contains(err.Error(), widened) {
+		t.Fatalf("refusal %v does not name %q", err, widened)
+	}
 }
 
 // TestRegister_AdoptingKeepsOperatorSettings: an operator's stream is
@@ -541,5 +582,24 @@ func TestUpdate_RollBackLeavesANewerUpdatesStreams(t *testing.T) {
 	}
 	if got := bucket.CachedInfo().Config.MaxMsgsPerSubject; got != 5 {
 		t.Fatalf("notify_state History = %d, want B's 5", got)
+	}
+}
+
+// TestUpdate_RefusedWideningRefundsItsUse: a widening that spends a use
+// and is then refused by admission (here a protocol under another
+// program's name) gets the use back.
+func TestUpdate_RefusedWideningRefundsItsUse(t *testing.T) {
+	f := newFixture(t, Config{})
+	key, plaintext := f.createKey(t, joinkey.Spec{Label: "k", UsesMax: 3})
+	f.mustRegister(t, request(t, "tool", plaintext))
+	req := request(t, "notify", plaintext)
+	f.mustRegister(t, req)
+	changed := req
+	changed.Manifest = cloneManifest(req.Manifest)
+	changed.Manifest.Protocols = []string{"tool.exec"}
+	_, err := f.register(t, changed)
+	wantRefused(t, err, program.RefusedProtocolClash)
+	if got := f.usesLeft(t, key.ID); got != 1 {
+		t.Fatalf("UsesLeft = %d, want 1: a refused widening refunds its use", got)
 	}
 }
