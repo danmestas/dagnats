@@ -179,3 +179,107 @@ func waitScopedStatus(t *testing.T, nc *nats.Conn, program, runID string, want d
 	}
 	t.Fatalf("run %s did not reach %s", runID, want)
 }
+
+// TestScopedRegisterConfinesEveryStepType: a program may not dispatch to,
+// wait on, or be cancelled by anything outside its prefix, through any
+// step type or workflow field.
+func TestScopedRegisterConfinesEveryStepType(t *testing.T) {
+	nc := startScopedAPI(t)
+	match := dag.Match{Left: "task_id", Op: dag.MatchOpEq, Right: "input.task_id"}
+	type builder = *dag.WorkflowBuilder
+	cases := map[string]func(builder){
+		"normal task": func(b builder) { b.Task("a", "artifact.agent") },
+		"agent":       func(b builder) { b.Agent("a", "artifact.agent", nil) },
+		"agent loop": func(b builder) {
+			b.AgentLoop("a", "artifact.agent").WithMaxIterations(3)
+		},
+		"map": func(b builder) {
+			b.Map("a", "artifact.agent").After(b.Task("src", "notify.src"))
+		},
+		"planner task": func(b builder) {
+			b.Planner("a", "artifact.plan", plannerCfg("notify.x"))
+		},
+		"planner open": func(b builder) { b.Planner("a", "notify.plan", plannerCfg()) },
+		"planner allows": func(b builder) {
+			b.Planner("a", "notify.plan", plannerCfg("notify.x", "artifact.x"))
+		},
+		"wait event": func(b builder) { b.WaitForEvent("a", waitOpts("artifact.done", match)) },
+		"cancel on": func(b builder) {
+			b.Task("a", "notify.work")
+			b.CancelOn("artifact.abort", match)
+		},
+	}
+	for name, add := range cases {
+		wb := dag.NewWorkflow("notify.case")
+		add(wb)
+		if replyField(t, registerScoped(t, nc, "notify", wb), "error") == "" {
+			t.Errorf("%s: a step outside notify. was registered", name)
+		}
+	}
+	allowed := dag.NewWorkflow("notify.ok")
+	plan := allowed.Planner("plan", "notify.plan", plannerCfg("notify.x"))
+	wait := allowed.WaitForEvent("wait", waitOpts("notify.done", match))
+	wait.After(plan)
+	allowed.Map("fan", "notify.item").After(wait)
+	allowed.CancelOn("notify.abort", match)
+	reply := registerScoped(t, nc, "notify", allowed)
+	if replyField(t, reply, "status") != "registered" {
+		t.Fatalf("a fully confined workflow was refused: %s", reply)
+	}
+}
+
+func waitOpts(event string, match dag.Match) dag.WaitForEventOpts {
+	return dag.WaitForEventOpts{Event: event, Match: match, Timeout: time.Minute}
+}
+
+func plannerCfg(allowed ...string) dag.PlannerConfig {
+	return dag.PlannerConfig{MaxSteps: 5, AllowedTasks: allowed}
+}
+
+// TestScopedRegisterRefusesGrantedWorkflows: a workflow the operator's
+// policy grants (or lets promote) is registered by the operator, so a
+// program cannot swap new steps under an existing grant.
+func TestScopedRegisterRefusesGrantedWorkflows(t *testing.T) {
+	_, nc := natstest.StartServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	holder := &engine.GrantPolicyHolder{}
+	holder.Store(engine.NewGrantPolicy(
+		[]string{"notify.deploy"}, []string{"notify.promote"}))
+	svc := NewServiceWithLimits(nc, RuntimeLimits{}, WithGrantPolicyHolder(holder))
+	natsAPI := NewNATSAPI(svc, nc, "1.0.0")
+	natsAPI.Start()
+	t.Cleanup(natsAPI.Stop)
+	for _, name := range []string{"notify.deploy", "notify.promote"} {
+		wb := dag.NewWorkflow(name)
+		wb.Task("a", "notify.work")
+		if replyField(t, registerScoped(t, nc, "notify", wb), "error") == "" {
+			t.Errorf("program registered granted workflow %s", name)
+		}
+	}
+	plain := dag.NewWorkflow("notify.plain")
+	plain.Task("a", "notify.work")
+	if replyField(t, registerScoped(t, nc, "notify", plain), "status") != "registered" {
+		t.Fatal("an ungranted workflow was refused")
+	}
+}
+
+// TestConfineDefSubWorkflowBarePrefix: a sub-workflow target equal to the
+// bare prefix is not under it. The builder cannot produce one (its task
+// would be invalid), so the def is edited after Build.
+func TestConfineDefSubWorkflowBarePrefix(t *testing.T) {
+	wb := dag.NewWorkflow("notify.wrap")
+	wb.SubWorkflow("inner", "notify.child")
+	def, err := wb.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if err := confineDef(def, "notify."); err != nil {
+		t.Fatalf("a confined sub-workflow was refused: %v", err)
+	}
+	def.Steps[0].Config = dag.MarshalConfig(&dag.SubWorkflowConfig{Workflow: "notify."})
+	if err := confineDef(def, "notify."); err == nil {
+		t.Fatal("a sub-workflow targeting the bare prefix was accepted")
+	}
+}

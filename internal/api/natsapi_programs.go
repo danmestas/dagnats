@@ -68,8 +68,16 @@ func (n *NATSAPI) handleProgramRegister(req micro.Request) {
 		n.replyErr(req, err)
 		return
 	}
-	if err := workflowUnderPrefix(def, prefix); err != nil {
+	if err := confineDef(def, prefix); err != nil {
 		n.replyErr(req, err)
+		return
+	}
+	if policy := n.svc.grantPolicy.Load(); policy.GrantsControlPlane(def.Name) ||
+		policy.AllowsPromote(def.Name) {
+		// A grant names a workflow, not a definition: letting the program
+		// re-register it would swap new steps under the operator's grant.
+		n.replyErr(req, fmt.Errorf("workflow %q holds an operator grant; "+
+			"the operator registers it, not the program", def.Name))
 		return
 	}
 	ctx := observe.ExtractTraceContextHeader(nats.Header(req.Headers()))
@@ -78,32 +86,6 @@ func (n *NATSAPI) handleProgramRegister(req micro.Request) {
 		return
 	}
 	n.reply(req, map[string]string{"status": "registered", "name": def.Name})
-}
-
-// workflowUnderPrefix refuses a def named outside prefix, or with a
-// sub-workflow step that would start a workflow outside it: that would
-// run another program's workflow on this program's behalf.
-func workflowUnderPrefix(def dag.WorkflowDef, prefix string) error {
-	if prefix == "" {
-		panic("workflowUnderPrefix: prefix must not be empty")
-	}
-	if !strings.HasPrefix(def.Name, prefix) || len(def.Name) == len(prefix) {
-		return fmt.Errorf("workflow %q is not under %q", def.Name, prefix)
-	}
-	for _, step := range def.Steps {
-		if step.Type != dag.StepTypeSubWorkflow {
-			continue
-		}
-		cfg, err := dag.ParseSubWorkflowConfig(step)
-		if err != nil {
-			return fmt.Errorf("step %q: %w", step.ID, err)
-		}
-		if !strings.HasPrefix(cfg.Workflow, prefix) {
-			return fmt.Errorf("step %q starts workflow %q, which is not under %q",
-				step.ID, cfg.Workflow, prefix)
-		}
-	}
-	return nil
 }
 
 func (n *NATSAPI) handleProgramStart(req micro.Request) {
@@ -120,7 +102,7 @@ func (n *NATSAPI) handleProgramStart(req micro.Request) {
 		n.replyErr(req, err)
 		return
 	}
-	if !strings.HasPrefix(r.Workflow, prefix) {
+	if !underPrefix(r.Workflow, prefix) {
 		n.replyErr(req, fmt.Errorf("workflow %q is not under %q", r.Workflow, prefix))
 		return
 	}
@@ -151,7 +133,7 @@ func (n *NATSAPI) ownedRun(req micro.Request) (context.Context, string, error) {
 	}
 	ctx := observe.ExtractTraceContextHeader(nats.Header(req.Headers()))
 	run, err := n.svc.GetRun(ctx, runID)
-	foreign := err == nil && !strings.HasPrefix(run.WorkflowID, prefix)
+	foreign := err == nil && !underPrefix(run.WorkflowID, prefix)
 	if foreign || errors.Is(err, engine.ErrRunNotFound) {
 		return nil, "", engine.ErrRunNotFound
 	}

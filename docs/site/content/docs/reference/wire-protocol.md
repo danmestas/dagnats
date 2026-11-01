@@ -893,7 +893,7 @@ A program (#885) manages its own workflows on these subjects. Its NATS permissio
 | `api.p.<name>.runs.get` | The run ID as plain text | The run snapshot |
 | `api.p.<name>.runs.cancel` | The run ID as plain text | `{"status":"cancelled","run_id"}` |
 
-Register refuses a def named outside the prefix, and a def with a sub-workflow step that starts a workflow outside it. `runs.get` and `runs.cancel` answer a run of another program's workflow with the same `{"error":"workflow run not found"}` as a run that does not exist. These endpoints share the queue group `dagnats-program-api`, so one instance serves each request. Workflow names under the prefix need not be declared in `Manifest.Workflows`.
+Register refuses a def that reaches outside the prefix anywhere: its name, any step's `task` (normal, agent, agent loop, map, planner), a sub-workflow target, a planner without `allowed_tasks` or with one outside the prefix, a `wait_for_event` event type, or a `cancel_on` event type. It also refuses a workflow the operator's control-plane policy grants or lets promote: grants name a workflow, not a definition, so the operator registers those. `runs.get` and `runs.cancel` answer a run of another program's workflow with the same `{"error":"workflow run not found"}` as a run that does not exist. These endpoints share the queue group `dagnats-program-api`, so one instance serves each request. Workflow names under the prefix need not be declared in `Manifest.Workflows`.
 
 ## Idempotent child-run spawn (`api.runs.spawn`)
 
