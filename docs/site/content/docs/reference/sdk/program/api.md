@@ -428,13 +428,13 @@ type Permissions struct {
 ```
 
 <a name="PermissionsFor"></a>
-### func [PermissionsFor](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L71>)
+### func [PermissionsFor](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L73>)
 
 ```go
 func PermissionsFor(m Manifest) Permissions
 ```
 
-PermissionsFor derives the NATS permission set for a manifest: every crossing the worker SDK and a micro service make, the program's own subjects, streams and buckets, its protocols, and subscribe on "\_INBOX.\<name\>.\>" and nothing wider. Pure. Panics on a manifest that fails Validate: permissions for an invalid manifest are meaningless.
+PermissionsFor derives the NATS permission set for a manifest: every crossing the worker SDK and a micro service make, the program's own subjects, streams and buckets, its protocols, its own output under "stream.p.\<name\>.\>" and "logs.p.\<name\>.\>", and subscribe on "\_INBOX.\<name\>.\>" and nothing wider. Pure. Panics on a manifest that fails Validate: permissions for an invalid manifest are meaningless.
 
 These are guardrails against a trusted program's mistakes, not an isolation boundary: JetStream reply reflection lets a program write any stream or bucket of the account \(package doc, dagnats\#909\).
 

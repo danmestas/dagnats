@@ -775,3 +775,46 @@ func TestPermissions_StickyConsumerNamesNotDisclosed(t *testing.T) {
 		}
 	}
 }
+
+// TestPermissions_OwnOutputSubscribable (#912): a program may follow its
+// own step output and build logs live, under "stream.p.<name>.>" and
+// "logs.p.<name>.>", and no other program's.
+func TestPermissions_OwnOutputSubscribable(t *testing.T) {
+	toy, other := validManifest(), validManifest()
+	other.Name, other.TaskTypes, other.Workflows = "other", nil, nil
+	other.Streams, other.Buckets, other.Protocols = nil, nil, nil
+	perms := program.PermissionsFor(toy)
+	for _, subject := range []string{"stream.p.toy.run1.build", "logs.p.toy.run1.step1.1.0"} {
+		// Positive: the program's own output namespaces.
+		if !allowedBy(perms.Subscribe, subject) {
+			t.Errorf("subscribe %q not granted", subject)
+		}
+	}
+	for _, subject := range []string{"stream.p.other.run1.build", "logs.p.other.x", "stream.x"} {
+		// Negative: another program's output, or the shared root.
+		if allowedBy(perms.Subscribe, subject) {
+			t.Errorf("subscribe %q granted, want denied", subject)
+		}
+	}
+	f := startFixture(t, toy, other)
+	nc := f.dialProgram(t, "toy")
+	own, err := nc.SubscribeSync("stream.p.toy.>")
+	if err != nil {
+		t.Fatalf("subscribe own: %v", err)
+	}
+	if _, err := nc.SubscribeSync("stream.p.other.>"); err != nil {
+		t.Fatalf("subscribe other: %v", err)
+	}
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if err := f.admin.Publish("stream.p.toy.run1.build", []byte("line")); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if msg, err := own.NextMsg(2 * time.Second); err != nil || string(msg.Data) != "line" {
+		t.Fatalf("own output not received: %v", err)
+	}
+	if !waitFor(func() bool { return f.violations.contains("stream.p.other.>") }) {
+		t.Error("no violation logged for subscribing to another program's output")
+	}
+}

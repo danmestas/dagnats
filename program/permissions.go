@@ -45,7 +45,8 @@ var scopedBuckets = []string{"trigger_types", "workers", "services", "worker_sta
 
 // engineEventSubjects are the shared subject roots a worker publishes on
 // directly, each only under its program's own namespace
-// "<root>.p.<name>.>": task output streaming and build logs. Readers
+// "<root>.p.<name>.>": task output streaming and build logs. The program
+// may subscribe there too, to follow its own output live (#912). Readers
 // accept the namespace of the program that owns the step, so a program
 // cannot pass its output off as another's. Step events, journal records
 // and the buckets above go through the engine relay (worker.
@@ -55,7 +56,8 @@ var engineEventSubjects = []string{"stream", "logs"}
 
 // PermissionsFor derives the NATS permission set for a manifest: every
 // crossing the worker SDK and a micro service make, the program's own
-// subjects, streams and buckets, its protocols, and subscribe on
+// subjects, streams and buckets, its protocols, its own output under
+// "stream.p.<name>.>" and "logs.p.<name>.>", and subscribe on
 // "_INBOX.<name>.>" and nothing wider. Pure. Panics on a manifest that
 // fails Validate: permissions for an invalid manifest are meaningless.
 //
@@ -78,6 +80,7 @@ func PermissionsFor(m Manifest) Permissions {
 	pub = append(pub, stickyPublish(m.TaskTypes)...)
 	for _, root := range engineEventSubjects {
 		pub = append(pub, root+".p."+m.Name+".>")
+		sub = append(sub, root+".p."+m.Name+".>")
 	}
 	pub = append(pub, "api.p."+m.Name+".>")
 	for _, b := range readOnlyBuckets {
