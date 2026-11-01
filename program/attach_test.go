@@ -9,7 +9,6 @@ package program_test
 import (
 	"context"
 	"errors"
-	"github.com/danmestas/dagnats/internal/natsutil"
 	"strings"
 	"testing"
 	"time"
@@ -146,7 +145,7 @@ func TestAttach_FailsFastWithoutAControlPlane(t *testing.T) {
 	defer cancel()
 	start := time.Now()
 	_, err := program.Attach(ctx, f.dialProgram(t, m.Name), prog, toyGrant())
-	if !errors.Is(err, natsutil.ErrRelayUnavailable) {
+	if !errors.Is(err, program.ErrRelayUnavailable) {
 		t.Fatalf("Attach err = %v, want ErrRelayUnavailable", err)
 	}
 	if prog.starts.Load() != 0 {

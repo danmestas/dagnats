@@ -17,6 +17,12 @@ import (
 // replicasMax matches the largest JetStream cluster dagnats supports.
 const replicasMax = 5
 
+// ErrRelayUnavailable is returned by Attach, and so Run, when no dagnats control
+// plane answers the program relay: the server is older than v0.0.42 or runs
+// without its NATS API. A host can test for it with errors.Is to tell an
+// operator to upgrade or start the dagnats server.
+var ErrRelayUnavailable = natsutil.ErrRelayUnavailable
+
 // Attach is the one path that calls prog.Start. It takes the Grant the
 // caller already obtained (registration, the in-process host, or a
 // literal in tests), builds a Host, calls Start, and then starts the
