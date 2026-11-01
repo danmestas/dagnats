@@ -168,6 +168,12 @@ func (n *NATSAPI) handleRegister(req micro.Request) {
 		n.reply(req, map[string]string{"error": err.Error()})
 		return
 	}
+	// RegisterWorkflow asserts a name as a programmer contract; over the
+	// wire it is caller input and must not crash the server.
+	if def.Name == "" {
+		n.reply(req, map[string]string{"error": "workflow name is required"})
+		return
+	}
 	if err := n.svc.RegisterWorkflow(
 		observe.ExtractTraceContextHeader(nats.Header(req.Headers())), def,
 	); err != nil {
@@ -192,6 +198,10 @@ func (n *NATSAPI) handleStartRun(req micro.Request) {
 		n.reply(req, map[string]string{"error": err.Error()})
 		return
 	}
+	if r.Workflow == "" {
+		n.reply(req, map[string]string{"error": "workflow is required"})
+		return
+	}
 	runID, err := n.svc.StartRun(
 		observe.ExtractTraceContextHeader(nats.Header(req.Headers())),
 		r.Workflow, r.Input,
@@ -213,6 +223,10 @@ func (n *NATSAPI) handleGetRun(req micro.Request) {
 		panic("handleGetRun: svc must not be nil")
 	}
 	runID := string(req.Data())
+	if runID == "" {
+		n.reply(req, map[string]string{"error": "run id is required"})
+		return
+	}
 	resp, err := n.svc.GetRunResponse(
 		observe.ExtractTraceContextHeader(nats.Header(req.Headers())), runID,
 	)
