@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -252,16 +253,17 @@ func pushConsumerRequest(stream, name, filter, deliver string) []byte {
 	return req
 }
 
-// TestAttack_JetStreamReplyCannotWriteForeignBuckets: nats-server
-// publishes a JetStream API response, a direct get's message and a pull
-// delivery to whatever reply subject the request names, as the account
-// and without checking the requester's permissions. So alpha can put
-// bytes it chose into any bucket or stream: store them in its own
-// bucket, then direct-get them with a reply of "$KV.<bucket>.<key>".
-// Accepted for trusted programs; closed by per-program accounts (#909).
-func TestAttack_JetStreamReplyCannotWriteForeignBuckets(t *testing.T) {
-	t.Skip("accepted gap for trusted programs (#909): see \"Known limitations / threat " +
-		"model\" in the program package doc; closed by per-program NATS accounts")
+// TestResidual_JetStreamReplyWritesForeignBuckets pins a known gap of
+// trusted programs: nats-server publishes a JetStream API response, a
+// direct get's message and a pull delivery to whatever reply subject the
+// request names, as the account and without checking the requester's
+// permissions. So alpha can put bytes it chose into any bucket or stream:
+// store them in its own bucket, then direct-get them with a reply of
+// "$KV.<bucket>.<key>". A forged programs record still grants nothing
+// beyond its manifest (server TestServer_StoredPermissionsAreIgnored).
+// When per-program accounts land (#909) this fails: invert it into an
+// attack test and drop the trusted-programs caveat from the docs.
+func TestResidual_JetStreamReplyWritesForeignBuckets(t *testing.T) {
 	f, js := attackFixture(t)
 	nc := js.Conn()
 	_, err := nc.Request("$KV.alpha_state.seed", []byte(`{"forged":true}`), time.Second)
@@ -280,7 +282,6 @@ func TestAttack_JetStreamReplyCannotWriteForeignBuckets(t *testing.T) {
 	if err := nc.Flush(); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
-	time.Sleep(500 * time.Millisecond)
 	admin, err := jetstream.New(f.admin)
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
@@ -289,9 +290,27 @@ func TestAttack_JetStreamReplyCannotWriteForeignBuckets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("workflow_defs: %v", err)
 	}
-	for _, key := range []string{"direct", "info"} {
-		if entry, err := defs.Get(shortCtx(t), key); err == nil {
-			t.Errorf("alpha wrote workflow_defs %s = %q", key, entry.Value())
+	direct := waitEntry(t, defs, "direct")
+	if string(direct) != `{"forged":true}` {
+		t.Fatalf("reflected direct get = %q, want alpha's own bytes", direct)
+	}
+	if info := waitEntry(t, defs, "info"); !strings.Contains(string(info), "account_info_response") {
+		t.Fatalf("reflected API reply = %q, want an account info response", info)
+	}
+}
+
+// waitEntry returns key's value once the reflected write lands, within 5s.
+func waitEntry(t *testing.T, kv jetstream.KeyValue, key string) []byte {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		entry, err := kv.Get(shortCtx(t), key)
+		if err == nil {
+			return entry.Value()
 		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no reflected write at %s: %v", key, err)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

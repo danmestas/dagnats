@@ -57,8 +57,8 @@
 //     "$KV.<bucket>.<key>". Every node therefore derives a program's
 //     permissions from its stored manifest and never from a stored
 //     permission set. Closed by per-program NATS accounts, dagnats#909;
-//     TestAttack_JetStreamReplyCannotWriteForeignBuckets is the proof,
-//     skipped until then.
+//     TestResidual_JetStreamReplyWritesForeignBuckets pins the gap and
+//     fails once it is closed.
 //   - Push-consumer delivery. A consumer's deliver subject travels in the
 //     JetStream request body, which subject permissions never see, and
 //     nats-server does not check it against the creating user's
