@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/danmestas/dagnats/program"
@@ -18,10 +19,11 @@ import (
 // public key), and confirms on api.programs.confirm.<its key>: a subject
 // only that key's NATS user may publish.
 //
-//   - A new registration is stored pending for PendingTTL. Its NATS user
-//     may publish nothing but its confirm subject, so a squatter who knows
-//     another program's public key reserves nothing it can use, and its
-//     reservation expires.
+//   - A new registration is stored pending for PendingTTL, provisions
+//     nothing, and its NATS user may publish nothing but its confirm
+//     subject, so a squatter who knows another program's public key
+//     reserves nothing it can use; its reservation expires, and a join key
+//     cannot re-register the same name for a PendingTTL after that.
 //   - A manifest change of a registered program is not applied at
 //     register; the reply asks for confirmation, and the update runs on
 //     confirm, so knowing a program's public key is not enough to widen
@@ -134,9 +136,25 @@ func (r *Registrar) promote(
 			"program %q is pending with a different manifest; confirm that one "+
 				"or wait %s for it to expire", record.Manifest.Name, r.pendingTTL())
 	}
+	// Provisioned only now, by a holder of the key: a pending record owns
+	// no streams or buckets, so one that expires leaks none.
+	lock := r.programLock(record.Manifest.Name)
+	lock.Lock()
+	defer lock.Unlock()
+	before, err := r.provision(ctx, record.Manifest, record.Grant)
+	if err != nil {
+		// Undo the registration at once, refunding its use, so the program
+		// can register again rather than wait out the pending window.
+		cause := fmt.Errorf("provision program %q: %w", record.Manifest.Name, err)
+		err = r.rollBack(record.Manifest.Name, revision, before, cause)
+		if record.JoinKeyID != "" {
+			r.refund(record.JoinKeyID, record.Manifest.Name)
+		}
+		return program.Grant{}, err
+	}
 	record.Pending, record.PendingUntil = false, time.Time{}
 	if _, err := r.writeRecord(ctx, record, revision); err != nil {
-		return program.Grant{}, err
+		return program.Grant{}, errors.Join(err, r.restoreConfigs(before))
 	}
 	if r.cfg.Bind != nil {
 		if err := r.cfg.Bind(record); err != nil {
@@ -180,6 +198,7 @@ func (r *Registrar) expireIfStale(ctx context.Context, name string) (bool, error
 	}
 	if record.JoinKeyID != "" {
 		r.refund(record.JoinKeyID, name)
+		r.expired.note(record.JoinKeyID, name)
 	}
 	slog.Info("programs: unconfirmed registration expired",
 		"program", name, "join_key_id", record.JoinKeyID)
@@ -227,4 +246,52 @@ func (r *Registrar) RunExpiry(ctx context.Context) {
 			cancel()
 		}
 	}
+}
+
+// expiredRegistrationsMax bounds the (join key, name) pairs remembered;
+// the oldest is forgotten first.
+const expiredRegistrationsMax = 1024
+
+// expiredRegistrations rate-limits re-registration after an expiry, per
+// join key and name, on this node: without it a single-use key could
+// register, let it expire (refunding the use) and register again
+// forever, re-squatting the name. Per node, like the budget lock.
+type expiredRegistrations struct {
+	mu   sync.Mutex
+	when map[string]time.Time
+}
+
+func expiredKey(keyID, name string) string { return keyID + "\x00" + name }
+
+func (e *expiredRegistrations) note(keyID, name string) {
+	if keyID == "" || name == "" {
+		panic("expiredRegistrations.note: key and name must be set")
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.when == nil {
+		e.when = make(map[string]time.Time)
+	}
+	if len(e.when) >= expiredRegistrationsMax {
+		oldest, oldestAt := "", time.Time{}
+		for k, at := range e.when {
+			if oldest == "" || at.Before(oldestAt) {
+				oldest, oldestAt = k, at
+			}
+		}
+		delete(e.when, oldest)
+	}
+	e.when[expiredKey(keyID, name)] = time.Now()
+}
+
+// recent reports whether keyID's registration of name expired within
+// window.
+func (e *expiredRegistrations) recent(keyID, name string, window time.Duration) bool {
+	if keyID == "" || name == "" {
+		panic("expiredRegistrations.recent: key and name must be set")
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	at, ok := e.when[expiredKey(keyID, name)]
+	return ok && time.Since(at) < window
 }

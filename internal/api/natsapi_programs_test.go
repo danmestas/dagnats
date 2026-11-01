@@ -12,6 +12,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -41,7 +42,7 @@ func startScopedAPI(t *testing.T) *nats.Conn {
 
 func scopedRequest(t *testing.T, nc *nats.Conn, subject string, body []byte) []byte {
 	t.Helper()
-	reply, err := nc.Request(subject, body, 5*time.Second)
+	reply, err := connFor(t, nc, subject).Request(subject, body, 5*time.Second)
 	if err != nil {
 		t.Fatalf("request %s: %v", subject, err)
 	}
@@ -136,9 +137,11 @@ func TestScopedStartGetCancel(t *testing.T) {
 
 func TestScopedRejectsInvalidProgramName(t *testing.T) {
 	nc := startScopedAPI(t)
+	// No program can own an invalid name's inbox, so its request is dropped.
 	for _, subject := range []string{"api.p.Notify.runs.get", "api.p.n.runs.get"} {
-		if replyField(t, scopedRequest(t, nc, subject, []byte("x")), "error") == "" {
-			t.Errorf("%s answered without an error", subject)
+		_, err := nc.Request(subject, []byte("x"), 500*time.Millisecond)
+		if !errors.Is(err, nats.ErrTimeout) {
+			t.Errorf("%s: err = %v, want no answer", subject, err)
 		}
 	}
 	if replyField(t, scopedRequest(t, nc, "api.p.notify.runs.get", nil), "error") == "" {

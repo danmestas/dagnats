@@ -194,7 +194,7 @@ SUAM...
 
 dagnats' embedded NATS server always has these users:
 
-- **Anonymous.** A client that presents no credentials is root when `nats_user` is unset (open mode). When `nats_user` is set (required mode), it is the join user, which may only publish `api.programs.register` and subscribe to `_JOIN.>`, so it can register a program and do nothing else.
+- **Anonymous.** A client that presents no credentials is root when `nats_user` is unset (open mode); one that presents credentials the server does not know (an unregistered NKey, a wrong login) is rejected in either mode. When `nats_user` is set (required mode), it is the join user, which may only publish `api.programs.register` and subscribe to `_JOIN.>`, so it can register a program and do nothing else.
 - **The operator login**, `nats_user`, when set. Unrestricted.
 - **One NKey user per registered program**, with the permissions its manifest derives (`program.PermissionsFor`). Every node builds them from the `programs` KV bucket at start and reloads them whenever the bucket changes. A program whose key is unchanged stays connected across a reload; a removed or replaced key is disconnected.
 

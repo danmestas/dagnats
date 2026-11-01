@@ -153,12 +153,6 @@ func respond(req micro.Request, reply program.RegisterReply) {
 	}
 }
 
-// answer runs a registration on a request body, for callers that are not
-// a micro endpoint (tests).
-func (r *Registrar) answer(body []byte) program.RegisterReply {
-	return r.answerWith(body, r.Register)
-}
-
 // answerWith decodes a request body, runs op, and turns its outcome into
 // exactly one of Grant, Refused or Error, with Confirm set when the
 // program must confirm with its key.

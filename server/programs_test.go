@@ -388,3 +388,114 @@ func TestServer_PendingUserCanOnlyConfirm(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// programsKV binds the programs bucket over the server's own connection.
+func programsKV(t *testing.T, srv *Server) (context.Context, jetstream.KeyValue) {
+	t.Helper()
+	js, err := jetstream.New(srv.nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	kv, err := js.KeyValue(ctx, programs.BucketName)
+	if err != nil {
+		t.Fatalf("programs bucket: %v", err)
+	}
+	return ctx, kv
+}
+
+// TestServer_MalformedRecordDoesNotStopTheNode (#901 review): a record
+// with no key or name in the shared programs bucket (what a reflected
+// reply wrote) is skipped with a log by every node's watch, and by the
+// load on restart, instead of panicking the user set; the node keeps
+// serving and keeps admitting programs.
+func TestServer_MalformedRecordDoesNotStopTheNode(t *testing.T) {
+	cfg := loginConfig(t)
+	srv, _ := startProgramsServer(t, cfg)
+	ctx, kv := programsKV(t, srv)
+	for key, value := range map[string]string{
+		"zzz":     `{"refused":{"code":"x","detail":"y"}}`,
+		"garbage": `not json`,
+		"named":   `{"manifest":{"Name":"other"},"public_key":"nope"}`,
+	} {
+		if _, err := kv.Put(ctx, key, []byte(value)); err != nil {
+			t.Fatalf("put %s: %v", key, err)
+		}
+	}
+	time.Sleep(300 * time.Millisecond)
+	prog := &tinyProgram{}
+	running, err := program.Run(ctx, prog, program.Options{
+		URL: srv.ns.ClientURL(), SeedPath: filepath.Join(t.TempDir(), "seed"),
+		JoinKey: createJoinKey(t, srv),
+	})
+	if err != nil {
+		t.Fatalf("Run beside malformed records: %v", err)
+	}
+	if err := running.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	srv.Stop()
+	restarted, _ := startProgramsServer(t, cfg)
+	login, err := nats.Connect(restarted.ns.ClientURL(), nats.UserInfo("dagnats", "server-pw"))
+	if err != nil {
+		t.Fatalf("the node did not come back with malformed records: %v", err)
+	}
+	login.Close()
+}
+
+// TestServer_RemovedUserIsDisconnected: deleting a program's record
+// removes its NATS user on reload, and a client already connected with
+// that key is disconnected, not left connected.
+func TestServer_RemovedUserIsDisconnected(t *testing.T) {
+	srv, _ := startProgramsServer(t, loginConfig(t))
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	prog := &tinyProgram{}
+	running, err := program.Run(ctx, prog, program.Options{
+		URL: srv.ns.ClientURL(), SeedPath: filepath.Join(t.TempDir(), "seed"),
+		JoinKey: createJoinKey(t, srv),
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	defer running.Stop(ctx) //nolint:errcheck // test teardown
+	_, kv := programsKV(t, srv)
+	if err := kv.Delete(ctx, "notify"); err != nil {
+		t.Fatalf("delete record: %v", err)
+	}
+	select {
+	case err := <-running.Done():
+		if err == nil {
+			t.Fatal("Done reported nil for a removed user")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a removed program's connection stayed up")
+	}
+}
+
+// TestServer_UnknownKeyRejectedWithNoPrograms: with no program
+// registered, the NKey set holds only the placeholder, which keeps a
+// presented unknown NKey rejected instead of admitted as anonymous.
+func TestServer_UnknownKeyRejectedWithNoPrograms(t *testing.T) {
+	for _, login := range []bool{false, true} {
+		cfg := testConfig(t)
+		if login {
+			cfg = loginConfig(t)
+		}
+		srv, _ := startProgramsServer(t, cfg)
+		stranger, err := program.LoadOrCreateKey(filepath.Join(t.TempDir(), "stranger"))
+		if err != nil {
+			t.Fatalf("LoadOrCreateKey: %v", err)
+		}
+		if nc, err := nats.Connect(srv.ns.ClientURL(), stranger.ConnectOption()); err == nil {
+			nc.Close()
+			t.Fatalf("login=%v: an unknown NKey was admitted with no programs", login)
+		}
+		anonymous, err := nats.Connect(srv.ns.ClientURL())
+		if err != nil {
+			t.Fatalf("login=%v: anonymous refused: %v", login, err)
+		}
+		anonymous.Close()
+	}
+}

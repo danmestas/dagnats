@@ -302,8 +302,13 @@ func TestRegisterEndpointSurvivesHostileBodies(t *testing.T) {
 		`{"manifest":{"Name":"notify","TaskTypes":["notify.x"]},"public_key":"U"}`,
 		`{"manifest":{"Name":"notify","Streams":[{"Name":"NOTIFY_X","MaxBytesFloor":-1}]}}`,
 	}
+	join, err := nats.Connect(f.nc.ConnectedUrl(), nats.CustomInboxPrefix(program.JoinInboxPrefix))
+	if err != nil {
+		t.Fatalf("join connect: %v", err)
+	}
+	defer join.Close()
 	for _, body := range bodies {
-		reply, err := f.nc.Request(program.RegisterSubject, []byte(body), 5*time.Second)
+		reply, err := join.Request(program.RegisterSubject, []byte(body), 5*time.Second)
 		if err != nil {
 			t.Fatalf("%q: no answer: %v", body, err)
 		}
@@ -311,5 +316,51 @@ func TestRegisterEndpointSurvivesHostileBodies(t *testing.T) {
 		if err := json.Unmarshal(reply.Data, &answer); err != nil || answer.Grant != nil {
 			t.Fatalf("%q: reply %s, %v; want a refusal or error", body, reply.Data, err)
 		}
+	}
+}
+
+// TestRegistrationDoesNotReflectReplies (#901 review): dagnats answers as
+// root and NATS does not permission reply subjects, so a register or
+// confirm whose reply-to names a "$KV..." key or another program's inbox
+// must be dropped unanswered. A reply written to "$KV.programs.zzz" was a
+// record with no key or name, which crashed every node's user set.
+func TestRegistrationDoesNotReflectReplies(t *testing.T) {
+	f := serveFixture(t, Config{Open: true})
+	req := request(t, "notify", "")
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	foreign, err := f.nc.SubscribeSync("_INBOX.artifact.>")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	sends := []struct{ subject, reply string }{
+		{program.RegisterSubject, "$KV.programs.zzz"},
+		{program.RegisterSubject, "_INBOX.artifact.r1"},
+		{program.RegisterSubject, "_INBOX.notify.r1"}, // a program inbox, not _JOIN
+		{program.ConfirmSubject(req.PublicKey), "$KV.programs.zzz"},
+		{program.ConfirmSubject(req.PublicKey), "_INBOX.artifact.r2"},
+	}
+	for _, send := range sends {
+		msg := &nats.Msg{Subject: send.subject, Reply: send.reply, Data: body}
+		if err := f.nc.PublishMsg(msg); err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+	}
+	if err := f.nc.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	if _, err := foreign.NextMsg(100 * time.Millisecond); err == nil {
+		t.Fatal("a registration reply reached another program's inbox")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, found, err := f.registrar.lookup(ctx, "zzz"); found || err != nil {
+		t.Fatalf("a reply was written as a programs record (found %v, err %v)", found, err)
+	}
+	if _, found, _ := f.registrar.lookup(ctx, "notify"); found {
+		t.Fatal("a dropped registration was still admitted")
 	}
 }

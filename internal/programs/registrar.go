@@ -105,6 +105,9 @@ type Registrar struct {
 	// moment. Join-key uses are exact across nodes.
 	admitMu sync.Mutex
 	locks   programLocks
+	// expired remembers (join key, name) pairs whose registration expired
+	// unconfirmed, so the key cannot re-register the name at once.
+	expired expiredRegistrations
 	// beforeRollBack, when set, runs between an update's failed
 	// provisioning and its rollback: a test seam for forcing another
 	// node's registration into that window. Nil in production.
@@ -248,6 +251,11 @@ func (r *Registrar) reserveUse(ctx context.Context, req program.RegisterRequest)
 		if refusal := protocolsOutsideGlob(key, req.Manifest.Protocols); refusal != nil {
 			return "", refusal
 		}
+		if r.expired.recent(key.ID, req.Manifest.Name, r.pendingTTL()) {
+			return "", refused(program.RefusedConfirmExpired,
+				"program %q expired unconfirmed with this join key; retry after %s",
+				req.Manifest.Name, r.pendingTTL())
+		}
 		err = r.keys.ConsumeUse(ctx, key.ID)
 	}
 	switch {
@@ -304,7 +312,7 @@ func (r *Registrar) lookup(ctx context.Context, name string) (Record, bool, erro
 	}
 	var record Record
 	if err := json.Unmarshal(entry.Value(), &record); err != nil {
-		return Record{}, false, fmt.Errorf("decode program %q: %w", name, err)
+		return Record{}, false, fmt.Errorf("%w: %q: %w", errUndecodable, name, err)
 	}
 	return record, true, nil
 }
@@ -322,12 +330,21 @@ func (r *Registrar) records(ctx context.Context) ([]Record, error) {
 	out := make([]Record, 0, len(names))
 	for _, name := range names {
 		record, found, err := r.lookup(ctx, name)
+		if errors.Is(err, errUndecodable) {
+			// One bad record must not stop every registration's scan.
+			slog.Warn("programs: undecodable record skipped", "program", name, "error", err)
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
-		if found {
+		if found && record.Manifest.Name == name {
 			out = append(out, record)
 		}
 	}
 	return out, nil
 }
+
+// errUndecodable marks a programs record that is not JSON a Record
+// decodes from.
+var errUndecodable = errors.New("program record is not decodable")

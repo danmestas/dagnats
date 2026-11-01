@@ -50,8 +50,16 @@ func TestPossession_NewRegistrationIsPendingUntilConfirmed(t *testing.T) {
 		t.Fatalf("pending record %v, publish %v; want only its confirm subject",
 			pending.Pending, perms.Publish.Allow)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := f.js.Stream(ctx, "NOTIFY_EVENTS"); err == nil {
+		t.Fatal("a pending registration provisioned its stream")
+	}
 	if _, err := confirm(t, f, req.PublicKey, req); err != nil {
 		t.Fatalf("Confirm: %v", err)
+	}
+	if _, err := f.js.Stream(ctx, "NOTIFY_EVENTS"); err != nil {
+		t.Fatalf("the confirmed program's stream was not provisioned: %v", err)
 	}
 	confirmed := f.record(t, "notify")
 	perms = UserPermissions(confirmed)
@@ -125,9 +133,18 @@ func TestPossession_UnconfirmedRegistrationExpiresAndRefunds(t *testing.T) {
 	if got := f.usesLeft(t, key.ID); got != 1 {
 		t.Fatalf("UsesLeft = %d after expiry, want the use refunded", got)
 	}
+	// The same key cannot re-register the name at once (a single-use key
+	// would otherwise loop register and expire forever)...
 	owner := request(t, "notify", plaintext)
+	_, err = f.register(t, owner)
+	wantRefused(t, err, program.RefusedConfirmExpired)
+	if got := f.usesLeft(t, key.ID); got != 1 {
+		t.Fatalf("the rate-limited retry spent a use: UsesLeft = %d", got)
+	}
+	// ...but can once the window has passed.
+	time.Sleep(100 * time.Millisecond)
 	if _, err := f.register(t, owner); err != nil {
-		t.Fatalf("the real owner after the squat expired: %v", err)
+		t.Fatalf("the real owner after the window: %v", err)
 	}
 }
 

@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/danmestas/dagnats/program"
+	"github.com/nats-io/nkeys"
 	"log/slog"
 	"os"
+	"runtime/debug"
 	"time"
 
 	"github.com/danmestas/dagnats/internal/buildinfo"
@@ -112,6 +115,14 @@ func (s *Server) applyProgramEntry(entry jetstream.KeyValueEntry) {
 	if entry == nil {
 		panic("applyProgramEntry: entry must not be nil")
 	}
+	// The bucket is shared state; nothing in it may stop this node's user
+	// set, or every node would crash-loop on the same record (#901).
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			slog.Error("programs: applying a record panicked; skipped it",
+				"program", entry.Key(), "panic", recovered, "stack", string(debug.Stack()))
+		}
+	}()
 	op := entry.Operation()
 	deleted := op == jetstream.KeyValueDelete || op == jetstream.KeyValuePurge
 	var record programs.Record
@@ -120,8 +131,28 @@ func (s *Server) applyProgramEntry(entry jetstream.KeyValueEntry) {
 			slog.Warn("programs: unreadable record", "program", entry.Key(), "error", err)
 			return
 		}
+		if reason := malformedRecord(entry.Key(), record); reason != "" {
+			slog.Warn("programs: malformed record skipped", "program", entry.Key(),
+				"reason", reason)
+			return
+		}
 	}
 	if err := s.programUsers.put(entry.Key(), record, deleted); err != nil {
 		slog.Error("programs: NATS users not reloaded", "program", entry.Key(), "error", err)
 	}
+}
+
+// malformedRecord names what makes a programs record unusable as a NATS
+// user, or "": a record must name a valid program, under its own key,
+// with an NKey user public key.
+func malformedRecord(key string, record programs.Record) string {
+	switch {
+	case program.ValidateName(record.Manifest.Name) != nil:
+		return "no valid program name"
+	case record.Manifest.Name != key:
+		return "program name is not the record's key"
+	case !nkeys.IsValidPublicUserKey(record.PublicKey):
+		return "public key is not an NKey user key"
+	}
+	return ""
 }

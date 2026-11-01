@@ -104,6 +104,11 @@ func Run(ctx context.Context, prog Program, opts Options) (*Running, error) {
 			nc.Close()
 			return nil, err
 		}
+		if err := waitPromoted(ctx, nc, m.Name); err != nil {
+			running.stopping.Store(true)
+			nc.Close()
+			return nil, err
+		}
 	}
 	stopAttach, err := Attach(ctx, nc, prog, grant)
 	if err != nil {
@@ -233,6 +238,38 @@ func register(ctx context.Context, opts Options, req RegisterRequest) (Grant, st
 	}
 	return decodeReply(req.Manifest.Name, msg.Data)
 }
+
+// waitPromoted waits until nc's own server gives it the confirmed
+// program's permissions. The confirming node reloads before it replies,
+// but nc may be on another node whose watch has not caught up; a
+// subscription Attach made with only pending permissions would fail for
+// good. A pending user may not publish under api.p.<name>, so the first
+// request there that is answered (or finds no responder, which also
+// means the publish was allowed) shows the promotion has arrived.
+func waitPromoted(ctx context.Context, nc *nats.Conn, name string) error {
+	if nc == nil || name == "" {
+		panic("program.waitPromoted: nc and name must be set")
+	}
+	deadline := time.Now().Add(firstDialRetryWindow)
+	for {
+		probeCtx, cancel := context.WithTimeout(ctx, promotionProbeWait)
+		_, err := nc.RequestWithContext(probeCtx, "api.p."+name+".runs.get", []byte("x"))
+		cancel()
+		if err == nil || errors.Is(err, nats.ErrNoResponders) {
+			return nil
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return fmt.Errorf("program %s: its confirmed permissions did not reach "+
+				"the server it is connected to within %s: %w",
+				name, firstDialRetryWindow, err)
+		}
+		time.Sleep(firstDialRetryWait)
+	}
+}
+
+// promotionProbeWait bounds one waitPromoted probe: a denied publish is
+// never answered, so this is how long a pending user's probe takes.
+const promotionProbeWait = 500 * time.Millisecond
 
 // confirmRegistration confirms on subject over nc, which is logged in
 // with the program's key: that login is what proves the program holds

@@ -54,11 +54,12 @@ func dispatchedStep(t *testing.T, nc *nats.Conn) (runID, nonce string) {
 
 func relayClient(t *testing.T, nc *nats.Conn, program string) *natsutil.TracingPublisher {
 	t.Helper()
-	js, err := jetstream.New(nc)
+	conn := programConn(t, nc, program)
+	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
 	}
-	return natsutil.NewTracingPublisher(nc, js).WithRelay("api.p." + program + ".")
+	return natsutil.NewTracingPublisher(conn, js).WithRelay("api.p." + program + ".")
 }
 
 func startedEvent(runID, nonce string) *protocol.Event {

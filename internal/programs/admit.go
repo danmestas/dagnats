@@ -33,13 +33,11 @@ func (r *Registrar) admit(
 		// the Create; err is its stored Grant's outcome.
 		return record.Grant, false, err
 	}
-	before, err := r.provision(ctx, m, record.Grant)
-	if err != nil {
-		return program.Grant{}, false, r.rollBack(m.Name, revision, before, err)
-	}
+	// Pending: nothing is provisioned until the key's holder confirms
+	// (possession.go), so a registration that expires leaves nothing.
 	if r.cfg.Bind != nil {
 		if err := r.cfg.Bind(record); err != nil {
-			return program.Grant{}, false, r.rollBack(m.Name, revision, before,
+			return program.Grant{}, false, r.rollBack(m.Name, revision, nil,
 				fmt.Errorf("bind program %q's NATS user: %w", m.Name, err))
 		}
 	}

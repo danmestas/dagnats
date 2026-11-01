@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -158,7 +159,9 @@ type userSet struct {
 	ns *natsserver.Server
 
 	mu      sync.Mutex
-	records map[string]programs.Record // program name -> record
+	records map[string]programs.Record // program name -> record, as the server has it
+	// dirty: the last reload failed, so the server may lag records.
+	dirty bool
 }
 
 func newUserSet(ns *natsserver.Server) *userSet {
@@ -180,18 +183,28 @@ func (u *userSet) put(name string, record programs.Record, deleted bool) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	current, exists := u.records[name]
-	if deleted {
-		if !exists {
-			return nil
-		}
-		delete(u.records, name)
-	} else {
-		if exists && sameUser(current, record) {
-			return nil
-		}
-		u.records[name] = record
+	if deleted && !exists {
+		return nil
 	}
-	return u.reloadLocked()
+	if !deleted && exists && !u.dirty && sameUser(current, record) {
+		return nil
+	}
+	// The change is committed only once the server took it: a failed
+	// reload leaves the set as the server has it, marked dirty, so the
+	// next change (or a replay of this one) reloads in full again
+	// instead of being skipped as already applied.
+	next := maps.Clone(u.records)
+	if deleted {
+		delete(next, name)
+	} else {
+		next[name] = record
+	}
+	if err := u.reloadLocked(next); err != nil {
+		u.dirty = true
+		return err
+	}
+	u.records, u.dirty = next, false
+	return nil
 }
 
 // sameUser reports whether two records give the same NATS user, so a
@@ -207,14 +220,17 @@ func sameUser(a, b programs.Record) bool {
 		slices.Equal(pa.Subscribe.Deny, pb.Subscribe.Deny)
 }
 
-func (u *userSet) reloadLocked() error {
+func (u *userSet) reloadLocked(set map[string]programs.Record) error {
+	if set == nil {
+		panic("userSet.reloadLocked: set must not be nil")
+	}
 	value, ok := liveOptions.Load(u.ns)
 	if !ok {
 		return fmt.Errorf("reload NATS users: server options unknown")
 	}
 	next := value.(*natsserver.Options).Clone()
-	records := make([]programs.Record, 0, len(u.records))
-	for _, record := range u.records {
+	records := make([]programs.Record, 0, len(set))
+	for _, record := range set {
 		records = append(records, record)
 	}
 	next.Nkeys = programUsers(records)

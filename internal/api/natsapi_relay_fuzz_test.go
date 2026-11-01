@@ -81,7 +81,7 @@ func TestRelayOpsSurviveHostileRequests(t *testing.T) {
 					header.Set(natsutil.RelayFromSeqHeader, "x")
 					msg := &nats.Msg{Subject: "api.p.notify." + subject, Header: header,
 						Data: []byte(body)}
-					if _, err := nc.RequestMsg(msg, 2*time.Second); err != nil {
+					if _, err := programConn(t, nc, "notify").RequestMsg(msg, 2*time.Second); err != nil {
 						t.Fatalf("%s op=%q ids=%v body=%q: no answer: %v",
 							subject, op, id, body, err)
 					}
@@ -89,7 +89,8 @@ func TestRelayOpsSurviveHostileRequests(t *testing.T) {
 			}
 		}
 	}
-	if _, err := nc.Request("api.p.notify.runs.get", []byte(runID), 2*time.Second); err != nil {
+	if _, err := programConn(t, nc, "notify").Request(
+		"api.p.notify.runs.get", []byte(runID), 2*time.Second); err != nil {
 		t.Fatalf("the API stopped answering: %v", err)
 	}
 }
