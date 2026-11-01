@@ -108,7 +108,9 @@ func NewHTTPHandler(nc *nats.Conn, def TriggerDef) *HTTPHandler {
 		defer cancel()
 		kv, err := js.KeyValue(ctx, idempotencyKVBucket)
 		if err == nil {
-			h.idkv = kv
+			// A retried request must find the key its first delivery
+			// claimed, whichever replica a direct get would land on.
+			h.idkv = natsutil.LeaderReadKV(nc, kv)
 		}
 		// Bucket may not exist in tests/topologies that don't use
 		// HTTP triggers; the handler degrades to per-run subjects

@@ -336,6 +336,11 @@ func NewOrchestrator(
 	singletonKV := natsutil.BindOptionalKeyValue(
 		context.Background(), js, "singleton_locks",
 	)
+	if singletonKV != nil {
+		// Concurrent starts of a singleton race for the lock; the
+		// loser must see the winner's claim, not a lagging replica.
+		singletonKV = natsutil.LeaderReadKV(nc, singletonKV)
+	}
 	ac := NewAdmissionController(
 		nc, js, tp, store, cm, singletonKV,
 	)
@@ -348,6 +353,11 @@ func NewOrchestrator(
 	stickyKV := natsutil.BindOptionalKeyValue(
 		context.Background(), js, "sticky_bindings",
 	)
+	if stickyKV != nil {
+		// The binding is written when a step completes and read for
+		// the next dispatch at once.
+		stickyKV = natsutil.LeaderReadKV(nc, stickyKV)
+	}
 	sticky := NewStickyRouter(
 		stickyKV, js, tp, sleepTimer, tracer,
 		pm.stepEnqueue,
@@ -1154,11 +1164,18 @@ func (o *Orchestrator) handleWorkflowStarted(
 	run.TriggerDepth = triggerDepth
 
 	admission, admitErr := o.admission.Admit(ctx, wfDef, run, input)
+	if errors.Is(admitErr, errAdmissionPermanent) {
+		return o.persistAdmissionFailedRun(ctx, run, admitErr)
+	}
 	if admitErr != nil {
 		return admitErr
 	}
 	if admission.cancelID != "" {
-		o.admission.publishWorkflowCancelledEvent(admission.cancelID)
+		// A failed publish redelivers the start, which finds its own
+		// claim and the displaced run in the lock and publishes again.
+		if err := o.admission.publishWorkflowCancelledEvent(admission.cancelID); err != nil {
+			return err
+		}
 	}
 	run.PriorityOffset = admission.offset
 	run.SingletonKey = admission.singletonKey
@@ -1627,6 +1644,41 @@ func (o *Orchestrator) persistSkippedRun(
 		ctx, o.tp, o.store, o.saveSnapshot, run, dag.RunStatusCancelled, "", nil,
 	); err != nil {
 		return fmt.Errorf("save skipped-run snapshot: %w", err)
+	}
+	return nil
+}
+
+// admissionFailedStepID keys the synthetic step that carries the
+// reason a start could not be admitted, as admissionSkipStepID does
+// for a skip.
+const admissionFailedStepID = "<admission-failed>"
+
+// persistAdmissionFailedRun fails run with reason when admission can
+// never succeed (errAdmissionPermanent), so the run ID the API
+// returned shows a failed run and why, instead of the start retrying
+// into the dead-letter stream. The save error is returned so the start
+// is redelivered rather than lost, as in persistSkippedRun.
+func (o *Orchestrator) persistAdmissionFailedRun(
+	ctx context.Context, run dag.WorkflowRun, reason error,
+) error {
+	if run.RunID == "" {
+		panic("persistAdmissionFailedRun: RunID must not be empty")
+	}
+	if reason == nil {
+		panic("persistAdmissionFailedRun: reason must not be nil")
+	}
+	slog.ErrorContext(ctx, "workflow.started: admission failed permanently",
+		"run_id", run.RunID, "workflow", run.WorkflowID, "error", reason)
+	// A fresh map, as in persistSkippedRun: the pending real steps
+	// would otherwise hide the reason.
+	run.Steps = map[string]dag.StepState{
+		admissionFailedStepID: {Status: dag.StepStatusFailed, Error: reason.Error()},
+	}
+	run.SingletonKey = ""
+	if _, err := finalizeRun(
+		ctx, o.tp, o.store, o.saveSnapshot, run, dag.RunStatusFailed, "", nil,
+	); err != nil {
+		return fmt.Errorf("save admission-failed snapshot: %w", err)
 	}
 	return nil
 }

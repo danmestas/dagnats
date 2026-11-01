@@ -266,14 +266,13 @@ func startAdmissionRun(
 // since ac.singletonKV is never touched on that path.
 func TestApplySingletonModeSkipReturnsSkippedBy(t *testing.T) {
 	ac := &AdmissionController{}
-	lockData := []byte(`{"run_id":"existing-run-id"}`)
 
-	result, kvKey, err := ac.applySingletonMode(
+	result, done, err := ac.applySingletonMode(
 		context.Background(), dag.SingletonModeSkip,
-		"some-key", "existing-run-id", lockData, 1,
+		"some-key", "new-run-id", "existing-run-id", 1,
 	)
-	if err != nil {
-		t.Fatalf("applySingletonMode: %v", err)
+	if err != nil || !done {
+		t.Fatalf("applySingletonMode: done=%v err=%v", done, err)
 	}
 
 	// Positive: action is skip.
@@ -285,8 +284,8 @@ func TestApplySingletonModeSkipReturnsSkippedBy(t *testing.T) {
 		t.Fatalf("skippedBy = %q, want %q",
 			result.skippedBy, "existing-run-id")
 	}
-	// Negative: kvKey is passed through unchanged, not mangled.
-	if kvKey != "some-key" {
-		t.Fatalf("kvKey = %q, want %q", kvKey, "some-key")
+	// Negative: skip moves no lock and cancels nothing.
+	if result.cancelID != "" {
+		t.Fatalf("cancelID = %q, want none on skip", result.cancelID)
 	}
 }

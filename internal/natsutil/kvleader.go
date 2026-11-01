@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -124,10 +125,6 @@ func decodeKVLeaderReply(bucket, key string, data []byte) (KVLeaderEntry, error)
 	}, nil
 }
 
-// kvKeyBytesMax bounds a key LeaderReadKV accepts; nats-server's
-// default max payload is far larger than any subject token dagnats uses.
-const kvKeyBytesMax = 4096
-
 // LeaderReadKV returns kv with Get answered by the bucket's stream
 // leader (KVGetLeader); every other method is kv's own. A direct get
 // can land on a follower that has not applied a write the writer
@@ -157,7 +154,7 @@ func (kv *leaderReadKV) Get(ctx context.Context, key string) (jetstream.KeyValue
 	if kv.nc == nil {
 		panic("leaderReadKV.Get: nc must not be nil")
 	}
-	if !validKVKey(key) {
+	if !ValidKVKey(key) {
 		return nil, jetstream.ErrInvalidKey
 	}
 	bucket := kv.Bucket()
@@ -168,14 +165,16 @@ func (kv *leaderReadKV) Get(ctx context.Context, key string) (jetstream.KeyValue
 	return leaderEntry{bucket: bucket, key: key, entry: got}, nil
 }
 
-// validKVKey is jetstream's key rule (kv.go validKeyRe): letters,
-// digits and -/_=. with no leading or trailing dot. It keeps a wildcard
-// out of the last_by_subj request, where it would match another key.
-func validKVKey(key string) bool {
-	if key == "" || len(key) > kvKeyBytesMax {
+// ValidKVKey is exactly jetstream's key rule (kv.go keyValid, which
+// is unexported): letters, digits and -/_=., no leading or trailing
+// dot, and no empty token (".."). It keeps a wildcard out of the
+// last_by_subj request, where it would match another key, and tells
+// callers which keys every KV call would refuse.
+func ValidKVKey(key string) bool {
+	if key == "" || key[0] == '.' || key[len(key)-1] == '.' {
 		return false
 	}
-	if key[0] == '.' || key[len(key)-1] == '.' {
+	if strings.Contains(key, "..") {
 		return false
 	}
 	for i := 0; i < len(key); i++ {

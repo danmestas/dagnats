@@ -177,6 +177,10 @@ func NewServiceWithLimits(
 	idempotencyKV := natsutil.BindOptionalKeyValue(
 		ctx, js, "idempotency_keys",
 	)
+	if idempotencyKV != nil {
+		// A retried start must find the key its first attempt stored.
+		idempotencyKV = natsutil.LeaderReadKV(nc, idempotencyKV)
+	}
 	m := otel.Meter("dagnats/api")
 	reqCount, _ := m.Int64Counter("api.requests")
 	reqDur, _ := m.Float64Histogram(
