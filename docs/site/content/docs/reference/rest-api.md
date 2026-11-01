@@ -1059,6 +1059,34 @@ curl -X DELETE http://localhost:8080/v1/tokens/6f1c...9a2b \
 
 ---
 
+## Program Join Keys
+
+Admin routes for program join keys (#885): the credential whose only
+right is program registration. Same fail-closed gate as `/v1/tokens`:
+`Authorization: Bearer <DAGNATS_BRIDGE_TOKEN>`, `503` when it is unset,
+`401` on a wrong bearer.
+
+```
+POST   /v1/programs/join-keys        # {"label","name_glob","uses_max","expires_at"} -> 201 {record..., "key"}
+GET    /v1/programs/join-keys        # -> 200 {"join_keys": [record...]}
+DELETE /v1/programs/join-keys/{id}   # -> 204 | 404
+```
+
+A record is `{"id","label","name_glob","uses_max","uses_left",
+"expires_at","created_by","revoked_at"}`. Only `label` is required; an
+omitted `name_glob` admits any program name, `uses_max` 0 is unbounded,
+and an omitted `expires_at` (RFC 3339, must be in the future) never
+expires. `name_glob` uses `[a-z0-9]` plus `*` and `?`. A bad spec or
+an unknown field is `400`, the active-key limit is `409`, and a
+backend failure is `500`.
+
+`key` (`djk_{id}_{secret}`) appears in the create response only. The
+server stores a SHA-256 of the secret and never returns either again.
+Revocation is immediate on the node that served it and reaches other
+nodes through the same KV watch as worker tokens.
+
+---
+
 ## CI
 
 `POST /v1/ci/compile` and `POST /v1/ci/validate` compile a `.dagnats/ci.yml`

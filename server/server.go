@@ -19,6 +19,7 @@ import (
 	"github.com/danmestas/dagnats/internal/configfile"
 	"github.com/danmestas/dagnats/internal/console"
 	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/joinkey"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/observe/logring"
 	"github.com/danmestas/dagnats/internal/observe/metrics"
@@ -51,7 +52,10 @@ type Server struct {
 	// tokenStore is the ONE workertoken.Store shared by the bridge (auth)
 	// and the api service (mint/list/revoke REST routes), matching #627's
 	// requirement that both see the same cache.
-	tokenStore         *workertoken.Store
+	tokenStore *workertoken.Store
+	// joinKeyStore backs the /v1/programs/join-keys admin routes (#885);
+	// program registration verifies against the same cache.
+	joinKeyStore       *joinkey.Store
 	httpSrv            *http.Server
 	telShutdown        func(context.Context)
 	metricsAgg         *metrics.Aggregator
@@ -303,6 +307,13 @@ func (s *Server) startComponents() error {
 		context.Background(), 30*time.Second,
 	)
 	s.tokenStore, err = workertoken.Open(tokenCtx, bridgeJS)
+	if err == nil {
+		s.joinKeyStore, err = joinkey.Open(tokenCtx, bridgeJS)
+		if err != nil {
+			s.tokenStore.Close()
+			err = fmt.Errorf("join key store: %w", err)
+		}
+	}
 	tokenCancel()
 	if err != nil {
 		s.orch.Stop()
@@ -605,6 +616,9 @@ func (s *Server) startHTTP() (<-chan error, error) {
 	if s.tokenStore == nil {
 		panic("startHTTP: tokenStore is nil")
 	}
+	if s.joinKeyStore == nil {
+		panic("startHTTP: joinKeyStore is nil")
+	}
 
 	mux := http.NewServeMux()
 	// Bare-root GETs redirect to /console/ so operators landing on the
@@ -640,6 +654,7 @@ func (s *Server) startHTTP() (<-chan error, error) {
 	// control-plane routes (#627 tokens, #632 queue, #633 ci) go
 	// through MountV1, not the bridge.
 	api.MountV1(mux, s.svc, s.tokenStore)
+	api.MountJoinKeys(mux, s.joinKeyStore)
 	mux.Handle("/ui/", web.New(s.svc, s.nc).Handler())
 
 	// OpenAPI spec + Scalar-rendered explorer. Routes mount as
@@ -777,6 +792,9 @@ func (s *Server) shutdown() error {
 		}
 		if s.tokenStore != nil {
 			s.tokenStore.Close()
+		}
+		if s.joinKeyStore != nil {
+			s.joinKeyStore.Close()
 		}
 		if s.natsAPI != nil {
 			s.natsAPI.Stop()
