@@ -147,6 +147,13 @@ func (n *NATSAPI) Start() {
 		}
 	}
 	n.addClusterEndpoint(srv)
+	// The endpoints' SUBs are buffered on the connection; flushing makes
+	// the server hold them before Start returns, so a request another
+	// connection sends right after Start finds a responder instead of
+	// "no responders".
+	if err := n.nc.Flush(); err != nil {
+		panic("NATSAPI.Start: flush endpoint subscriptions: " + err.Error())
+	}
 	n.micro = srv
 }
 
