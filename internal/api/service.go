@@ -168,6 +168,9 @@ func NewServiceWithLimits(
 				err.Error(),
 		)
 	}
+	// A client that registers a workflow and starts it at once must
+	// find it, whichever replica a direct get would land on.
+	defKV = natsutil.LeaderReadKV(nc, defKV)
 	triggerKV := natsutil.BindOptionalKeyValue(ctx, js, "triggers")
 	signalKV := natsutil.BindOptionalKeyValue(ctx, js, "signals")
 	scheduledKV := natsutil.BindOptionalKeyValue(ctx, js, "scheduled_runs")
