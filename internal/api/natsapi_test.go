@@ -321,3 +321,32 @@ func TestNATSAPIStopDrainsService(t *testing.T) {
 		t.Fatalf("expected timeout/no-responders after Stop, got %v", err)
 	}
 }
+
+// TestNATSAPIHandleRegisterEmptyNameIsAnError: a def with no name is
+// caller input, not a programmer error, so it gets an error reply
+// instead of reaching RegisterWorkflow's assertion and crashing the
+// server.
+func TestNATSAPIHandleRegisterEmptyNameIsAnError(t *testing.T) {
+	_, nc := natstest.StartServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	natsAPI := NewNATSAPI(NewService(nc), nc, "1.0.0")
+	natsAPI.Start()
+	defer natsAPI.Stop()
+	for _, body := range []string{`{}`, `{"name":""}`} {
+		reply, err := nc.Request("api.workflows.register", []byte(body), 2*time.Second)
+		if err != nil {
+			t.Fatalf("Request %s: %v", body, err)
+		}
+		var resp map[string]string
+		if err := json.Unmarshal(reply.Data, &resp); err != nil || resp["error"] == "" {
+			t.Fatalf("register %s reply = %s, want an error", body, reply.Data)
+		}
+	}
+	// The API is still serving after both.
+	reply, err := nc.Request("api.workflows.register", []byte(`{}`), 2*time.Second)
+	if err != nil || len(reply.Data) == 0 {
+		t.Fatalf("API stopped answering: %v", err)
+	}
+}

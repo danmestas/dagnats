@@ -209,6 +209,10 @@ func handleRegisterWorkflow(
 			http.StatusBadRequest)
 		return
 	}
+	if def.Name == "" {
+		http.Error(w, "workflow name is required", http.StatusBadRequest)
+		return
+	}
 	warnings, err := svc.RegisterWorkflowWithWarnings(
 		r.Context(), def,
 	)

@@ -1345,3 +1345,23 @@ func TestRESTBulkRetry(t *testing.T) {
 		t.Fatalf("status = %d, want 400", resp2.StatusCode)
 	}
 }
+
+// TestRESTRegisterWorkflowEmptyNameIs400: a def with no name is a bad
+// request, not a handler panic.
+func TestRESTRegisterWorkflowEmptyNameIs400(t *testing.T) {
+	_, nc := natstest.StartServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	server := httptest.NewServer(NewRESTHandler(NewService(nc)))
+	defer server.Close()
+	resp, err := http.Post(server.URL+"/workflows", "application/json",
+		bytes.NewReader([]byte(`{"steps":[]}`)))
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
