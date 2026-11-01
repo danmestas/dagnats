@@ -394,3 +394,102 @@ func TestRegister_ExactlyUsesMaxUnderConcurrency(t *testing.T) {
 		t.Fatalf("UsesLeft = %d, want 0", got)
 	}
 }
+
+// TestRegister_ProtocolClash refuses a protocol root that lands on a
+// registered program's subjects, and a program name that lands under a
+// protocol another program already declared. notify and notifyx share
+// a byte prefix but no subject, so they do not clash.
+func TestRegister_ProtocolClash(t *testing.T) {
+	f := newFixture(t, Config{Open: true})
+	if _, err := f.register(t, request(t, "notify", "")); err != nil {
+		t.Fatalf("notify: %v", err)
+	}
+	for _, protocol := range []string{"notify", "notify.events"} {
+		evil := request(t, "evil", "")
+		evil.Manifest.Protocols = []string{protocol}
+		_, err := f.register(t, evil)
+		wantRefused(t, err, program.RefusedProtocolClash)
+	}
+	squatter := request(t, "squatter", "")
+	squatter.Manifest.Protocols = []string{"victim.rpc"}
+	if _, err := f.register(t, squatter); err != nil {
+		t.Fatalf("squatter: %v", err)
+	}
+	_, err := f.register(t, request(t, "victim", ""))
+	wantRefused(t, err, program.RefusedProtocolClash)
+
+	neighbour := request(t, "neighbour", "")
+	neighbour.Manifest.Protocols = []string{"notifyx.ping"}
+	if _, err := f.register(t, neighbour); err != nil {
+		t.Fatalf("notifyx protocol beside notify refused: %v", err)
+	}
+	if _, err := f.register(t, request(t, "victimx", "")); err != nil {
+		t.Fatalf("victimx beside the victim protocol refused: %v", err)
+	}
+	shared := request(t, "other", "")
+	shared.Manifest.Protocols = []string{"victim.rpc"}
+	_, err = f.register(t, shared)
+	if err != nil {
+		t.Fatalf("a protocol two programs share was refused: %v", err)
+	}
+}
+
+func TestRegister_HugeSizesAreRefusedNotOverflowed(t *testing.T) {
+	f := newFixture(t, Config{Open: true})
+	const huge = int64(^uint64(0) >> 1) // math.MaxInt64
+	cases := []func(*program.Manifest){
+		func(m *program.Manifest) { m.Streams[0].MaxBytesFloor = huge },
+		func(m *program.Manifest) { m.Buckets[0].MaxBytes = huge },
+		func(m *program.Manifest) {
+			m.Streams[0].MaxBytesFloor = huge / 2
+			m.Buckets[0].MaxBytes = huge/2 + 2
+		},
+	}
+	for i, mutate := range cases {
+		req := request(t, fmt.Sprintf("huge%d", i), "")
+		mutate(&req.Manifest)
+		_, err := f.register(t, req)
+		wantRefused(t, err, program.RefusedBudgetExceeded)
+	}
+}
+
+func TestRegister_NameTakenRevealsNothing(t *testing.T) {
+	f := newFixture(t, Config{Open: true})
+	key, plaintext := f.createKey(t, joinkey.Spec{Label: "k"})
+	if _, err := f.register(t, request(t, "notify", plaintext)); err != nil {
+		t.Fatalf("notify: %v", err)
+	}
+	_, err := f.register(t, request(t, "notify", ""))
+	wantRefused(t, err, program.RefusedNameTaken)
+	if strings.Contains(err.Error(), key.ID) || strings.Contains(err.Error(), "20") {
+		t.Fatalf("name_taken detail %q reveals the owner", err)
+	}
+}
+
+// TestRegister_ProvisionFailureRollsBack makes stream creation fail
+// with a pre-existing stream that already captures the program's
+// subjects. The record is removed and the use refunded, so the name and
+// the key are both free again.
+func TestRegister_ProvisionFailureRollsBack(t *testing.T) {
+	f := newFixture(t, Config{Open: true})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := f.js.CreateStream(ctx, jetstream.StreamConfig{
+		Name: "SQUAT", Subjects: []string{"notify.events.>"},
+	})
+	if err != nil {
+		t.Fatalf("create squatting stream: %v", err)
+	}
+	key, plaintext := f.createKey(t, joinkey.Spec{Label: "once", UsesMax: 1})
+	_, err = f.register(t, request(t, "notify", plaintext))
+	var refusal *program.ErrRefused
+	if err == nil || errors.As(err, &refusal) {
+		t.Fatalf("Register err = %v, want a provisioning failure", err)
+	}
+	if _, ok, _ := f.registrar.lookup(ctx, "notify"); ok {
+		t.Fatal("a record survived its failed provisioning")
+	}
+	if got := f.usesLeft(t, key.ID); got != 1 {
+		t.Fatalf("UsesLeft = %d, want 1 after the refund", got)
+	}
+}

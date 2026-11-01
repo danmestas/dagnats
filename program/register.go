@@ -22,6 +22,7 @@ const (
 	RefusedBudgetExceeded      = "budget_exceeded"
 	RefusedVersionIncompatible = "version_incompatible"
 	RefusedAuthModeUnsupported = "auth_mode_unsupported"
+	RefusedProtocolClash       = "protocol_clash"
 )
 
 // Instance identifies the process registering, for the operator.

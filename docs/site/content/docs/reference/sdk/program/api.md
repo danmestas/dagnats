@@ -36,7 +36,6 @@ Programs on a dagnats are trusted: today they are all the operator's own, the sa
 - [func Attach\(ctx context.Context, nc \*nats.Conn, prog Program, g Grant\) \(stop func\(context.Context\) error, err error\)](<#Attach>)
 - [func InboxPrefix\(name string\) string](<#InboxPrefix>)
 - [func Provision\(ctx context.Context, js jetstream.JetStream, m Manifest, g Grant\) error](<#Provision>)
-- [func Run\(ctx context.Context, prog Program, opts Options\) \(stop func\(context.Context\) error, err error\)](<#Run>)
 - [func Validate\(m Manifest\) error](<#Validate>)
 - [func ValidateName\(name string\) error](<#ValidateName>)
 - [type BucketSpec](<#BucketSpec>)
@@ -61,6 +60,10 @@ Programs on a dagnats are trusted: today they are all the operator's own, the sa
 - [type Program](<#Program>)
 - [type RegisterReply](<#RegisterReply>)
 - [type RegisterRequest](<#RegisterRequest>)
+- [type Running](<#Running>)
+  - [func Run\(ctx context.Context, prog Program, opts Options\) \(\*Running, error\)](<#Run>)
+  - [func \(r \*Running\) Done\(\) \<\-chan error](<#Running.Done>)
+  - [func \(r \*Running\) Stop\(ctx context.Context\) error](<#Running.Stop>)
 - [type StreamSpec](<#StreamSpec>)
 - [type SubjectPermission](<#SubjectPermission>)
 
@@ -89,6 +92,7 @@ const (
     RefusedBudgetExceeded      = "budget_exceeded"
     RefusedVersionIncompatible = "version_incompatible"
     RefusedAuthModeUnsupported = "auth_mode_unsupported"
+    RefusedProtocolClash       = "protocol_clash"
 )
 ```
 
@@ -123,17 +127,6 @@ func Provision(ctx context.Context, js jetstream.JetStream, m Manifest, g Grant)
 
 Provision creates or updates the manifest's streams and buckets at the sizes in g. The host calls it over its own connection: a program's permissions grant no stream create or update, because a stream config can capture, mirror or republish subjects the program may not touch. Idempotent.
 
-<a name="Run"></a>
-## func [Run](<https://github.com/danmestas/dagnats/blob/main/program/run.go#L66-L68>)
-
-```go
-func Run(ctx context.Context, prog Program, opts Options) (stop func(context.Context) error, err error)
-```
-
-Run is the connected placement. It loads or creates the program's NKey at opts.SeedPath, registers with dagnats over an anonymous connection \(a restart with the same key and manifest gets the stored Grant back\), dials as the program's own user with its inbox prefix, and Attaches. A refusal is returned as an \*ErrRefused before any stream, consumer or handler exists.
-
-The returned stop drains the worker, calls prog.Stop and closes the connection. It makes no control\-plane request, so it works while dagnats is down. Later calls return the first result.
-
 <a name="Validate"></a>
 ## func [Validate](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L48>)
 
@@ -167,7 +160,7 @@ type BucketSpec struct {
 ```
 
 <a name="ErrRefused"></a>
-## type [ErrRefused](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L54-L57>)
+## type [ErrRefused](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L55-L58>)
 
 ErrRefused is dagnats declining to admit the program, with one of the Refused\* codes and a human\-readable detail.
 
@@ -179,7 +172,7 @@ type ErrRefused struct {
 ```
 
 <a name="ErrRefused.Error"></a>
-### func \(\*ErrRefused\) [Error](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L59>)
+### func \(\*ErrRefused\) [Error](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L60>)
 
 ```go
 func (e *ErrRefused) Error() string
@@ -231,7 +224,7 @@ type Host struct {
 ```
 
 <a name="Instance"></a>
-## type [Instance](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L28-L31>)
+## type [Instance](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L29-L32>)
 
 Instance identifies the process registering, for the operator.
 
@@ -352,7 +345,7 @@ type Manifest struct {
 ```
 
 <a name="Options"></a>
-## type [Options](<https://github.com/danmestas/dagnats/blob/main/program/run.go#L22-L31>)
+## type [Options](<https://github.com/danmestas/dagnats/blob/main/program/run.go#L21-L35>)
 
 Options is where a connected program finds its dagnats.
 
@@ -366,11 +359,16 @@ type Options struct {
     // JoinKey is presented at registration. Empty is accepted only by
     // a dagnats whose NATS clients need no login (open mode).
     JoinKey string
+    // NATSOptions are applied to both of Run's connections before Run's
+    // own (inbox prefix, login, name, reconnect policy, close handler),
+    // so they cannot override those. A ClosedHandler here is chained,
+    // not replaced.
+    NATSOptions []nats.Option
 }
 ```
 
 <a name="OptionsFromEnv"></a>
-### func [OptionsFromEnv](<https://github.com/danmestas/dagnats/blob/main/program/run.go#L37>)
+### func [OptionsFromEnv](<https://github.com/danmestas/dagnats/blob/main/program/run.go#L41>)
 
 ```go
 func OptionsFromEnv(name string) Options
@@ -419,7 +417,7 @@ type Program interface {
 ```
 
 <a name="RegisterReply"></a>
-## type [RegisterReply](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L46-L50>)
+## type [RegisterReply](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L47-L51>)
 
 RegisterReply is the reply: exactly one of Grant, Refused or Error. Error is a server fault \(a KV write failed\), not a refusal, and may succeed on retry.
 
@@ -432,7 +430,7 @@ type RegisterReply struct {
 ```
 
 <a name="RegisterRequest"></a>
-## type [RegisterRequest](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L36-L41>)
+## type [RegisterRequest](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L37-L42>)
 
 RegisterRequest is the body of a RegisterSubject request. JoinKey may be empty on an open\-mode server. Only the public key is sent; the seed never leaves the program.
 
@@ -444,6 +442,46 @@ type RegisterRequest struct {
     Instance  Instance `json:"instance"`
 }
 ```
+
+<a name="Running"></a>
+## type [Running](<https://github.com/danmestas/dagnats/blob/main/program/running.go#L14-L27>)
+
+Running is a program Run attached. Stop ends it; Done reports when it ended, including when its connection closed for good on its own.
+
+```go
+type Running struct {
+    // contains filtered or unexported fields
+}
+```
+
+<a name="Run"></a>
+### func [Run](<https://github.com/danmestas/dagnats/blob/main/program/run.go#L71>)
+
+```go
+func Run(ctx context.Context, prog Program, opts Options) (*Running, error)
+```
+
+Run is the connected placement. It loads or creates the program's NKey at opts.SeedPath, registers with dagnats over an anonymous connection \(a restart with the same key and manifest gets the stored Grant back\), dials as the program's own user with its inbox prefix, and Attaches. A refusal is returned as an \*ErrRefused before any stream, consumer or handler exists.
+
+The program's connection reconnects forever, so a dagnats that is down for a long upgrade does not strand the process. Hosts should still watch Running.Done and exit when it fires, so their supervisor restarts them: it reports a connection closed for good.
+
+<a name="Running.Done"></a>
+### func \(\*Running\) [Done](<https://github.com/danmestas/dagnats/blob/main/program/running.go#L58>)
+
+```go
+func (r *Running) Done() <-chan error
+```
+
+Done receives exactly one value and is then closed: nil after Stop, or the reason the connection closed for good without Stop. A host should exit on a non\-nil value so its supervisor restarts it; the program is no longer reachable.
+
+<a name="Running.Stop"></a>
+### func \(\*Running\) [Stop](<https://github.com/danmestas/dagnats/blob/main/program/running.go#L39>)
+
+```go
+func (r *Running) Stop(ctx context.Context) error
+```
+
+Stop drains the worker, calls prog.Stop and closes the connection. It makes no control\-plane request, so it works while dagnats is down. Later calls return the first result.
 
 <a name="StreamSpec"></a>
 ## type [StreamSpec](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L54-L62>)

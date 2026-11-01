@@ -20,7 +20,8 @@ func TestOptionsFromEnv(t *testing.T) {
 	want := program.Options{
 		URL: "nats://mini:4222", SeedPath: "/var/lib/notify/seed", JoinKey: "djk_a_b",
 	}
-	if got != want {
+	if got.URL != want.URL || got.SeedPath != want.SeedPath || got.JoinKey != want.JoinKey ||
+		got.NATSOptions != nil {
 		t.Fatalf("OptionsFromEnv = %+v, want %+v", got, want)
 	}
 	defaults := program.OptionsFromEnv("lode")

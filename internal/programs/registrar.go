@@ -13,6 +13,11 @@
 // wins. Re-registering a name with the same public key and manifest
 // returns the stored Grant and spends nothing, which is what a
 // restarting program does until attach exists (D4).
+//
+// In open mode anonymous NATS clients are root, and that includes this
+// endpoint: any client can subscribe to program.RegisterSubject or join
+// the dagnats-programs queue group and read the join keys in requests,
+// or answer them. Join keys only protect a server with a client login.
 package programs
 
 import (
@@ -75,10 +80,12 @@ type Registrar struct {
 	stream jetstream.Stream
 	keys   *joinkey.Store
 	cfg    Config
-	// admitMu serializes the budget check with the record write, so two
-	// registrations on this node cannot both claim the last free bytes.
-	// Registrations served by different cluster nodes can still
-	// overshoot by one program's budget; see the PR notes.
+	// admitMu serializes the clash, budget and count checks with the
+	// record write, so two registrations on this node cannot both claim
+	// the last free bytes. It is per node: in an N-node cluster,
+	// registrations served at the same moment by different nodes can
+	// overshoot the budget by up to N-1 Grants, and ProgramsCountMax by
+	// up to N-1 programs. Join-key uses are exact across nodes.
 	admitMu sync.Mutex
 }
 
@@ -165,8 +172,7 @@ func (r *Registrar) existing(
 	}
 	if record.PublicKey != req.PublicKey {
 		return program.Grant{}, true, refused(program.RefusedNameTaken,
-			"program %q is registered to another key (join key %q, %s)", req.Manifest.Name,
-			record.JoinKeyID, record.RegisteredAt.Format(time.RFC3339))
+			"program %q is taken", req.Manifest.Name)
 	}
 	if !sameManifest(record.Manifest, req.Manifest) {
 		return program.Grant{}, true, refused(program.RefusedManifestChanged,

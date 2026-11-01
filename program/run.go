@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -28,6 +27,11 @@ type Options struct {
 	// JoinKey is presented at registration. Empty is accepted only by
 	// a dagnats whose NATS clients need no login (open mode).
 	JoinKey string
+	// NATSOptions are applied to both of Run's connections before Run's
+	// own (inbox prefix, login, name, reconnect policy, close handler),
+	// so they cannot override those. A ClosedHandler here is chained,
+	// not replaced.
+	NATSOptions []nats.Option
 }
 
 // OptionsFromEnv reads <NAME>_DAGNATS_URL, <NAME>_SEED and
@@ -60,12 +64,11 @@ func OptionsFromEnv(name string) Options {
 // and Attaches. A refusal is returned as an *ErrRefused before any
 // stream, consumer or handler exists.
 //
-// The returned stop drains the worker, calls prog.Stop and closes the
-// connection. It makes no control-plane request, so it works while
-// dagnats is down. Later calls return the first result.
-func Run(
-	ctx context.Context, prog Program, opts Options,
-) (stop func(context.Context) error, err error) {
+// The program's connection reconnects forever, so a dagnats that is down
+// for a long upgrade does not strand the process. Hosts should still
+// watch Running.Done and exit when it fires, so their supervisor
+// restarts them: it reports a connection closed for good.
+func Run(ctx context.Context, prog Program, opts Options) (*Running, error) {
 	if ctx == nil || prog == nil {
 		panic("program.Run: ctx and prog must not be nil")
 	}
@@ -86,45 +89,73 @@ func Run(
 	if err != nil {
 		return nil, err
 	}
-	nc, err := dialAsProgram(opts.URL, m.Name, key)
+	running := newRunning(m.Name)
+	nc, err := dialAsProgram(opts, m.Name, key, running)
 	if err != nil {
 		return nil, err
 	}
 	stopAttach, err := Attach(ctx, nc, prog, grant)
 	if err != nil {
+		running.stopping.Store(true)
 		nc.Close()
 		return nil, err
 	}
-	var once sync.Once
-	var stopErr error
-	return func(stopCtx context.Context) error {
-		once.Do(func() {
-			stopErr = stopAttach(stopCtx)
-			nc.Close()
-		})
-		return stopErr
-	}, nil
+	running.nc, running.stopAttach = nc, stopAttach
+	return running, nil
 }
 
+// Reconnect policy for the program's connection: forever, a bounded
+// wait with jitter so a fleet of programs does not reconnect in step.
+const (
+	reconnectWait         = 2 * time.Second
+	reconnectJitter       = 500 * time.Millisecond
+	reconnectJitterForTLS = 2 * time.Second
+)
+
 // dialAsProgram connects as the program's NKey user with its inbox
-// prefix. A server with no client auth at all (open mode) sends no
-// nonce, so an NKey login is impossible there; anonymous is root on
-// such a server, so Run dials anonymously, still with the prefix.
-func dialAsProgram(url, name string, key Key) (*nats.Conn, error) {
-	if url == "" || name == "" {
-		panic("program.dialAsProgram: url and name must be set")
+// prefix. opts.NATSOptions go first and Run's own last, so a caller
+// cannot replace the inbox prefix, the login or the close handler; a
+// caller's ClosedHandler is chained instead. A server with no client
+// auth at all (open mode) sends no nonce, so an NKey login is
+// impossible there; anonymous is root on such a server, so Run dials
+// anonymously, still with the prefix.
+func dialAsProgram(opts Options, name string, key Key, running *Running) (*nats.Conn, error) {
+	if name == "" || running == nil {
+		panic("program.dialAsProgram: name and running must be set")
 	}
-	options := []nats.Option{
-		nats.CustomInboxPrefix(InboxPrefix(name)), nats.Name("program " + name),
+	callerClosed, err := closedHandlerOf(opts.NATSOptions)
+	if err != nil {
+		return nil, fmt.Errorf("program %s: NATSOptions: %w", name, err)
 	}
-	nc, err := nats.Connect(url, append(options, key.ConnectOption())...)
+	options := append(append([]nats.Option(nil), opts.NATSOptions...),
+		nats.MaxReconnects(-1), nats.ReconnectWait(reconnectWait),
+		nats.ReconnectJitter(reconnectJitter, reconnectJitterForTLS),
+		nats.ClosedHandler(running.closedHandler(callerClosed)),
+		nats.CustomInboxPrefix(InboxPrefix(name)), nats.Name("program "+name),
+	)
+	nc, err := nats.Connect(opts.URL, append(options, key.ConnectOption())...)
 	if errors.Is(err, nats.ErrNkeysNotSupported) {
-		nc, err = nats.Connect(url, options...)
+		nc, err = nats.Connect(opts.URL, options...)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("program %s: dial as its own user: %w", name, err)
 	}
 	return nc, nil
+}
+
+// closedHandlerOf returns the ClosedHandler options sets, if any, by
+// applying them to a scratch nats.Options.
+func closedHandlerOf(options []nats.Option) (nats.ConnHandler, error) {
+	scratch := nats.GetDefaultOptions()
+	for _, option := range options {
+		if option == nil {
+			continue
+		}
+		if err := option(&scratch); err != nil {
+			return nil, err
+		}
+	}
+	return scratch.ClosedCB, nil
 }
 
 // register sends req over a short-lived anonymous connection dialed
@@ -142,8 +173,12 @@ func register(ctx context.Context, opts Options, req RegisterRequest) (Grant, er
 	if err != nil {
 		return Grant{}, fmt.Errorf("program %s: encode registration: %w", req.Manifest.Name, err)
 	}
-	nc, err := nats.Connect(opts.URL, nats.CustomInboxPrefix(JoinInboxPrefix),
+	// The caller's options reach the server (TLS, a dialer), but this
+	// short-lived connection must not fire the caller's close handler.
+	options := append(append([]nats.Option(nil), opts.NATSOptions...),
+		nats.ClosedHandler(nil), nats.CustomInboxPrefix(JoinInboxPrefix),
 		nats.Name("program "+req.Manifest.Name+" registration"))
+	nc, err := nats.Connect(opts.URL, options...)
 	if err != nil {
 		return Grant{}, fmt.Errorf("program %s: dial %s to register: %w",
 			req.Manifest.Name, opts.URL, err)
