@@ -98,7 +98,7 @@ const (
 ```
 
 <a name="Attach"></a>
-## func [Attach](<https://github.com/danmestas/dagnats/blob/main/program/attach.go#L34-L36>)
+## func [Attach](<https://github.com/danmestas/dagnats/blob/main/program/attach.go#L35-L37>)
 
 ```go
 func Attach(ctx context.Context, nc *nats.Conn, prog Program, g Grant) (stop func(context.Context) error, err error)

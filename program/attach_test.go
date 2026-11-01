@@ -8,6 +8,8 @@ package program_test
 
 import (
 	"context"
+	"errors"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"strings"
 	"testing"
 	"time"
@@ -111,7 +113,7 @@ func TestAttach_HandlerPanicFailsTaskNotProcess(t *testing.T) {
 
 func TestAttach_RefusesUndeclaredTaskTypeAndBadGrant(t *testing.T) {
 	m := validManifest()
-	f := startFixture(t, m)
+	f, _ := startEngineFixture(t, m)
 	nc := f.dialProgram(t, m.Name)
 	ctx := context.Background()
 	undeclared := &toyProgram{manifest: m, handle: nil}
@@ -130,6 +132,28 @@ func TestAttach_RefusesUndeclaredTaskTypeAndBadGrant(t *testing.T) {
 	// Positive: an invalid manifest is an error, not a half-started worker.
 	if _, err := program.Attach(ctx, nc, &toyProgram{manifest: bad}, toyGrant()); err == nil {
 		t.Fatal("Attach accepted an invalid manifest")
+	}
+}
+
+// TestAttach_FailsFastWithoutAControlPlane: with no dagnats answering
+// the program relay, Attach returns an error naming it instead of
+// starting a worker whose every run would stall at running.
+func TestAttach_FailsFastWithoutAControlPlane(t *testing.T) {
+	m := validManifest()
+	f := startFixture(t, m)
+	prog := &toyProgram{manifest: m}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, err := program.Attach(ctx, f.dialProgram(t, m.Name), prog, toyGrant())
+	if !errors.Is(err, natsutil.ErrRelayUnavailable) {
+		t.Fatalf("Attach err = %v, want ErrRelayUnavailable", err)
+	}
+	if prog.starts.Load() != 0 {
+		t.Fatal("Start ran with no control plane")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("Attach took %v to fail, want fast", elapsed)
 	}
 }
 

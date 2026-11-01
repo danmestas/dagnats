@@ -911,7 +911,8 @@ Bodies cross unchanged, so payload limits are a direct publish's. A refusal is `
 - **Journal append and view:** the same step ownership and current nonce. An append's `Nats-Msg-Id` must be `journal.MsgID`'s shape for that run and step, with the attempt and iteration its headers state and the step's dispatch holds: JetStream dedup is stream-wide, so a record under another step's id would make that step's real append come back as a duplicate.
 - **Headers:** only `Nats-Msg-Id`, trace context and, for the journal, `Nats-Expected-Last-Subject-Sequence` and the `Dagnats-*` record headers are kept.
 - **Ownership failures** are all `not_yours`, so a program cannot probe another's runs.
-- **Bound:** each relay endpoint is its own subscription; a node runs at most 16 relays in flight per program and 256 in all, and refuses `busy` past that rather than queueing, so one program's flood cannot delay another's.
+- **Bound:** each relay endpoint is its own subscription. A node runs at most 8 step-event relays and 16 other relays (journal, stores) in flight per program, and 256 in all, and refuses `busy` past that rather than queueing: one program's flood cannot delay another's, and a long journal replay cannot starve the same program's step events.
+- **No control plane:** with nothing answering the relay, a relayed publish fails with `ErrRelayUnavailable` and logs an error naming the missing control plane; the worker NAKs the task for redelivery, so the step is not lost. `program.Attach` (and so `program.Run`) probes the relay once and refuses to start without it.
 
 The stores another worker or the engine acts on go the same way, each a request/reply subject with the operation in `Dagnats-Relay-Op`:
 

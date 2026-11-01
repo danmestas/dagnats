@@ -15,7 +15,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/inputs"
+	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/journal"
 	"github.com/danmestas/dagnats/worker"
@@ -184,4 +187,60 @@ func TestRelayedWorkerSignalsThroughTheEngine(t *testing.T) {
 	case <-time.After(15 * time.Second):
 		t.Fatal("the relayed worker never received its signal")
 	}
+}
+
+// TestRelayedStepWaitsForTheControlPlane: a relayed worker running while
+// no dagnats answers the relay cannot publish step.started, so it NAKs
+// the task for redelivery instead of losing it; once the control plane
+// is up, the same run completes.
+func TestRelayedStepWaitsForTheControlPlane(t *testing.T) {
+	_, nc := natstest.StartServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	orch := engine.NewOrchestrator(nc)
+	if err := orch.Start(); err != nil {
+		t.Fatalf("orch.Start: %v", err)
+	}
+	t.Cleanup(orch.Stop)
+	svc := NewService(nc)
+	wb := dag.NewWorkflow("notify.late")
+	wb.Task("work", "notify.work")
+	def, err := wb.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	ctx := context.Background()
+	if err := svc.RegisterWorkflow(ctx, def); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	w := worker.NewWorker(nc, worker.WithEngineRelay("api.p.notify."))
+	w.Handle("notify.work", func(tc worker.TaskContext) error { return tc.Complete(nil) })
+	if err := w.Start(); err != nil {
+		t.Fatalf("worker start: %v", err)
+	}
+	t.Cleanup(w.Stop)
+	runID, err := svc.StartRun(ctx, "notify.late", nil)
+	if err != nil {
+		t.Fatalf("start run: %v", err)
+	}
+	time.Sleep(2500 * time.Millisecond) // a few NAK-and-redeliver cycles
+	run, err := svc.GetRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("get run: %v", err)
+	}
+	if run.Status.IsTerminal() || stepTerminal(run.Steps["work"].Status) {
+		t.Fatalf("with no control plane the run went %s / %s", run.Status, run.Steps["work"].Status)
+	}
+	natsAPI := NewNATSAPI(svc, nc, "1.0.0")
+	natsAPI.Start()
+	t.Cleanup(natsAPI.Stop)
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if run, err := svc.GetRun(ctx, runID); err == nil && run.Status == dag.RunStatusCompleted {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("the task was lost: the run never completed once the control plane came up")
 }

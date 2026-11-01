@@ -27,9 +27,11 @@ import (
 func (n *NATSAPI) storeEndpoints() []endpointSpec {
 	return []endpointSpec{
 		{"program-checkpoint", "api.p.*.checkpoint",
-			n.relayHandler(n.relayCheckpoint), programQueueGroup},
-		{"program-signal", "api.p.*.signal", n.relayHandler(n.relaySignal), programQueueGroup},
-		{"program-inputs", "api.p.*.inputs", n.relayHandler(n.relayInputs), programQueueGroup},
+			n.relayHandler(relayClassOther, n.relayCheckpoint), programQueueGroup},
+		{"program-signal", "api.p.*.signal",
+			n.relayHandler(relayClassOther, n.relaySignal), programQueueGroup},
+		{"program-inputs", "api.p.*.inputs",
+			n.relayHandler(relayClassOther, n.relayInputs), programQueueGroup},
 	}
 }
 

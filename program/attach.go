@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/worker"
 	"github.com/nats-io/nats.go"
 )
@@ -49,9 +50,17 @@ func Attach(
 	if err := checkGrant(m, g); err != nil {
 		return nil, err
 	}
+	// The program's step events, journal and stores go through the
+	// engine relay; without a control plane answering it every run would
+	// stall at running, so fail here instead.
+	relayPrefix := "api.p." + m.Name + "."
+	relay := natsutil.NewTracingPublisherCoreOnly(nc).WithRelay(relayPrefix)
+	if err := relay.ProbeRelay(ctx); err != nil {
+		return nil, fmt.Errorf("program %s: %w", m.Name, err)
+	}
 	a := &attachment{
 		manifest: m, prog: prog,
-		worker: worker.NewWorker(nc, worker.WithEngineRelay("api.p."+m.Name+".")),
+		worker: worker.NewWorker(nc, worker.WithEngineRelay(relayPrefix)),
 		logger: slog.Default().With("program", m.Name),
 	}
 	host := Host{Conn: nc, Grant: g, Logger: a.logger, Handle: a.handle}
