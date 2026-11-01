@@ -493,3 +493,47 @@ func TestRegister_ProvisionFailureRollsBack(t *testing.T) {
 		t.Fatalf("UsesLeft = %d, want 1 after the refund", got)
 	}
 }
+
+// TestRegister_NamesKeyLimitsProtocols: a key restricted to artifact*
+// may not declare a protocol rooted outside artifact*, which would
+// otherwise lock those names out through protocol_clash. The refusal
+// spends no use; unrestricted keys and keyless open mode are unchanged.
+func TestRegister_NamesKeyLimitsProtocols(t *testing.T) {
+	f := newFixture(t, Config{Open: true})
+	scopedKey, scoped := f.createKey(t, joinkey.Spec{Label: "s", NameGlob: "artifact*", UsesMax: 3})
+	outside := request(t, "artifactstore", scoped)
+	outside.Manifest.Protocols = []string{"notify.rpc"}
+	_, err := f.register(t, outside)
+	wantRefused(t, err, program.RefusedProtocolNotAllowed)
+	if got := f.usesLeft(t, scopedKey.ID); got != 3 {
+		t.Fatalf("refusal spent a use: UsesLeft = %d", got)
+	}
+	inside := request(t, "artifactstore", scoped)
+	inside.Manifest.Protocols = []string{"artifacts.fetch"}
+	if _, err := f.register(t, inside); err != nil {
+		t.Fatalf("protocol inside the glob refused: %v", err)
+	}
+	_, open := f.createKey(t, joinkey.Spec{Label: "open"})
+	unrestricted := request(t, "lode", open)
+	unrestricted.Manifest.Protocols = []string{"notify.rpc"}
+	if _, err := f.register(t, unrestricted); err != nil {
+		t.Fatalf("unrestricted key refused a protocol: %v", err)
+	}
+	keyless := request(t, "relay", "")
+	keyless.Manifest.Protocols = []string{"tool.exec"}
+	if _, err := f.register(t, keyless); err != nil {
+		t.Fatalf("keyless open-mode protocol refused: %v", err)
+	}
+}
+
+func TestRegister_ZeroSizedStreamIsRequestInvalid(t *testing.T) {
+	f := newFixture(t, Config{Open: true})
+	req := request(t, "notify", "")
+	req.Manifest.Streams[0].MaxBytesFloor = 0
+	req.Manifest.Streams[0].MaxBytesFraction = 1e-18
+	_, err := f.register(t, req)
+	wantRefused(t, err, program.RefusedRequestInvalid)
+	if _, ok, _ := f.registrar.lookup(context.Background(), "notify"); ok {
+		t.Fatal("a zero-sized program was stored")
+	}
+}

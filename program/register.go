@@ -23,6 +23,7 @@ const (
 	RefusedVersionIncompatible = "version_incompatible"
 	RefusedAuthModeUnsupported = "auth_mode_unsupported"
 	RefusedProtocolClash       = "protocol_clash"
+	RefusedProtocolNotAllowed  = "protocol_not_allowed"
 )
 
 // Instance identifies the process registering, for the operator.

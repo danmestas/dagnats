@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -85,7 +86,9 @@ type Registrar struct {
 	// the last free bytes. It is per node: in an N-node cluster,
 	// registrations served at the same moment by different nodes can
 	// overshoot the budget by up to N-1 Grants, and ProgramsCountMax by
-	// up to N-1 programs. Join-key uses are exact across nodes.
+	// up to N-1 programs. The protocol_clash check is per node in the
+	// same way: two nodes can each admit one side of a clash at the same
+	// moment. Join-key uses are exact across nodes.
 	admitMu sync.Mutex
 }
 
@@ -201,6 +204,9 @@ func (r *Registrar) reserveUse(ctx context.Context, req program.RegisterRequest)
 	}
 	key, err := r.keys.Verify(req.JoinKey, req.Manifest.Name)
 	if err == nil {
+		if refusal := protocolsOutsideGlob(key, req.Manifest.Protocols); refusal != nil {
+			return "", refusal
+		}
 		err = r.keys.ConsumeUse(ctx, key.ID)
 	}
 	switch {
@@ -213,6 +219,25 @@ func (r *Registrar) reserveUse(ctx context.Context, req program.RegisterRequest)
 		return "", refused(program.RefusedJoinKeyInvalid, "%v", err)
 	}
 	return "", fmt.Errorf("reserve join key use: %w", err)
+}
+
+// protocolsOutsideGlob refuses a protocol whose root a --names key does
+// not cover. A protocol claims its root for protocol_clash, so a key
+// limited to artifact* that could declare "notify.rpc" would lock the
+// name notify out. Checked before the use is spent.
+func protocolsOutsideGlob(key joinkey.JoinKey, protocols []string) error {
+	if key.ID == "" {
+		panic("programs.protocolsOutsideGlob: key must be verified")
+	}
+	for _, protocol := range protocols {
+		protocolRoot, _, _ := strings.Cut(protocol, ".")
+		if !key.AllowsName(protocolRoot) {
+			return refused(program.RefusedProtocolNotAllowed,
+				"protocol %q: root %q is outside the join key's names %q",
+				protocol, protocolRoot, key.NameGlob)
+		}
+	}
+	return nil
 }
 
 // refund returns a reserved use. It runs on its own context so a

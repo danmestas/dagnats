@@ -57,6 +57,11 @@ func (r *Registrar) sizeGrant(m program.Manifest) (program.Grant, error) {
 		if size > budget {
 			return program.Grant{}, tooBig("stream", s.Name, size)
 		}
+		if size <= 0 {
+			return program.Grant{}, refused(program.RefusedRequestInvalid,
+				"stream %q sizes to 0 bytes: its fraction of the %d-byte budget "+
+					"rounds down and it has no floor", s.Name, budget)
+		}
 		grant.StreamMaxBytes[s.Name] = size
 		grant.StoreBudgetBytes = addSaturating(grant.StoreBudgetBytes, size)
 	}

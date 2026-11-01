@@ -135,8 +135,9 @@ func validateGlob(glob string) error {
 	return nil
 }
 
-// allowsName reports whether key may reserve program name.
-func (key JoinKey) allowsName(name string) bool {
+// AllowsName reports whether key's NameGlob covers name: a program
+// name it may reserve, or the root of a protocol it may declare.
+func (key JoinKey) AllowsName(name string) bool {
 	if key.NameGlob == "" {
 		return true
 	}

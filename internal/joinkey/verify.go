@@ -38,7 +38,7 @@ func (s *Store) Verify(plaintext, programName string) (JoinKey, error) {
 	if err := s.usable(key); err != nil {
 		return JoinKey{}, err
 	}
-	if !key.allowsName(programName) {
+	if !key.AllowsName(programName) {
 		return JoinKey{}, ErrNameNotAllowed
 	}
 	return key.redacted(), nil
