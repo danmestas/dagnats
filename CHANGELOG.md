@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`program.ErrRelayUnavailable`.** `program.Run` and `program.Attach` return it when no dagnats control plane answers the program relay (a server older than v0.0.42, or one running without its NATS API), so a host can test for it with `errors.Is` and tell its operator to upgrade or start the server.
+
 ## [0.0.42] - 2026-11-01
 
 ### Upgrade notes

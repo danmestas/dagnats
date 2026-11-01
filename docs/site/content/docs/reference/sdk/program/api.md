@@ -33,6 +33,7 @@ Programs on a dagnats are trusted: today they are all the operator's own, the sa
 ## Index
 
 - [Constants](<#constants>)
+- [Variables](<#variables>)
 - [func Attach\(ctx context.Context, nc \*nats.Conn, prog Program, g Grant\) \(stop func\(context.Context\) error, err error\)](<#Attach>)
 - [func InboxPrefix\(name string\) string](<#InboxPrefix>)
 - [func Provision\(ctx context.Context, js jetstream.JetStream, m Manifest, g Grant\) error](<#Provision>)
@@ -97,8 +98,16 @@ const (
 )
 ```
 
+## Variables
+
+<a name="ErrRelayUnavailable"></a>ErrRelayUnavailable is returned by Attach, and so Run, when no dagnats control plane answers the program relay: the server is older than v0.0.42 or runs without its NATS API. A host can test for it with errors.Is to tell an operator to upgrade or start the dagnats server.
+
+```go
+var ErrRelayUnavailable = natsutil.ErrRelayUnavailable
+```
+
 <a name="Attach"></a>
-## func [Attach](<https://github.com/danmestas/dagnats/blob/main/program/attach.go#L35-L37>)
+## func [Attach](<https://github.com/danmestas/dagnats/blob/main/program/attach.go#L41-L43>)
 
 ```go
 func Attach(ctx context.Context, nc *nats.Conn, prog Program, g Grant) (stop func(context.Context) error, err error)
