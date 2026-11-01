@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.43] - 2026-11-01
+
 ### Upgrade notes
 
 - **Run only trusted programs.** These permissions are guardrails against mistakes, not an isolation boundary. A program can still write arbitrary data into the account through JetStream reply reflection (nats-server does not check a JetStream reply subject against the requester's permissions), so run only trusted programs until per-program NATS accounts land ([#909](https://github.com/danmestas/dagnats/issues/909)). Every node now derives a program's NATS permissions from its stored manifest and ignores any stored permission set, so a forged `programs` record cannot grant itself more than its manifest does; the record no longer carries a `permissions` field.
