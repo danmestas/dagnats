@@ -251,3 +251,47 @@ func pushConsumerRequest(stream, name, filter, deliver string) []byte {
 	}
 	return req
 }
+
+// TestAttack_JetStreamReplyCannotWriteForeignBuckets: nats-server
+// publishes a JetStream API response, a direct get's message and a pull
+// delivery to whatever reply subject the request names, as the account
+// and without checking the requester's permissions. So alpha can put
+// bytes it chose into any bucket or stream: store them in its own
+// bucket, then direct-get them with a reply of "$KV.<bucket>.<key>".
+// Accepted for trusted programs; closed by per-program accounts (#909).
+func TestAttack_JetStreamReplyCannotWriteForeignBuckets(t *testing.T) {
+	t.Skip("accepted gap for trusted programs (#909): see \"Known limitations / threat " +
+		"model\" in the program package doc; closed by per-program NATS accounts")
+	f, js := attackFixture(t)
+	nc := js.Conn()
+	_, err := nc.Request("$KV.alpha_state.seed", []byte(`{"forged":true}`), time.Second)
+	if err != nil {
+		t.Fatalf("own put: %v", err)
+	}
+	for _, send := range []nats.Msg{
+		{Subject: "$JS.API.DIRECT.GET.KV_alpha_state.$KV.alpha_state.seed",
+			Reply: "$KV.workflow_defs.direct"},
+		{Subject: "$JS.API.INFO", Reply: "$KV.workflow_defs.info"},
+	} {
+		if err := nc.PublishMsg(&send); err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+	}
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	admin, err := jetstream.New(f.admin)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	defs, err := admin.KeyValue(shortCtx(t), "workflow_defs")
+	if err != nil {
+		t.Fatalf("workflow_defs: %v", err)
+	}
+	for _, key := range []string{"direct", "info"} {
+		if entry, err := defs.Get(shortCtx(t), key); err == nil {
+			t.Errorf("alpha wrote workflow_defs %s = %q", key, entry.Value())
+		}
+	}
+}

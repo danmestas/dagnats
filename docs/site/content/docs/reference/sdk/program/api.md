@@ -10,9 +10,9 @@ Package program is the contract between dagnats and a program: a separately rele
 
 A program declares a Manifest. Its Name is the prefix root of everything it owns: task types and workflows "name.\*", subjects "name.\>", streams "NAME\_\*", buckets "name\_\*". Validate checks a manifest without touching NATS; PermissionsFor derives the NATS permission set dagnats binds to the program's NKey user, which is exactly the crossings the worker SDK and a micro service make plus the program's own resources and nothing wider.
 
-Isolation rests on two rules the package enforces:
+Programs are trusted: these permissions are guardrails against mistakes, not an isolation boundary. A program can still write arbitrary data into the account through JetStream reply reflection \(see Known limitations\), so run only trusted programs until per\-program NATS accounts land \(dagnats\#909\). The guardrails rest on two rules the package enforces:
 
-- A program dials with nats.CustomInboxPrefix\(InboxPrefix\(name\)\), and its permissions grant subscribe on "\_INBOX.\<name\>.\>" only. Every pull fetch, KV watch and JetStream API reply lands on that inbox, so no program can read another's task bodies or replies. Attach panics on a connection dialed without the prefix.
+- A program dials with nats.CustomInboxPrefix\(InboxPrefix\(name\)\), and its permissions grant subscribe on "\_INBOX.\<name\>.\>" only. Every pull fetch, KV watch and JetStream API reply lands on that inbox, so a program does not read another's task bodies or replies. Attach panics on a connection dialed without the prefix.
 - The program generates its own NKey \(LoadOrCreateKey\). The seed is written once, mode 0600, and never leaves the process; only the public key is registered.
 
 A program never creates or reconfigures a stream or bucket: a stream config can capture, mirror or republish subjects outside the program's grant. The host creates the manifest's streams and buckets with Provision over its own connection, and the program gets reads, consumers, and key writes on them.
@@ -25,6 +25,7 @@ Permissions is a plain struct. Converting it to nats\-server options is the serv
 
 Programs on a dagnats are trusted: today they are all the operator's own, the same stance as the coarse\-shared engine buckets. Within that model these gaps are accepted, and they are closed before untrusted \(third\-party\) programs join a dagnats, the same trigger as making nats\_auth: required the default.
 
+- JetStream reply reflection. nats\-server publishes a JetStream API response, a direct get's message and a pull delivery to whatever reply subject the request names, as the account, without checking it against the requester's permissions. So a program can write bytes it chose into any stream or bucket of the account: store them in its own bucket, then direct\-get them with a reply of "$KV.\<bucket\>.\<key\>". Every node therefore derives a program's permissions from its stored manifest and never from a stored permission set. Closed by per\-program NATS accounts, dagnats\#909; TestAttack\_JetStreamReplyCannotWriteForeignBuckets is the proof, skipped until then.
 - Push\-consumer delivery. A consumer's deliver subject travels in the JetStream request body, which subject permissions never see, and nats\-server does not check it against the creating user's permissions. So a program can deliver its own stream's messages, or a shared bucket's, onto any subject that has interest, including another program's task or service subjects. KV watches need push consumers, so denying consumer creates is not an option. User permissions inside one account cannot close this; one NATS account per program, or a server\-side check of the deliver subject, will. Tracked as dagnats\#862; TestAttack\_PushConsumerCannotDeliverIntoForeignSubjects is the proof, skipped until then.
 - Inbox forgery. Micro services reply by publishing to the caller's inbox, so every program may publish on "\_INBOX.\>". Inbox names are not secret: one process's inboxes share a prefix and are numbered in sequence, so a single reply subject seen from program beta \(on a shared protocol, say\) lets program alpha write forged replies into beta's next inboxes. Reading stays confined to the program's own "\_INBOX.\<name\>.\>". Tracked as dagnats\#862 and closed by the same fix as push\-consumer delivery: accounts or a server\-side check.
 - Name\-gated grants. Consumer delete on shared buckets and next, ack and create on STICKY\_TASKS are gated only by consumer names: random NUIDs, and for sticky consumers 128 bits from crypto/rand, which a program can neither list nor read from any bucket, reply or advisory.
@@ -423,13 +424,15 @@ type Permissions struct {
 ```
 
 <a name="PermissionsFor"></a>
-### func [PermissionsFor](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L67>)
+### func [PermissionsFor](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L71>)
 
 ```go
 func PermissionsFor(m Manifest) Permissions
 ```
 
 PermissionsFor derives the NATS permission set for a manifest: every crossing the worker SDK and a micro service make, the program's own subjects, streams and buckets, its protocols, and subscribe on "\_INBOX.\<name\>.\>" and nothing wider. Pure. Panics on a manifest that fails Validate: permissions for an invalid manifest are meaningless.
+
+These are guardrails against a trusted program's mistakes, not an isolation boundary: JetStream reply reflection lets a program write any stream or bucket of the account \(package doc, dagnats\#909\).
 
 Residual: next, ack and create on a STICKY\_TASKS consumer are granted for any consumer name, so a program holding a sibling's name could pull, ack or reconfigure it. The names are unguessable and never disclosed \(stickyPublish\), and TestPermissions\_StickyConsumerNamesNotDisclosed pins the disclosure surfaces.
 

@@ -153,6 +153,8 @@ func malformedRecord(key string, record programs.Record) string {
 		return "program name is not the record's key"
 	case !nkeys.IsValidPublicUserKey(record.PublicKey):
 		return "public key is not an NKey user key"
+	case program.Validate(record.Manifest) != nil:
+		return "manifest is invalid"
 	}
 	return ""
 }

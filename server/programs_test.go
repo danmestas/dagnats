@@ -271,8 +271,7 @@ func TestServer_RecordFromAnotherNodeReachesThisNode(t *testing.T) {
 	}
 	manifest := (&tinyProgram{}).Manifest()
 	data, err := json.Marshal(programs.Record{
-		Manifest: manifest, PublicKey: key.PublicKey(),
-		Permissions: program.PermissionsFor(manifest), RegisteredAt: time.Now(),
+		Manifest: manifest, PublicKey: key.PublicKey(), RegisteredAt: time.Now(),
 	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -418,6 +417,9 @@ func TestServer_MalformedRecordDoesNotStopTheNode(t *testing.T) {
 		"zzz":     `{"refused":{"code":"x","detail":"y"}}`,
 		"garbage": `not json`,
 		"named":   `{"manifest":{"Name":"other"},"public_key":"nope"}`,
+		// A valid name and key with a manifest PermissionsFor refuses.
+		"badmanifest": `{"manifest":{"Name":"badmanifest","TaskTypes":["other.x"]},` +
+			`"public_key":"` + mustPublicKey(t) + `"}`,
 	} {
 		if _, err := kv.Put(ctx, key, []byte(value)); err != nil {
 			t.Fatalf("put %s: %v", key, err)
@@ -498,4 +500,78 @@ func TestServer_UnknownKeyRejectedWithNoPrograms(t *testing.T) {
 		}
 		anonymous.Close()
 	}
+}
+
+// TestServer_StoredPermissionsAreIgnored: a programs record carrying its
+// own "allow >" permissions, as a forged record would, binds only the
+// permissions its manifest derives. A program can write the bucket
+// through JetStream reply reflection, so nothing in a record but the
+// manifest may decide what its user can do.
+func TestServer_StoredPermissionsAreIgnored(t *testing.T) {
+	srv, _ := startProgramsServer(t, loginConfig(t))
+	key, err := program.LoadOrCreateKey(filepath.Join(t.TempDir(), "seed"))
+	if err != nil {
+		t.Fatalf("LoadOrCreateKey: %v", err)
+	}
+	manifest := (&tinyProgram{}).Manifest()
+	everything := map[string]any{"allow": []string{">"}}
+	data, err := json.Marshal(map[string]any{
+		"manifest": manifest, "public_key": key.PublicKey(), "registered_at": time.Now(),
+		"permissions": map[string]any{"publish": everything, "subscribe": everything},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, kv := programsKV(t, srv)
+	if _, err := kv.Create(ctx, manifest.Name, data); err != nil {
+		t.Fatalf("write record: %v", err)
+	}
+	js, err := jetstream.New(srv.nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	var nc *nats.Conn
+	for deadline := time.Now().Add(5 * time.Second); nc == nil; {
+		nc, err = nats.Connect(srv.ns.ClientURL(), key.ConnectOption(),
+			nats.CustomInboxPrefix(program.InboxPrefix(manifest.Name)),
+			nats.ErrorHandler(func(*nats.Conn, *nats.Subscription, error) {}))
+		if err != nil && time.Now().After(deadline) {
+			t.Fatalf("the record never became a NATS user: %v", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	defer nc.Close()
+	// Positive: the manifest's own subjects are allowed.
+	if err := nc.Publish(manifest.Name+".anything", nil); err != nil {
+		t.Fatalf("own publish: %v", err)
+	}
+	if err := nc.Publish("$KV.workflow_defs.forged", []byte("x")); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	// Negative: the stored "allow >" granted nothing beyond the manifest.
+	if last := nc.LastError(); !errors.Is(last, nats.ErrPermissionViolation) {
+		t.Fatalf("last error = %v, want a permissions violation", last)
+	}
+	defs, err := js.KeyValue(ctx, "workflow_defs")
+	if err != nil {
+		t.Fatalf("workflow_defs: %v", err)
+	}
+	if _, err := defs.Get(ctx, "forged"); !errors.Is(err, jetstream.ErrKeyNotFound) {
+		t.Fatalf("forged key: %v, want not found", err)
+	}
+}
+
+func mustPublicKey(t *testing.T) string {
+	t.Helper()
+	key, err := program.LoadOrCreateKey(filepath.Join(t.TempDir(), "seed"))
+	if err != nil {
+		t.Fatalf("LoadOrCreateKey: %v", err)
+	}
+	return key.PublicKey()
 }

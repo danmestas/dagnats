@@ -201,7 +201,7 @@ func TestRegister_OpenModeNeedsNoKey(t *testing.T) {
 		t.Fatalf("lookup: %v %v", ok, err)
 	}
 	if record.PublicKey != req.PublicKey || record.JoinKeyID != "" ||
-		record.RegisteredAt.IsZero() || len(record.Permissions.Publish.Allow) == 0 {
+		record.RegisteredAt.IsZero() {
 		t.Fatalf("record = %+v", record)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -587,7 +587,7 @@ func TestRegister_BindRunsBeforeReplyAndRollsBack(t *testing.T) {
 	}
 	// Bound twice: the pending user at register, the full one on confirm.
 	if len(bound) != 2 || !bound[0].Pending || bound[1].Pending ||
-		bound[1].PublicKey != req.PublicKey || len(bound[1].Permissions.Publish.Allow) == 0 {
+		bound[1].PublicKey != req.PublicKey {
 		t.Fatalf("Bind saw %d records, want pending then confirmed", len(bound))
 	}
 	bindErr = errors.New("reload failed")

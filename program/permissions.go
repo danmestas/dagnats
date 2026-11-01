@@ -59,6 +59,10 @@ var engineEventSubjects = []string{"stream", "logs"}
 // "_INBOX.<name>.>" and nothing wider. Pure. Panics on a manifest that
 // fails Validate: permissions for an invalid manifest are meaningless.
 //
+// These are guardrails against a trusted program's mistakes, not an
+// isolation boundary: JetStream reply reflection lets a program write
+// any stream or bucket of the account (package doc, dagnats#909).
+//
 // Residual: next, ack and create on a STICKY_TASKS consumer are granted
 // for any consumer name, so a program holding a sibling's name could pull,
 // ack or reconfigure it. The names are unguessable and never disclosed

@@ -76,12 +76,14 @@ type Config struct {
 
 // Record is one registered program, as stored.
 type Record struct {
-	Manifest     program.Manifest    `json:"manifest"`
-	PublicKey    string              `json:"public_key"`
-	Permissions  program.Permissions `json:"permissions"`
-	Grant        program.Grant       `json:"grant"`
-	JoinKeyID    string              `json:"join_key_id,omitempty"`
-	RegisteredAt time.Time           `json:"registered_at"`
+	// A program's NATS permissions are not stored: every node derives
+	// them from Manifest (UserPermissions), because a program can write
+	// this bucket through JetStream reply reflection.
+	Manifest     program.Manifest `json:"manifest"`
+	PublicKey    string           `json:"public_key"`
+	Grant        program.Grant    `json:"grant"`
+	JoinKeyID    string           `json:"join_key_id,omitempty"`
+	RegisteredAt time.Time        `json:"registered_at"`
 	// Pending is a registration not yet confirmed by the key's holder;
 	// it is removed at PendingUntil (possession.go).
 	Pending      bool      `json:"pending,omitempty"`

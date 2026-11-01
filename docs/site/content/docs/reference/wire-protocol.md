@@ -890,7 +890,7 @@ The lease endpoints share the queue group `dagnats-leases`, so one instance serv
 
 ### Program-scoped control plane (`api.p.<name>.*`)
 
-A program (#885) manages its own workflows on these subjects. Its NATS permissions let it publish only under `api.p.<its name>.>`, so the name in the subject is the caller, and every request is confined to workflows named `<name>.*`. Bodies and replies match the global subjects above.
+A program (#885) manages its own workflows on these subjects. Programs are trusted: these permissions are guardrails against mistakes, not an isolation boundary. A program can still write arbitrary data into the account through JetStream reply reflection (nats-server does not check a JetStream reply subject against the requester's permissions), so run only trusted programs until per-program NATS accounts land ([#909](https://github.com/danmestas/dagnats/issues/909)). Its NATS permissions let it publish only under `api.p.<its name>.>`, so the name in the subject is the caller, and every request is confined to workflows named `<name>.*`. Bodies and replies match the global subjects above.
 
 | Subject | Request | Reply |
 |---------|---------|-------|

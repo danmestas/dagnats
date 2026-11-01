@@ -69,8 +69,8 @@ func UserPermissions(record Record) program.Permissions {
 			Subscribe: program.SubjectPermission{Allow: []string{inbox}},
 		}
 	}
-	perms := record.Permissions
-	perms.Publish.Allow = append(append([]string(nil), perms.Publish.Allow...), confirm)
+	perms := program.PermissionsFor(record.Manifest)
+	perms.Publish.Allow = append(perms.Publish.Allow, confirm)
 	return perms
 }
 
