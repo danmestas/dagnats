@@ -84,7 +84,7 @@ The `nats_cluster_*`, `nats_server_name` and `nats_jetstream_replicas` keys are 
 | `DAGNATS_NATS_CLUSTER_PORT` | `nats_cluster_port` | Route listener port; default 6222 |
 | `DAGNATS_NATS_CLUSTER_HOST` | `nats_cluster_host` | Route listener bind IP; default 0.0.0.0 |
 | `DAGNATS_NATS_HOST` | `nats_host` | Client listener bind IP; default 127.0.0.1, or 0.0.0.0 in leaf mode |
-| `DAGNATS_NATS_USER` | `nats_user` | Login required on the client port and WebSocket listener; set with `nats_password_file`. Unset: open |
+| `DAGNATS_NATS_USER` | `nats_user` | The operator login on the client port and WebSocket listener; set with `nats_password_file`. Set: anonymous clients are the join user. Unset: anonymous is root. See [NATS users](#nats-users) |
 | `DAGNATS_NATS_PASSWORD_FILE` | `nats_password_file` | File holding that user's password (chmod 600) |
 | `DAGNATS_API_TOKEN_FILE` | `api_token_file` | File holding a bearer token every HTTP request must carry, except `/health`, `/health/cluster` and `/ready`. On the bridge's worker routes a token the bridge accepts also passes. Unset: open. Neither login covers `monitor_port` or cluster routes (use `nats_cluster_auth_token`) |
 | `DAGNATS_NATS_SERVER_NAME` | `nats_server_name` | Stable server name; default derived from host |
@@ -189,6 +189,20 @@ eyJ0eXAiOiJK...
 SUAM...
 ------END USER NKEY SEED------" dagnats serve
 ```
+
+## NATS users
+
+dagnats' embedded NATS server always has these users:
+
+- **Anonymous.** A client that presents no credentials is root when `nats_user` is unset (open mode); one that presents credentials the server does not know (an unregistered NKey, a wrong login) is rejected in either mode. When `nats_user` is set (required mode), it is the join user, which may only publish `api.programs.register` and subscribe to `_JOIN.>`, so it can register a program and do nothing else.
+- **The operator login**, `nats_user`, when set. Unrestricted.
+- **One NKey user per registered program**, with the permissions its manifest derives (`program.PermissionsFor`). Every node builds them from the `programs` KV bucket at start and reloads them whenever the bucket changes. A program whose key is unchanged stays connected across a reload; a removed or replaced key is disconnected.
+
+> **Programs are trusted.** These permissions are guardrails against mistakes, not an isolation boundary. A program can still write arbitrary data into the account through JetStream reply reflection (nats-server does not check a JetStream reply subject against the requester's permissions), so run only trusted programs until per-program NATS accounts land ([#909](https://github.com/danmestas/dagnats/issues/909)).
+
+**Proof of possession.** A registration only claims a public key, so a new program is held **pending** for 60 seconds: its NKey user may publish nothing but `api.programs.confirm.<its public key>`. The program logs in with its key (NATS's NKey challenge proves it holds the seed) and confirms there; only then does it get its full permissions. A manifest change of a registered program is applied only on that confirmation, never on the anonymous registration. An unconfirmed registration expires, its join-key use is refunded and its name is free again. `program.Run` does all of this.
+
+In required mode a program needs a join key to register. In open mode the key is optional, because anonymous is root anyway; that includes reading other clients' registration requests, so join keys protect only a required-mode server.
 
 ## Control plane policy
 

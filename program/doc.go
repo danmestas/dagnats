@@ -10,12 +10,17 @@
 // exactly the crossings the worker SDK and a micro service make plus the
 // program's own resources and nothing wider.
 //
-// Isolation rests on two rules the package enforces:
+// Programs are trusted: these permissions are guardrails against
+// mistakes, not an isolation boundary. A program can still write
+// arbitrary data into the account through JetStream reply reflection
+// (see Known limitations), so run only trusted programs until
+// per-program NATS accounts land (dagnats#909). The guardrails rest on
+// two rules the package enforces:
 //
 //   - A program dials with nats.CustomInboxPrefix(InboxPrefix(name)), and
 //     its permissions grant subscribe on "_INBOX.<name>.>" only. Every
 //     pull fetch, KV watch and JetStream API reply lands on that inbox,
-//     so no program can read another's task bodies or replies. Attach
+//     so a program does not read another's task bodies or replies. Attach
 //     panics on a connection dialed without the prefix.
 //   - The program generates its own NKey (LoadOrCreateKey). The seed is
 //     written once, mode 0600, and never leaves the process; only the
@@ -43,6 +48,17 @@
 // (third-party) programs join a dagnats, the same trigger as making
 // nats_auth: required the default.
 //
+//   - JetStream reply reflection. nats-server publishes a JetStream API
+//     response, a direct get's message and a pull delivery to whatever
+//     reply subject the request names, as the account, without checking
+//     it against the requester's permissions. So a program can write
+//     bytes it chose into any stream or bucket of the account: store them
+//     in its own bucket, then direct-get them with a reply of
+//     "$KV.<bucket>.<key>". Every node therefore derives a program's
+//     permissions from its stored manifest and never from a stored
+//     permission set. Closed by per-program NATS accounts, dagnats#909;
+//     TestResidual_JetStreamReplyWritesForeignBuckets pins the gap and
+//     fails once it is closed.
 //   - Push-consumer delivery. A consumer's deliver subject travels in the
 //     JetStream request body, which subject permissions never see, and
 //     nats-server does not check it against the creating user's
@@ -63,9 +79,11 @@
 //     beta's next inboxes. Reading stays confined to the program's own
 //     "_INBOX.<name>.>". Tracked as dagnats#862 and closed by the same fix
 //     as push-consumer delivery: accounts or a server-side check.
-//   - Name-gated grants. Consumer delete on shared buckets and next/ack
-//     on STICKY_TASKS are gated only by consumer names, which are random
-//     NUIDs that a program cannot list.
+//   - Name-gated grants. Consumer delete on shared buckets and next, ack
+//     and create on STICKY_TASKS are gated only by consumer names: random
+//     NUIDs, and for sticky consumers 128 bits from crypto/rand, which a
+//     program can neither list nor read from any bucket, reply or
+//     advisory.
 //   - Protocol ownership. Validate cannot see other programs, so a
 //     protocol such as "beta.x" declared by program alpha would be
 //     granted under beta's prefix. Registration must check ownership both

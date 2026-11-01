@@ -85,8 +85,8 @@ func TestUpdate_AdditionsAreAdmittedAndProvisioned(t *testing.T) {
 		record.Grant.StoreBudgetBytes != grant.StoreBudgetBytes {
 		t.Fatalf("record not updated: %+v", record)
 	}
-	if !strings.Contains(fmt.Sprint(record.Permissions), "notify.send") {
-		t.Fatalf("permissions do not cover the new task type: %+v", record.Permissions)
+	if perms := UserPermissions(record); !strings.Contains(fmt.Sprint(perms), "notify.send") {
+		t.Fatalf("permissions do not cover the new task type: %+v", perms)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -199,7 +199,7 @@ func TestUpdate_ConcurrentUpdatesSettleByCAS(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, errs[i] = registrar.Register(ctx, update)
+			_, errs[i] = registerAndConfirm(registrar, update)
 		}()
 	}
 	wg.Wait()
@@ -516,7 +516,7 @@ func TestUpdate_RollBackLeavesANewerUpdatesStreams(t *testing.T) {
 		if err := f.js.DeleteStream(ctx, "SQUAT"); err != nil {
 			t.Errorf("delete squatting stream: %v", err)
 		}
-		if _, err := peer.Register(ctx, u2); err != nil {
+		if _, err := registerAndConfirm(peer, u2); err != nil {
 			t.Errorf("B's update in A's rollback window: %v", err)
 		}
 	}

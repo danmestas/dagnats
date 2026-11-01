@@ -3,8 +3,8 @@
 // first served with idempotent same-key re-registration (manifest
 // updates have their own file, update_test.go), every join-key
 // refusal, refunds on every failure after the use is reserved, exactly
-// UsesMax admissions under concurrency, budget and version refusals, and
-// the required-auth-mode refusal.
+// UsesMax admissions under concurrency, budget and version refusals,
+// the join key required auth mode demands, and the Bind hook.
 // Methodology: real embedded NATS per test, a real joinkey.Store, and
 // the Registrar driven directly (the NATS endpoint has its own test).
 package programs
@@ -123,11 +123,30 @@ func request(t *testing.T, name, joinKey string) program.RegisterRequest {
 	}
 }
 
+// register is what program.Run does with a key it holds: register, then
+// confirm when the reply asks for it (a new registration is pending, a
+// manifest change needs confirming). Tests of the confirmation itself
+// call Register and Confirm directly.
 func (f *fixture) register(t *testing.T, req program.RegisterRequest) (program.Grant, error) {
 	t.Helper()
+	return registerAndConfirm(f.registrar, req)
+}
+
+func registerAndConfirm(r *Registrar, req program.RegisterRequest) (program.Grant, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return f.registrar.Register(ctx, req)
+	grant, err := r.Register(ctx, req)
+	if errors.Is(err, errConfirmRequired) {
+		return r.Confirm(ctx, req.PublicKey, req)
+	}
+	if err != nil {
+		return grant, err
+	}
+	record, found, lookupErr := r.lookup(ctx, req.Manifest.Name)
+	if lookupErr != nil || !found || !record.Pending {
+		return grant, lookupErr
+	}
+	return r.Confirm(ctx, req.PublicKey, req)
 }
 
 func (f *fixture) createKey(t *testing.T, spec joinkey.Spec) (joinkey.JoinKey, string) {
@@ -182,7 +201,7 @@ func TestRegister_OpenModeNeedsNoKey(t *testing.T) {
 		t.Fatalf("lookup: %v %v", ok, err)
 	}
 	if record.PublicKey != req.PublicKey || record.JoinKeyID != "" ||
-		record.RegisteredAt.IsZero() || len(record.Permissions.Publish.Allow) == 0 {
+		record.RegisteredAt.IsZero() {
 		t.Fatalf("record = %+v", record)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -346,16 +365,22 @@ func TestRegister_InvalidRequests(t *testing.T) {
 	wantRefused(t, err, program.RefusedRequestInvalid)
 }
 
-func TestRegister_RequiredAuthModeRefused(t *testing.T) {
+// TestRegister_RequiredModeNeedsAJoinKey: with a client login (not
+// open), anonymous is only the join user, so every registration must
+// present a join key; one that does is admitted.
+func TestRegister_RequiredModeNeedsAJoinKey(t *testing.T) {
 	f := newFixture(t, Config{Open: false})
-	key, plaintext := f.createKey(t, joinkey.Spec{Label: "k", UsesMax: 2})
-	_, err := f.register(t, request(t, "notify", plaintext))
-	wantRefused(t, err, program.RefusedAuthModeUnsupported)
-	if got := f.usesLeft(t, key.ID); got != 2 {
-		t.Fatalf("auth-mode refusal spent a use: UsesLeft = %d", got)
-	}
+	_, err := f.register(t, request(t, "notify", ""))
+	wantRefused(t, err, program.RefusedJoinKeyInvalid)
 	if _, ok, _ := f.registrar.lookup(context.Background(), "notify"); ok {
-		t.Fatal("refused program was stored")
+		t.Fatal("a keyless registration was stored in required mode")
+	}
+	key, plaintext := f.createKey(t, joinkey.Spec{Label: "k", UsesMax: 2})
+	if _, err := f.register(t, request(t, "notify", plaintext)); err != nil {
+		t.Fatalf("Register with a key: %v", err)
+	}
+	if got := f.usesLeft(t, key.ID); got != 1 {
+		t.Fatalf("UsesLeft = %d, want 1", got)
 	}
 }
 
@@ -543,5 +568,39 @@ func TestRegister_ZeroSizedStreamIsRequestInvalid(t *testing.T) {
 	wantRefused(t, err, program.RefusedRequestInvalid)
 	if _, ok, _ := f.registrar.lookup(context.Background(), "notify"); ok {
 		t.Fatal("a zero-sized program was stored")
+	}
+}
+
+// TestRegister_BindRunsBeforeReplyAndRollsBack: Bind sees the stored
+// record before Register returns; a Bind failure removes the record and
+// refunds the use, so the program is not left registered without a user.
+func TestRegister_BindRunsBeforeReplyAndRollsBack(t *testing.T) {
+	var bound []Record
+	bindErr := error(nil)
+	f := newFixture(t, Config{Open: true, Bind: func(record Record) error {
+		bound = append(bound, record)
+		return bindErr
+	}})
+	req := request(t, "notify", "")
+	if _, err := f.register(t, req); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	// Bound twice: the pending user at register, the full one on confirm.
+	if len(bound) != 2 || !bound[0].Pending || bound[1].Pending ||
+		bound[1].PublicKey != req.PublicKey {
+		t.Fatalf("Bind saw %d records, want pending then confirmed", len(bound))
+	}
+	bindErr = errors.New("reload failed")
+	key, plaintext := f.createKey(t, joinkey.Spec{Label: "once", UsesMax: 1})
+	_, err := f.register(t, request(t, "artifact", plaintext))
+	var refusal *program.ErrRefused
+	if err == nil || errors.As(err, &refusal) || !strings.Contains(err.Error(), "reload failed") {
+		t.Fatalf("Register err = %v, want the bind failure", err)
+	}
+	if _, ok, _ := f.registrar.lookup(context.Background(), "artifact"); ok {
+		t.Fatal("a record survived its failed bind")
+	}
+	if got := f.usesLeft(t, key.ID); got != 1 {
+		t.Fatalf("UsesLeft = %d, want 1 after the refund", got)
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/program"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -708,5 +709,69 @@ func TestPermissions_ReaderGetsWatchesButCannotWrite(t *testing.T) {
 	}
 	if !f.violations.contains("$KV.tools_registry.k") {
 		t.Error("no violation logged for the denied write")
+	}
+}
+
+// TestPermissions_StickyConsumerNamesNotDisclosed pins the gate on
+// STICKY_TASKS next and ack: they are granted by consumer name, so a
+// program must never learn a sibling's name. Listing is denied, stream
+// info carries no names, and a create cannot filter another program's
+// sticky subjects.
+func TestPermissions_StickyConsumerNamesNotDisclosed(t *testing.T) {
+	m := validManifest()
+	f := startFixture(t, m)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	admin, err := jetstream.New(f.admin)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	if _, err := admin.Stream(ctx, "STICKY_TASKS"); err != nil {
+		if err := natsutil.SetupStickyStream(admin, 1); err != nil {
+			t.Fatalf("SetupStickyStream: %v", err)
+		}
+	}
+	const secret = "sticky-notify-send-00112233445566778899aabbccddeeff"
+	if _, err := admin.CreateOrUpdateConsumer(ctx, "STICKY_TASKS", jetstream.ConsumerConfig{
+		Durable: secret, FilterSubject: "sticky.notify.send.wid9.>",
+		AckPolicy: jetstream.AckExplicitPolicy,
+	}); err != nil {
+		t.Fatalf("foreign sticky consumer: %v", err)
+	}
+	nc := f.dialProgram(t, m.Name)
+	info, err := nc.Request("$JS.API.STREAM.INFO.STICKY_TASKS", nil, time.Second)
+	if err != nil || !strings.Contains(string(info.Data), `"STICKY_TASKS"`) {
+		t.Fatalf("own stream info = %v, %v", info, err)
+	}
+	if strings.Contains(string(info.Data), secret) {
+		t.Fatalf("stream info discloses a sticky consumer name: %s", info.Data)
+	}
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	short, stop := context.WithTimeout(ctx, time.Second)
+	defer stop()
+	if _, err := js.CreateOrUpdateConsumer(short, "STICKY_TASKS", jetstream.ConsumerConfig{
+		Durable: "sticky-toy-mine", FilterSubject: "sticky.notify.send.wid9.>",
+	}); err == nil {
+		t.Error("consumer on another program's sticky subjects created, want denial")
+	}
+	for _, subject := range []string{
+		"$JS.API.CONSUMER.LIST.STICKY_TASKS", "$JS.API.CONSUMER.NAMES.STICKY_TASKS",
+	} {
+		reply, err := nc.Request(subject, nil, 500*time.Millisecond)
+		if err == nil && strings.Contains(string(reply.Data), secret) {
+			t.Errorf("%s disclosed %s", subject, secret)
+		}
+	}
+	for _, subject := range []string{
+		"$JS.API.CONSUMER.CREATE.STICKY_TASKS.sticky-toy-mine.sticky.notify.send.wid9.>",
+		"$JS.API.CONSUMER.LIST.STICKY_TASKS", "$JS.API.CONSUMER.NAMES.STICKY_TASKS",
+	} {
+		// Negative: each disclosure or foreign-filter attempt is denied.
+		if !waitFor(func() bool { return f.violations.contains(subject) }) {
+			t.Errorf("no violation logged for %q", subject)
+		}
 	}
 }

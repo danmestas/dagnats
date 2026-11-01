@@ -10,9 +10,9 @@ Package program is the contract between dagnats and a program: a separately rele
 
 A program declares a Manifest. Its Name is the prefix root of everything it owns: task types and workflows "name.\*", subjects "name.\>", streams "NAME\_\*", buckets "name\_\*". Validate checks a manifest without touching NATS; PermissionsFor derives the NATS permission set dagnats binds to the program's NKey user, which is exactly the crossings the worker SDK and a micro service make plus the program's own resources and nothing wider.
 
-Isolation rests on two rules the package enforces:
+Programs are trusted: these permissions are guardrails against mistakes, not an isolation boundary. A program can still write arbitrary data into the account through JetStream reply reflection \(see Known limitations\), so run only trusted programs until per\-program NATS accounts land \(dagnats\#909\). The guardrails rest on two rules the package enforces:
 
-- A program dials with nats.CustomInboxPrefix\(InboxPrefix\(name\)\), and its permissions grant subscribe on "\_INBOX.\<name\>.\>" only. Every pull fetch, KV watch and JetStream API reply lands on that inbox, so no program can read another's task bodies or replies. Attach panics on a connection dialed without the prefix.
+- A program dials with nats.CustomInboxPrefix\(InboxPrefix\(name\)\), and its permissions grant subscribe on "\_INBOX.\<name\>.\>" only. Every pull fetch, KV watch and JetStream API reply lands on that inbox, so a program does not read another's task bodies or replies. Attach panics on a connection dialed without the prefix.
 - The program generates its own NKey \(LoadOrCreateKey\). The seed is written once, mode 0600, and never leaves the process; only the public key is registered.
 
 A program never creates or reconfigures a stream or bucket: a stream config can capture, mirror or republish subjects outside the program's grant. The host creates the manifest's streams and buckets with Provision over its own connection, and the program gets reads, consumers, and key writes on them.
@@ -25,9 +25,10 @@ Permissions is a plain struct. Converting it to nats\-server options is the serv
 
 Programs on a dagnats are trusted: today they are all the operator's own, the same stance as the coarse\-shared engine buckets. Within that model these gaps are accepted, and they are closed before untrusted \(third\-party\) programs join a dagnats, the same trigger as making nats\_auth: required the default.
 
+- JetStream reply reflection. nats\-server publishes a JetStream API response, a direct get's message and a pull delivery to whatever reply subject the request names, as the account, without checking it against the requester's permissions. So a program can write bytes it chose into any stream or bucket of the account: store them in its own bucket, then direct\-get them with a reply of "$KV.\<bucket\>.\<key\>". Every node therefore derives a program's permissions from its stored manifest and never from a stored permission set. Closed by per\-program NATS accounts, dagnats\#909; TestResidual\_JetStreamReplyWritesForeignBuckets pins the gap and fails once it is closed.
 - Push\-consumer delivery. A consumer's deliver subject travels in the JetStream request body, which subject permissions never see, and nats\-server does not check it against the creating user's permissions. So a program can deliver its own stream's messages, or a shared bucket's, onto any subject that has interest, including another program's task or service subjects. KV watches need push consumers, so denying consumer creates is not an option. User permissions inside one account cannot close this; one NATS account per program, or a server\-side check of the deliver subject, will. Tracked as dagnats\#862; TestAttack\_PushConsumerCannotDeliverIntoForeignSubjects is the proof, skipped until then.
 - Inbox forgery. Micro services reply by publishing to the caller's inbox, so every program may publish on "\_INBOX.\>". Inbox names are not secret: one process's inboxes share a prefix and are numbered in sequence, so a single reply subject seen from program beta \(on a shared protocol, say\) lets program alpha write forged replies into beta's next inboxes. Reading stays confined to the program's own "\_INBOX.\<name\>.\>". Tracked as dagnats\#862 and closed by the same fix as push\-consumer delivery: accounts or a server\-side check.
-- Name\-gated grants. Consumer delete on shared buckets and next/ack on STICKY\_TASKS are gated only by consumer names, which are random NUIDs that a program cannot list.
+- Name\-gated grants. Consumer delete on shared buckets and next, ack and create on STICKY\_TASKS are gated only by consumer names: random NUIDs, and for sticky consumers 128 bits from crypto/rand, which a program can neither list nor read from any bucket, reply or advisory.
 - Protocol ownership. Validate cannot see other programs, so a protocol such as "beta.x" declared by program alpha would be granted under beta's prefix. Registration must check ownership both ways: a protocol under a registered program's prefix, and a program registering a name some protocol already sits under.
 
 ## Index
@@ -35,6 +36,7 @@ Programs on a dagnats are trusted: today they are all the operator's own, the sa
 - [Constants](<#constants>)
 - [Variables](<#variables>)
 - [func Attach\(ctx context.Context, nc \*nats.Conn, prog Program, g Grant\) \(stop func\(context.Context\) error, err error\)](<#Attach>)
+- [func ConfirmSubject\(publicKey string\) string](<#ConfirmSubject>)
 - [func InboxPrefix\(name string\) string](<#InboxPrefix>)
 - [func Provision\(ctx context.Context, js jetstream.JetStream, m Manifest, g Grant\) error](<#Provision>)
 - [func Validate\(m Manifest\) error](<#Validate>)
@@ -92,10 +94,16 @@ const (
     RefusedJoinKeyExhausted    = "join_key_exhausted"
     RefusedBudgetExceeded      = "budget_exceeded"
     RefusedVersionIncompatible = "version_incompatible"
-    RefusedAuthModeUnsupported = "auth_mode_unsupported"
     RefusedProtocolClash       = "protocol_clash"
     RefusedProtocolNotAllowed  = "protocol_not_allowed"
+    RefusedConfirmExpired      = "confirm_expired"
 )
+```
+
+<a name="ConfirmSubjectWildcard"></a>ConfirmSubjectWildcard is what the registration service answers.
+
+```go
+const ConfirmSubjectWildcard = confirmSubjectPrefix + "*"
 ```
 
 ## Variables
@@ -118,6 +126,15 @@ Attach is the one path that calls prog.Start. It takes the Grant the caller alre
 nc must have been dialed with nats.CustomInboxPrefix\(InboxPrefix\(name\)\); Attach panics otherwise, because the program's permissions grant no other inbox and every reply would time out.
 
 The returned stop func stops the worker \(draining in\-flight tasks\), then calls prog.Stop once; later calls return the first result. When Start fails, Attach returns its error without calling Stop. When the worker fails to start, Attach calls Stop and returns both errors.
+
+<a name="ConfirmSubject"></a>
+## func [ConfirmSubject](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L20>)
+
+```go
+func ConfirmSubject(publicKey string) string
+```
+
+ConfirmSubject is the subject the program with publicKey confirms on.
 
 <a name="InboxPrefix"></a>
 ## func [InboxPrefix](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L123>)
@@ -174,7 +191,7 @@ type BucketSpec struct {
 ```
 
 <a name="ErrRefused"></a>
-## type [ErrRefused](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L56-L59>)
+## type [ErrRefused](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L75-L78>)
 
 ErrRefused is dagnats declining to admit the program, with one of the Refused\* codes and a human\-readable detail.
 
@@ -186,7 +203,7 @@ type ErrRefused struct {
 ```
 
 <a name="ErrRefused.Error"></a>
-### func \(\*ErrRefused\) [Error](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L61>)
+### func \(\*ErrRefused\) [Error](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L80>)
 
 ```go
 func (e *ErrRefused) Error() string
@@ -238,7 +255,7 @@ type Host struct {
 ```
 
 <a name="Instance"></a>
-## type [Instance](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L30-L33>)
+## type [Instance](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L46-L49>)
 
 Instance identifies the process registering, for the operator.
 
@@ -361,7 +378,7 @@ type Manifest struct {
 ```
 
 <a name="Options"></a>
-## type [Options](<https://github.com/danmestas/dagnats/blob/main/program/run.go#L21-L35>)
+## type [Options](<https://github.com/danmestas/dagnats/blob/main/program/run.go#L22-L36>)
 
 Options is where a connected program finds its dagnats.
 
@@ -384,7 +401,7 @@ type Options struct {
 ```
 
 <a name="OptionsFromEnv"></a>
-### func [OptionsFromEnv](<https://github.com/danmestas/dagnats/blob/main/program/run.go#L41>)
+### func [OptionsFromEnv](<https://github.com/danmestas/dagnats/blob/main/program/run.go#L42>)
 
 ```go
 func OptionsFromEnv(name string) Options
@@ -407,13 +424,17 @@ type Permissions struct {
 ```
 
 <a name="PermissionsFor"></a>
-### func [PermissionsFor](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L61>)
+### func [PermissionsFor](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L71>)
 
 ```go
 func PermissionsFor(m Manifest) Permissions
 ```
 
 PermissionsFor derives the NATS permission set for a manifest: every crossing the worker SDK and a micro service make, the program's own subjects, streams and buckets, its protocols, and subscribe on "\_INBOX.\<name\>.\>" and nothing wider. Pure. Panics on a manifest that fails Validate: permissions for an invalid manifest are meaningless.
+
+These are guardrails against a trusted program's mistakes, not an isolation boundary: JetStream reply reflection lets a program write any stream or bucket of the account \(package doc, dagnats\#909\).
+
+Residual: next, ack and create on a STICKY\_TASKS consumer are granted for any consumer name, so a program holding a sibling's name could pull, ack or reconfigure it. The names are unguessable and never disclosed \(stickyPublish\), and TestPermissions\_StickyConsumerNamesNotDisclosed pins the disclosure surfaces.
 
 <a name="Program"></a>
 ## type [Program](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L107-L115>)
@@ -433,12 +454,13 @@ type Program interface {
 ```
 
 <a name="RegisterReply"></a>
-## type [RegisterReply](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L48-L52>)
+## type [RegisterReply](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L66-L71>)
 
-RegisterReply is the reply: exactly one of Grant, Refused or Error. Error is a server fault \(a KV write failed\), not a refusal, and may succeed on retry.
+RegisterReply is the reply: a Grant, Refused or Error. Error is a server fault \(a KV write failed\), not a refusal, and may succeed on retry. Confirm, when set, is the subject the program must confirm on after logging in with its key: a new registration is pending until then, and a manifest change is applied only then \(Grant may be nil\).
 
 ```go
 type RegisterReply struct {
+    Confirm string      `json:"confirm,omitempty"`
     Grant   *Grant      `json:"grant,omitempty"`
     Refused *ErrRefused `json:"refused,omitempty"`
     Error   string      `json:"error,omitempty"`
@@ -446,7 +468,7 @@ type RegisterReply struct {
 ```
 
 <a name="RegisterRequest"></a>
-## type [RegisterRequest](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L38-L43>)
+## type [RegisterRequest](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L54-L59>)
 
 RegisterRequest is the body of a RegisterSubject request. JoinKey may be empty on an open\-mode server. Only the public key is sent; the seed never leaves the program.
 
@@ -471,7 +493,7 @@ type Running struct {
 ```
 
 <a name="Run"></a>
-### func [Run](<https://github.com/danmestas/dagnats/blob/main/program/run.go#L71>)
+### func [Run](<https://github.com/danmestas/dagnats/blob/main/program/run.go#L72>)
 
 ```go
 func Run(ctx context.Context, prog Program, opts Options) (*Running, error)

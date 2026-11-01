@@ -128,8 +128,8 @@ func TestRun_RefusalIsTypedBeforeAnythingIsCreated(t *testing.T) {
 		URL: f.nc.ConnectedUrl(), SeedPath: filepath.Join(t.TempDir(), "seed"),
 	})
 	var refusal *program.ErrRefused
-	if !errors.As(err, &refusal) || refusal.Code != program.RefusedAuthModeUnsupported {
-		t.Fatalf("Run err = %v, want auth_mode_unsupported", err)
+	if !errors.As(err, &refusal) || refusal.Code != program.RefusedJoinKeyInvalid {
+		t.Fatalf("Run err = %v, want join_key_invalid", err)
 	}
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("refusal took %v, want under a second", elapsed)
@@ -302,8 +302,13 @@ func TestRegisterEndpointSurvivesHostileBodies(t *testing.T) {
 		`{"manifest":{"Name":"notify","TaskTypes":["notify.x"]},"public_key":"U"}`,
 		`{"manifest":{"Name":"notify","Streams":[{"Name":"NOTIFY_X","MaxBytesFloor":-1}]}}`,
 	}
+	join, err := nats.Connect(f.nc.ConnectedUrl(), nats.CustomInboxPrefix(program.JoinInboxPrefix))
+	if err != nil {
+		t.Fatalf("join connect: %v", err)
+	}
+	defer join.Close()
 	for _, body := range bodies {
-		reply, err := f.nc.Request(program.RegisterSubject, []byte(body), 5*time.Second)
+		reply, err := join.Request(program.RegisterSubject, []byte(body), 5*time.Second)
 		if err != nil {
 			t.Fatalf("%q: no answer: %v", body, err)
 		}
@@ -311,5 +316,93 @@ func TestRegisterEndpointSurvivesHostileBodies(t *testing.T) {
 		if err := json.Unmarshal(reply.Data, &answer); err != nil || answer.Grant != nil {
 			t.Fatalf("%q: reply %s, %v; want a refusal or error", body, reply.Data, err)
 		}
+	}
+}
+
+// TestRegistrationDoesNotReflectReplies (#901 review): dagnats answers as
+// root and NATS does not permission reply subjects, so a register or
+// confirm whose reply-to names a "$KV..." key or another program's inbox
+// must be dropped unanswered. A reply written to "$KV.programs.zzz" was a
+// record with no key or name, which crashed every node's user set.
+func TestRegistrationDoesNotReflectReplies(t *testing.T) {
+	f := serveFixture(t, Config{Open: true})
+	req := request(t, "notify", "")
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	foreign, err := f.nc.SubscribeSync("_INBOX.artifact.>")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	sends := []struct{ subject, reply string }{
+		{program.RegisterSubject, "$KV.programs.zzz"},
+		{program.RegisterSubject, "_INBOX.artifact.r1"},
+		{program.RegisterSubject, "_INBOX.notify.r1"}, // a program inbox, not _JOIN
+		{program.ConfirmSubject(req.PublicKey), "$KV.programs.zzz"},
+		{program.ConfirmSubject(req.PublicKey), "_INBOX.artifact.r2"},
+	}
+	for _, send := range sends {
+		msg := &nats.Msg{Subject: send.subject, Reply: send.reply, Data: body}
+		if err := f.nc.PublishMsg(msg); err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+	}
+	if err := f.nc.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	if _, err := foreign.NextMsg(100 * time.Millisecond); err == nil {
+		t.Fatal("a registration reply reached another program's inbox")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, found, err := f.registrar.lookup(ctx, "zzz"); found || err != nil {
+		t.Fatalf("a reply was written as a programs record (found %v, err %v)", found, err)
+	}
+	if _, found, _ := f.registrar.lookup(ctx, "notify"); found {
+		t.Fatal("a dropped registration was still admitted")
+	}
+}
+
+// TestConfirmAnswersOnlyItsKeysProgram: a confirmation's reply goes to
+// the inbox of the program whose record holds the subject's key. A key
+// confirming with a body that names another program, reply-to that
+// program's inbox, is dropped, so it cannot forge replies there.
+func TestConfirmAnswersOnlyItsKeysProgram(t *testing.T) {
+	f := serveFixture(t, Config{Open: true})
+	victim := request(t, "notify", "")
+	if _, err := registerAndConfirm(f.registrar, victim); err != nil {
+		t.Fatalf("register notify: %v", err)
+	}
+	inbox, err := f.nc.SubscribeSync("_INBOX.notify.>")
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	forged := victim
+	forged.PublicKey = publicKey(t)
+	body, err := json.Marshal(forged)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	msg := &nats.Msg{Subject: program.ConfirmSubject(forged.PublicKey),
+		Reply: "_INBOX.notify.forged", Data: body}
+	if err := f.nc.PublishMsg(msg); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if got, err := inbox.NextMsg(500 * time.Millisecond); err == nil {
+		t.Fatalf("another key's confirmation was answered in notify's inbox: %s", got.Data)
+	}
+	own, err := json.Marshal(victim)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	msg = &nats.Msg{Subject: program.ConfirmSubject(victim.PublicKey),
+		Reply: "_INBOX.notify.own", Data: own}
+	if err := f.nc.PublishMsg(msg); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if _, err := inbox.NextMsg(5 * time.Second); err != nil {
+		t.Fatalf("the key's own confirmation was not answered: %v", err)
 	}
 }

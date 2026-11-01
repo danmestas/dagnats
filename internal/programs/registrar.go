@@ -54,9 +54,8 @@ const ProgramsCountMax = 256
 type Config struct {
 	// Open is true when the server's NATS clients need no login, so
 	// anonymous connections are root and a join key is optional. When
-	// false (a client login is configured), registration is refused
-	// with auth_mode_unsupported until programs get NKey users: an
-	// admitted program could not log in.
+	// false (a client login is configured), anonymous is the join user
+	// and every registration needs a join key.
 	Open bool
 	// MaxStoreBytes is the JetStream store budget streams are sized
 	// from and admitted against.
@@ -65,16 +64,30 @@ type Config struct {
 	// ServerVersion is checked against Manifest.Dagnats. "dev" (an
 	// unstamped build) admits every range.
 	ServerVersion string
+	// Bind, when set, makes a newly stored program's NKey user live on
+	// this node before Register replies, so the program's first dial
+	// here can log in. A failure rolls the registration back. Nil in
+	// tests that do not dial as the program.
+	Bind func(Record) error
+	// PendingTTL is how long an unconfirmed registration lives; zero
+	// means the PendingTTL default.
+	PendingTTL time.Duration
 }
 
 // Record is one registered program, as stored.
 type Record struct {
-	Manifest     program.Manifest    `json:"manifest"`
-	PublicKey    string              `json:"public_key"`
-	Permissions  program.Permissions `json:"permissions"`
-	Grant        program.Grant       `json:"grant"`
-	JoinKeyID    string              `json:"join_key_id,omitempty"`
-	RegisteredAt time.Time           `json:"registered_at"`
+	// A program's NATS permissions are not stored: every node derives
+	// them from Manifest (UserPermissions), because a program can write
+	// this bucket through JetStream reply reflection.
+	Manifest     program.Manifest `json:"manifest"`
+	PublicKey    string           `json:"public_key"`
+	Grant        program.Grant    `json:"grant"`
+	JoinKeyID    string           `json:"join_key_id,omitempty"`
+	RegisteredAt time.Time        `json:"registered_at"`
+	// Pending is a registration not yet confirmed by the key's holder;
+	// it is removed at PendingUntil (possession.go).
+	Pending      bool      `json:"pending,omitempty"`
+	PendingUntil time.Time `json:"pending_until,omitempty"`
 }
 
 // Registrar admits programs. Safe for concurrent use.
@@ -94,6 +107,9 @@ type Registrar struct {
 	// moment. Join-key uses are exact across nodes.
 	admitMu sync.Mutex
 	locks   programLocks
+	// expired remembers (join key, name) pairs whose registration expired
+	// unconfirmed, so the key cannot re-register the name at once.
+	expired expiredRegistrations
 	// beforeRollBack, when set, runs between an update's failed
 	// provisioning and its rollback: a test seam for forcing another
 	// node's registration into that window. Nil in production.
@@ -160,18 +176,14 @@ func (r *Registrar) checkRequest(req program.RegisterRequest) error {
 	if !nkeys.IsValidPublicUserKey(req.PublicKey) {
 		return refused(program.RefusedRequestInvalid, "public key is not an NKey user key")
 	}
-	if !r.cfg.Open {
-		return refused(program.RefusedAuthModeUnsupported,
-			"this dagnats requires a NATS login, and program NKey users are "+
-				"not supported yet; run it with no client login to register programs")
-	}
 	return nil
 }
 
 // existing settles a request for a name already registered: the same
 // key and manifest get the stored Grant, the same key with a changed
-// manifest is re-admitted, and another key is refused. settled is false
-// when the name is free.
+// manifest needs confirming with the key (errConfirmRequired), and
+// another key is refused. An expired pending registration frees the
+// name. settled is false when the name is free.
 func (r *Registrar) existing(
 	ctx context.Context, req program.RegisterRequest,
 ) (grant program.Grant, settled bool, err error) {
@@ -182,12 +194,24 @@ func (r *Registrar) existing(
 	if !found {
 		return program.Grant{}, false, nil
 	}
+	if record.expired(time.Now()) {
+		free, err := r.expireIfStale(ctx, req.Manifest.Name)
+		if err != nil || free {
+			return program.Grant{}, !free, err
+		}
+	}
 	grant, changed, err := settle(record, req)
 	if err != nil || !changed {
 		return grant, true, err
 	}
-	grant, err = r.update(ctx, req)
-	return grant, true, err
+	if record.Pending {
+		return program.Grant{}, true, refused(program.RefusedManifestChanged,
+			"program %q is pending with a different manifest; confirm that one "+
+				"or wait %s for it to expire", req.Manifest.Name, r.pendingTTL())
+	}
+	// A change to a registered program is applied only on confirm, by a
+	// connection logged in with its key (possession.go).
+	return program.Grant{}, true, errConfirmRequired
 }
 
 // settle judges a request against its name's record: another key is
@@ -228,6 +252,11 @@ func (r *Registrar) reserveUse(ctx context.Context, req program.RegisterRequest)
 	if err == nil {
 		if refusal := protocolsOutsideGlob(key, req.Manifest.Protocols); refusal != nil {
 			return "", refusal
+		}
+		if r.expired.recent(key.ID, req.Manifest.Name, r.pendingTTL()) {
+			return "", refused(program.RefusedConfirmExpired,
+				"program %q expired unconfirmed with this join key; retry after %s",
+				req.Manifest.Name, r.pendingTTL())
 		}
 		err = r.keys.ConsumeUse(ctx, key.ID)
 	}
@@ -285,7 +314,7 @@ func (r *Registrar) lookup(ctx context.Context, name string) (Record, bool, erro
 	}
 	var record Record
 	if err := json.Unmarshal(entry.Value(), &record); err != nil {
-		return Record{}, false, fmt.Errorf("decode program %q: %w", name, err)
+		return Record{}, false, fmt.Errorf("%w: %q: %w", errUndecodable, name, err)
 	}
 	return record, true, nil
 }
@@ -303,12 +332,21 @@ func (r *Registrar) records(ctx context.Context) ([]Record, error) {
 	out := make([]Record, 0, len(names))
 	for _, name := range names {
 		record, found, err := r.lookup(ctx, name)
+		if errors.Is(err, errUndecodable) {
+			// One bad record must not stop every registration's scan.
+			slog.Warn("programs: undecodable record skipped", "program", name, "error", err)
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
-		if found {
+		if found && record.Manifest.Name == name {
 			out = append(out, record)
 		}
 	}
 	return out, nil
 }
+
+// errUndecodable marks a programs record that is not JSON a Record
+// decodes from.
+var errUndecodable = errors.New("program record is not decodable")

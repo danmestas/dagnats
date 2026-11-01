@@ -122,9 +122,15 @@ func TestStartNATSAndConnect_RequiresTheClientLogin(t *testing.T) {
 	defer ns.Shutdown()
 	defer nc.Close()
 
-	if anon, err := nats.Connect(ns.ClientURL()); err == nil {
-		anon.Close()
-		t.Fatal("an anonymous client connected")
+	// Anonymous connects, but only as the join user (#885): it may ask
+	// to register a program and nothing else.
+	anon, err := nats.Connect(ns.ClientURL())
+	if err != nil {
+		t.Fatalf("anonymous (join user) connect: %v", err)
+	}
+	defer anon.Close()
+	if !denied(anon, "workflow.anything") {
+		t.Fatal("an anonymous client reached workflow.anything")
 	}
 	wrong, err := nats.Connect(ns.ClientURL(), nats.UserInfo("dagnats", "nope"))
 	if err == nil {
@@ -243,15 +249,19 @@ func TestServer_EnforcesBothLogins(t *testing.T) {
 		t.Errorf("/ready without a token: %d, want 200", got)
 	}
 
+	// Anonymous connects on both listeners, but only as the join user
+	// (#885), which reaches nothing but program registration.
 	clientURL := srv.ns.ClientURL()
-	if nc, err := nats.Connect(clientURL); err == nil {
-		nc.Close()
-		t.Error("an anonymous client connected to the client port")
-	}
 	wsURL := fmt.Sprintf("ws://127.0.0.1:%d", cfg.NATSWebsocketPort)
-	if nc, err := nats.Connect(wsURL); err == nil {
+	for _, url := range []string{clientURL, wsURL} {
+		nc, err := nats.Connect(url)
+		if err != nil {
+			t.Fatalf("anonymous (join user) connect to %s: %v", url, err)
+		}
+		if !denied(nc, "api.workflows.register") {
+			t.Errorf("an anonymous client on %s reached the control plane", url)
+		}
 		nc.Close()
-		t.Error("an anonymous client connected over WebSocket")
 	}
 	nc, err := nats.Connect(wsURL, nats.UserInfo("dagnats", "server-pw"))
 	if err != nil {

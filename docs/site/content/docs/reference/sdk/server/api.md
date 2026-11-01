@@ -376,7 +376,7 @@ func ResolveConfig() ResolvedConfig
 ResolveConfig loads config and tracks the source of each value. Returns resolved config with provenance for every key.
 
 <a name="Server"></a>
-## type [Server](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L42-L82>)
+## type [Server](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L42-L89>)
 
 Server is the all\-in\-one DagNats server lifecycle manager.
 
@@ -387,7 +387,7 @@ type Server struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L90>)
+### func [New](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L97>)
 
 ```go
 func New(cfg Config) *Server
@@ -398,7 +398,7 @@ New creates a Server with the given config. Panics if DataDir is empty.
 A caller that built cfg via DefaultConfig\(\) directly \(rather than through ConfigWithPath/ConfigFromEnv\) still has MaxStoreBytes at the 0 "derive from disk" sentinel \(\#687\); resolve it here too so every construction path enters Run/startNATS with a usable, non\-zero budget.
 
 <a name="Server.HTTPAddr"></a>
-### func \(\*Server\) [HTTPAddr](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L151>)
+### func \(\*Server\) [HTTPAddr](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L158>)
 
 ```go
 func (s *Server) HTTPAddr() string
@@ -407,7 +407,7 @@ func (s *Server) HTTPAddr() string
 HTTPAddr returns the actual bound "host:port" the server is serving HTTP on, or "" if Run has not finished starting yet. Safe to call concurrently with Run: startHTTP writes the resolved s.cfg.HTTPAddr before Run stores s.ready, and sync/atomic gives that store/load pair release/acquire ordering, so a caller observing ready==true is guaranteed to see the final address. Callers that need to wait for the address \(e.g. tests\) should poll this instead of pre\-reserving a port.
 
 <a name="Server.NATSURL"></a>
-### func \(\*Server\) [NATSURL](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L169>)
+### func \(\*Server\) [NATSURL](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L176>)
 
 ```go
 func (s *Server) NATSURL() string
@@ -416,7 +416,7 @@ func (s *Server) NATSURL() string
 NATSURL returns the client URL of the embedded NATS server, or "" if Run has not finished starting yet. An embedder that set NATSPort \-1 reads the real port here instead of probing for a free one. The same ready release/acquire pair as HTTPAddr publishes s.ns.
 
 <a name="Server.Run"></a>
-### func \(\*Server\) [Run](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L105>)
+### func \(\*Server\) [Run](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L112>)
 
 ```go
 func (s *Server) Run() error
@@ -425,7 +425,7 @@ func (s *Server) Run() error
 Run starts all server components, serves HTTP, and blocks until shutdown. Returns nil on clean shutdown, error otherwise.
 
 <a name="Server.Stop"></a>
-### func \(\*Server\) [Stop](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L744>)
+### func \(\*Server\) [Stop](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L751>)
 
 ```go
 func (s *Server) Stop()

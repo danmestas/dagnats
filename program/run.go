@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -83,9 +84,10 @@ func Run(ctx context.Context, prog Program, opts Options) (*Running, error) {
 	if err != nil {
 		return nil, fmt.Errorf("program %s: key: %w", m.Name, err)
 	}
-	grant, err := register(ctx, opts, RegisterRequest{
+	req := RegisterRequest{
 		JoinKey: opts.JoinKey, Manifest: m, PublicKey: key.PublicKey(), Instance: thisInstance(),
-	})
+	}
+	grant, confirm, err := register(ctx, opts, req)
 	if err != nil {
 		return nil, err
 	}
@@ -93,6 +95,20 @@ func Run(ctx context.Context, prog Program, opts Options) (*Running, error) {
 	nc, err := dialAsProgram(opts, m.Name, key, running)
 	if err != nil {
 		return nil, err
+	}
+	if confirm != "" {
+		// The registration (or a manifest change) is pending until this
+		// connection, logged in with the key, confirms it.
+		if grant, err = confirmRegistration(ctx, nc, confirm, req); err != nil {
+			running.stopping.Store(true)
+			nc.Close()
+			return nil, err
+		}
+		if err := waitPromoted(ctx, nc, m.Name); err != nil {
+			running.stopping.Store(true)
+			nc.Close()
+			return nil, err
+		}
 	}
 	stopAttach, err := Attach(ctx, nc, prog, grant)
 	if err != nil {
@@ -103,6 +119,13 @@ func Run(ctx context.Context, prog Program, opts Options) (*Running, error) {
 	running.nc, running.stopAttach = nc, stopAttach
 	return running, nil
 }
+
+// firstDialRetryWindow bounds how long Run waits for its new NKey user
+// to reach the node it dials; firstDialRetryWait paces the attempts.
+const (
+	firstDialRetryWindow = 10 * time.Second
+	firstDialRetryWait   = 250 * time.Millisecond
+)
 
 // Reconnect policy for the program's connection: forever, a bounded
 // wait with jitter so a fleet of programs does not reconnect in step.
@@ -133,7 +156,7 @@ func dialAsProgram(opts Options, name string, key Key, running *Running) (*nats.
 		nats.ClosedHandler(running.closedHandler(callerClosed)),
 		nats.CustomInboxPrefix(InboxPrefix(name)), nats.Name("program "+name),
 	)
-	nc, err := nats.Connect(opts.URL, append(options, key.ConnectOption())...)
+	nc, err := connectAsKey(opts.URL, options, key)
 	if errors.Is(err, nats.ErrNkeysNotSupported) {
 		nc, err = nats.Connect(opts.URL, options...)
 	}
@@ -141,6 +164,26 @@ func dialAsProgram(opts Options, name string, key Key, running *Running) (*nats.
 		return nil, fmt.Errorf("program %s: dial as its own user: %w", name, err)
 	}
 	return nc, nil
+}
+
+// connectAsKey dials with the program's NKey, retrying an authorization
+// failure for up to firstDialRetryWindow. The registering node adds the
+// user before it replies, but a cluster's other nodes add it when their
+// watch of the programs bucket catches up, and the dial may land on one
+// of those first.
+func connectAsKey(url string, options []nats.Option, key Key) (*nats.Conn, error) {
+	if url == "" {
+		panic("program.connectAsKey: url must be set")
+	}
+	withKey := append(slices.Clone(options), key.ConnectOption())
+	deadline := time.Now().Add(firstDialRetryWindow)
+	for {
+		nc, err := nats.Connect(url, withKey...)
+		if !errors.Is(err, nats.ErrAuthorization) || time.Now().After(deadline) {
+			return nc, err
+		}
+		time.Sleep(firstDialRetryWait)
+	}
 }
 
 // closedHandlerOf returns the ClosedHandler options sets, if any, by
@@ -160,7 +203,7 @@ func closedHandlerOf(options []nats.Option) (nats.ConnHandler, error) {
 
 // register sends req over a short-lived anonymous connection dialed
 // with the join inbox prefix, and returns the Grant or the refusal.
-func register(ctx context.Context, opts Options, req RegisterRequest) (Grant, error) {
+func register(ctx context.Context, opts Options, req RegisterRequest) (Grant, string, error) {
 	if req.Manifest.Name == "" || req.PublicKey == "" {
 		panic("program.register: manifest name and public key must be set")
 	}
@@ -171,7 +214,8 @@ func register(ctx context.Context, opts Options, req RegisterRequest) (Grant, er
 	}
 	body, err := json.Marshal(req)
 	if err != nil {
-		return Grant{}, fmt.Errorf("program %s: encode registration: %w", req.Manifest.Name, err)
+		return Grant{}, "", fmt.Errorf("program %s: encode registration: %w",
+			req.Manifest.Name, err)
 	}
 	// The caller's options reach the server (TLS, a dialer), but this
 	// short-lived connection must not fire the caller's close handler.
@@ -180,35 +224,125 @@ func register(ctx context.Context, opts Options, req RegisterRequest) (Grant, er
 		nats.Name("program "+req.Manifest.Name+" registration"))
 	nc, err := nats.Connect(opts.URL, options...)
 	if err != nil {
-		return Grant{}, fmt.Errorf("program %s: dial %s to register: %w",
+		return Grant{}, "", fmt.Errorf("program %s: dial %s to register: %w",
 			req.Manifest.Name, opts.URL, err)
 	}
 	defer nc.Close()
 	msg, err := nc.RequestWithContext(ctx, RegisterSubject, body)
 	if errors.Is(err, nats.ErrNoResponders) {
-		return Grant{}, fmt.Errorf("program %s: no dagnats answers %s at %s",
+		return Grant{}, "", fmt.Errorf("program %s: no dagnats answers %s at %s",
 			req.Manifest.Name, RegisterSubject, opts.URL)
 	}
 	if err != nil {
-		return Grant{}, fmt.Errorf("program %s: register: %w", req.Manifest.Name, err)
+		return Grant{}, "", fmt.Errorf("program %s: register: %w", req.Manifest.Name, err)
 	}
 	return decodeReply(req.Manifest.Name, msg.Data)
 }
 
-func decodeReply(name string, data []byte) (Grant, error) {
+// waitPromoted waits until nc's own server gives it the confirmed
+// program's permissions. The confirming node reloads before it replies,
+// but nc may be on another node whose watch has not caught up; a
+// subscription Attach made with only pending permissions would fail for
+// good. A pending user may not publish under api.p.<name>, so the first
+// request there that is answered (or finds no responder, which also
+// means the publish was allowed) shows the promotion has arrived.
+func waitPromoted(ctx context.Context, nc *nats.Conn, name string) error {
+	if nc == nil || name == "" {
+		panic("program.waitPromoted: nc and name must be set")
+	}
+	subject := "api.p." + name + ".runs.get"
+	deadline := time.Now().Add(firstDialRetryWindow)
+	for {
+		before := nc.LastError()
+		probeCtx, cancel := context.WithTimeout(ctx, promotionProbeWait)
+		_, err := nc.RequestWithContext(probeCtx, subject, []byte("x"))
+		cancel()
+		if err == nil || errors.Is(err, nats.ErrNoResponders) {
+			return nil
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return promotionTimeout(name, subject, deniedSince(nc, before, subject), err)
+		}
+		time.Sleep(firstDialRetryWait)
+	}
+}
+
+// deniedSince reports whether the server refused a publish on subject
+// since before was nc's last error: nats.go records each permissions
+// violation the server sends as a new last error.
+func deniedSince(nc *nats.Conn, before error, subject string) bool {
+	last := nc.LastError()
+	return last != nil && (before == nil || !errors.Is(last, before)) &&
+		errors.Is(last, nats.ErrPermissionViolation) &&
+		strings.Contains(last.Error(), subject)
+}
+
+// promotionTimeout says which of the two causes stopped waitPromoted: the
+// program's confirmed permissions never reached its server, or they did
+// and the engine API was not answering.
+func promotionTimeout(name, subject string, denied bool, err error) error {
+	if name == "" || subject == "" {
+		panic("program.promotionTimeout: name and subject must be set")
+	}
+	if denied {
+		return fmt.Errorf("program %s: its confirmed permissions did not reach "+
+			"the server it is connected to within %s: %w", name, firstDialRetryWindow, err)
+	}
+	return fmt.Errorf("program %s: confirmed, but the engine API is not answering %s "+
+		"within %s: %w", name, subject, firstDialRetryWindow, err)
+}
+
+// promotionProbeWait bounds one waitPromoted probe: a denied publish is
+// never answered, so this is how long a pending user's probe takes.
+const promotionProbeWait = 500 * time.Millisecond
+
+// confirmRegistration confirms on subject over nc, which is logged in
+// with the program's key: that login is what proves the program holds
+// the seed (internal/programs/possession.go).
+func confirmRegistration(
+	ctx context.Context, nc *nats.Conn, subject string, req RegisterRequest,
+) (Grant, error) {
+	if nc == nil || subject == "" {
+		panic("program.confirmRegistration: nc and subject must be set")
+	}
+	if _, has := ctx.Deadline(); !has {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, registerTimeoutDefault)
+		defer cancel()
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return Grant{}, fmt.Errorf("program %s: encode confirmation: %w", req.Manifest.Name, err)
+	}
+	msg, err := nc.RequestWithContext(ctx, subject, body)
+	if err != nil {
+		return Grant{}, fmt.Errorf("program %s: confirm: %w", req.Manifest.Name, err)
+	}
+	grant, again, err := decodeReply(req.Manifest.Name, msg.Data)
+	if err == nil && again != "" {
+		return Grant{}, fmt.Errorf("program %s: confirmation still pending", req.Manifest.Name)
+	}
+	return grant, err
+}
+
+// decodeReply returns the Grant, the subject to confirm on when the
+// registration needs it (the Grant may then be empty), or the refusal.
+func decodeReply(name string, data []byte) (Grant, string, error) {
 	var reply RegisterReply
 	if err := json.Unmarshal(data, &reply); err != nil {
-		return Grant{}, fmt.Errorf("program %s: registration reply: %w", name, err)
+		return Grant{}, "", fmt.Errorf("program %s: registration reply: %w", name, err)
 	}
 	switch {
 	case reply.Refused != nil:
-		return Grant{}, reply.Refused
+		return Grant{}, "", reply.Refused
 	case reply.Error != "":
-		return Grant{}, fmt.Errorf("program %s: registration failed: %s", name, reply.Error)
+		return Grant{}, "", fmt.Errorf("program %s: registration failed: %s", name, reply.Error)
+	case reply.Grant == nil && reply.Confirm == "":
+		return Grant{}, "", fmt.Errorf("program %s: registration reply has no grant", name)
 	case reply.Grant == nil:
-		return Grant{}, fmt.Errorf("program %s: registration reply has no grant", name)
+		return Grant{}, reply.Confirm, nil
 	}
-	return *reply.Grant, nil
+	return *reply.Grant, reply.Confirm, nil
 }
 
 func thisInstance() Instance {

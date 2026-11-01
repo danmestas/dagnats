@@ -37,7 +37,6 @@ func TestNATSAPIEndpointsSurviveEmptyBodies(t *testing.T) {
 		"api.p.notify.runs.get", "api.p.notify.runs.cancel",
 		"api.p.notify.events", "api.p.notify.journal.append",
 		"api.p.notify.journal.view",
-		"api.p.Bad.runs.get", "api.p.x.runs.get",
 	}
 	bodies := []string{
 		"", "{}", "null", `{"name":""}`, "not json", `"str"`, "[]",
@@ -46,7 +45,8 @@ func TestNATSAPIEndpointsSurviveEmptyBodies(t *testing.T) {
 	}
 	for _, subject := range subjects {
 		for _, body := range bodies {
-			if _, err := nc.Request(subject, []byte(body), 2*time.Second); err != nil {
+			conn := connFor(t, nc, subject)
+			if _, err := conn.Request(subject, []byte(body), 2*time.Second); err != nil {
 				t.Errorf("%s %q: %v", subject, body, err)
 			}
 		}

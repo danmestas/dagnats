@@ -69,12 +69,14 @@ func startNATSAndSetupAll(
 	if !errors.As(err, &budgetErr) {
 		nc.Close()
 		ns.Shutdown()
+		forgetOptions(ns)
 		return nil, nil, fmt.Errorf("setup NATS resources: %w", err)
 	}
 
 	nc.Close()
 	ns.Shutdown()
 	ns.WaitForShutdown()
+	forgetOptions(ns)
 	return recoverFromStoreBudgetExceeded(cfg, setupOpts, budgetErr, onReady)
 }
 

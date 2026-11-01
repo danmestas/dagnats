@@ -234,7 +234,7 @@ func TestRelayInputsOnlyOwnStep(t *testing.T) {
 // and waits for that signal: both go through api.p.<name>.signal.
 func TestRelayedWorkerSignalsThroughTheEngine(t *testing.T) {
 	nc := startScopedAPI(t)
-	w := worker.NewWorker(nc, worker.WithEngineRelay("api.p.notify."))
+	w := worker.NewWorker(programConn(t, nc, "notify"), worker.WithEngineRelay("api.p.notify."))
 	got := make(chan string, 1)
 	w.Handle("notify.work", func(tc worker.TaskContext) error {
 		if err := tc.SendSignal(tc.RunID(), "notify.ready", []byte("yes")); err != nil {
@@ -287,7 +287,7 @@ func TestRelayedStepWaitsForTheControlPlane(t *testing.T) {
 	if err := svc.RegisterWorkflow(ctx, def); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	w := worker.NewWorker(nc, worker.WithEngineRelay("api.p.notify."))
+	w := worker.NewWorker(programConn(t, nc, "notify"), worker.WithEngineRelay("api.p.notify."))
 	w.Handle("notify.work", func(tc worker.TaskContext) error { return tc.Complete(nil) })
 	if err := w.Start(); err != nil {
 		t.Fatalf("worker start: %v", err)

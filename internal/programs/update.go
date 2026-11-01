@@ -93,7 +93,6 @@ func (r *Registrar) commitUpdate(
 		if err != nil {
 			return pendingUpdate{}, err
 		}
-		record.Permissions = program.PermissionsFor(req.Manifest)
 		pending.provision = true
 	}
 	record.Manifest, record.Grant = req.Manifest, pending.grant
