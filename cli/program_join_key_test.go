@@ -72,7 +72,14 @@ func TestJoinKeyCLIRoundTrip(t *testing.T) {
 		time.Until(*key.ExpiresAt) < 6*24*time.Hour {
 		t.Fatalf("stored key %+v does not match the flags", key)
 	}
-	secretPart := plaintext[strings.LastIndex(plaintext, "_")+1:]
+	// The secret is base64url, which may itself hold "_", so take it by
+	// the plaintext's "djk_{id}_{secret}" shape, not by the last "_":
+	// a short tail after a "_" inside the secret can occur in the list
+	// output by chance.
+	secretPart := strings.TrimPrefix(plaintext, "djk_"+key.ID+"_")
+	if secretPart == plaintext || len(secretPart) < 16 {
+		t.Fatalf("plaintext %q is not djk_%s_<secret>", plaintext, key.ID)
+	}
 
 	for _, listArgs := range [][]string{{}, {"--json"}} {
 		out.Reset()

@@ -13,8 +13,9 @@ import (
 )
 
 // byteCount is the number of random bytes in a secret (256 bits),
-// base64url-encoded without padding so it never contains '_', the
-// credential's segment separator.
+// base64url-encoded without padding. The base64url alphabet includes
+// '_', the credential's segment separator, so Split takes everything
+// after the second '_' as the secret.
 const byteCount = 32
 
 // New returns a fresh random secret and its SHA-256 hash. Panics only
@@ -49,9 +50,10 @@ func Matches(plaintext string, hash []byte) bool {
 	return match && len(hash) == sha256.Size
 }
 
-// Split parses "prefix_id_secret" strictly: exactly three
-// '_'-separated segments, the first equal to prefix, and neither id
-// nor secret empty.
+// Split parses "prefix_id_secret" strictly: the first segment equals
+// prefix, the second is the id, and everything after the second '_' is
+// the secret, which may itself contain '_'; neither id nor secret is
+// empty.
 func Split(credential, prefix string) (id, plaintext string, ok bool) {
 	if prefix == "" || strings.Contains(prefix, "_") {
 		panic("secret.Split: prefix must be non-empty and contain no '_'")
