@@ -21,6 +21,8 @@ Attach is the one path that calls Program.Start. It takes the Grant the caller o
 
 Permissions is a plain struct. Converting it to nats\-server options is the server's job, so a program never links nats\-server.
 
+A dagnats node starts serving before it has loaded its program users: they come from the programs bucket, which needs JetStream, which starts with the node. So a node that restarts refuses every program's key for a while \(about 22 seconds on a 3\-node mesh\). Run's connection keeps retrying through that, at first dial and on reconnect, for up to Options.AuthRetryWindow \(AuthRetryWindowDefault, two minutes\), and closes only if the refusals outlast it.
+
 ### Known limitations / threat model
 
 Programs on a dagnats are trusted: today they are all the operator's own, the same stance as the coarse\-shared engine buckets. Within that model these gaps are accepted, and they are closed before untrusted \(third\-party\) programs join a dagnats, the same trigger as making nats\_auth: required the default.
@@ -102,6 +104,12 @@ const (
     // that is usable and covers it.
     RefusedJoinKeyRequiredToWiden = "join_key_required_to_widen"
 )
+```
+
+<a name="AuthRetryWindowDefault"></a>AuthRetryWindowDefault is how long a program's connection rides out the server refusing its key. A node serves clients before its watch of the programs bucket has loaded its program users \(the bucket needs JetStream, which starts with the node\), so a node that restarts refuses every program key for a while: about 22 seconds on a 3\-node mesh.
+
+```go
+const AuthRetryWindowDefault = 2 * time.Minute
 ```
 
 <a name="ConfirmSubjectWildcard"></a>ConfirmSubjectWildcard is what the registration service answers.
@@ -382,7 +390,7 @@ type Manifest struct {
 ```
 
 <a name="Options"></a>
-## type [Options](<https://github.com/danmestas/dagnats/blob/main/program/run.go#L22-L36>)
+## type [Options](<https://github.com/danmestas/dagnats/blob/main/program/run.go#L22-L43>)
 
 Options is where a connected program finds its dagnats.
 
@@ -401,11 +409,18 @@ type Options struct {
     // so they cannot override those. A ClosedHandler here is chained,
     // not replaced.
     NATSOptions []nats.Option
+    // AuthRetryWindow is how long the program's connection keeps
+    // retrying while the server refuses its key, at first dial and on
+    // reconnect: a restarting node serves before it has loaded its
+    // program users. Refusals that outlast it close the connection for
+    // good (Running.Done), as for a key that was removed. Zero means
+    // AuthRetryWindowDefault.
+    AuthRetryWindow time.Duration
 }
 ```
 
 <a name="OptionsFromEnv"></a>
-### func [OptionsFromEnv](<https://github.com/danmestas/dagnats/blob/main/program/run.go#L42>)
+### func [OptionsFromEnv](<https://github.com/danmestas/dagnats/blob/main/program/run.go#L49>)
 
 ```go
 func OptionsFromEnv(name string) Options
@@ -497,7 +512,7 @@ type Running struct {
 ```
 
 <a name="Run"></a>
-### func [Run](<https://github.com/danmestas/dagnats/blob/main/program/run.go#L72>)
+### func [Run](<https://github.com/danmestas/dagnats/blob/main/program/run.go#L81>)
 
 ```go
 func Run(ctx context.Context, prog Program, opts Options) (*Running, error)
@@ -505,7 +520,7 @@ func Run(ctx context.Context, prog Program, opts Options) (*Running, error)
 
 Run is the connected placement. It loads or creates the program's NKey at opts.SeedPath, registers with dagnats over an anonymous connection \(a restart with the same key and manifest gets the stored Grant back\), dials as the program's own user with its inbox prefix, and Attaches. A refusal is returned as an \*ErrRefused before any stream, consumer or handler exists.
 
-The program's connection reconnects forever, so a dagnats that is down for a long upgrade does not strand the process. Hosts should still watch Running.Done and exit when it fires, so their supervisor restarts them: it reports a connection closed for good.
+The program's connection reconnects forever, so a dagnats that is down for a long upgrade does not strand the process. It also rides out a node that refuses its key while restarting \(Options.AuthRetryWindow\), and closes only if the refusals outlast that window. Hosts should still watch Running.Done and exit when it fires, so their supervisor restarts them: it reports a connection closed for good.
 
 <a name="Running.Done"></a>
 ### func \(\*Running\) [Done](<https://github.com/danmestas/dagnats/blob/main/program/running.go#L58>)
