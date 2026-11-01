@@ -266,11 +266,10 @@ func startAdmissionRun(
 // since ac.singletonKV is never touched on that path.
 func TestApplySingletonModeSkipReturnsSkippedBy(t *testing.T) {
 	ac := &AdmissionController{}
-	lockData := []byte(`{"run_id":"existing-run-id"}`)
 
 	result, done, err := ac.applySingletonMode(
 		context.Background(), dag.SingletonModeSkip,
-		"some-key", "existing-run-id", lockData, 1,
+		"some-key", "new-run-id", "existing-run-id", 1,
 	)
 	if err != nil || !done {
 		t.Fatalf("applySingletonMode: done=%v err=%v", done, err)

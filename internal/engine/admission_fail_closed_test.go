@@ -13,6 +13,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -33,6 +34,7 @@ type fakeLockKV struct {
 	getErr    error
 	updateErr error
 	updates   int
+	updated   []byte // the last value Update was asked to write
 }
 
 func (f *fakeLockKV) Create(
@@ -45,8 +47,9 @@ func (f *fakeLockKV) Get(context.Context, string) (jetstream.KeyValueEntry, erro
 	return f.getEntry, f.getErr
 }
 
-func (f *fakeLockKV) Update(context.Context, string, []byte, uint64) (uint64, error) {
+func (f *fakeLockKV) Update(_ context.Context, _ string, value []byte, _ uint64) (uint64, error) {
 	f.updates++
+	f.updated = value
 	return 2, f.updateErr
 }
 
@@ -159,5 +162,75 @@ func TestSingletonCheck_RetriesARivalMoveThenRefuses(t *testing.T) {
 	}
 	if kv.updates != singletonClaimAttemptsMax {
 		t.Fatalf("moves = %d, want %d", kv.updates, singletonClaimAttemptsMax)
+	}
+}
+
+// A redelivered start whose earlier delivery claimed the lock and
+// stopped before saving its run finds its own claim. It is admitted,
+// not skipped as if another run held the lock; and when that claim
+// displaced a run in cancel mode, the cancel is handed back so it is
+// published again.
+func TestSingletonCheck_OwnClaimIsAdmittedAndFinishesItsCancel(t *testing.T) {
+	own := &fakeLockKV{createErr: jetstream.ErrKeyExists,
+		getEntry: fakeLockEntry{runID: "new-run", created: time.Now()}}
+	result, err := checkSingleton(t, newFailClosedController(t, own), dag.SingletonModeSkip)
+	if err != nil || result.action != admissionProceed || result.skippedBy != "" {
+		t.Fatalf("own claim: %+v, %v; want admitted", result, err)
+	}
+	if result.cancelID != "" || own.updates != 0 {
+		t.Fatalf("own claim: cancel %q after %d moves; want none", result.cancelID, own.updates)
+	}
+	displacing := &fakeLockKV{createErr: jetstream.ErrKeyExists, getEntry: fakeDisplacingEntry{
+		fakeLockEntry: fakeLockEntry{runID: "new-run", created: time.Now()}, displaced: "old-run"}}
+	result, err = checkSingleton(t, newFailClosedController(t, displacing), dag.SingletonModeCancel)
+	if err != nil || result.action != admissionProceed || result.cancelID != "old-run" {
+		t.Fatalf("own displacing claim: %+v, %v; want admitted cancelling old-run", result, err)
+	}
+	if displacing.updates != 0 {
+		t.Fatalf("own displacing claim moved %d times, want 0", displacing.updates)
+	}
+}
+
+// fakeDisplacingEntry is a cancel-mode lock that displaced a run.
+type fakeDisplacingEntry struct {
+	fakeLockEntry
+	displaced string
+}
+
+func (e fakeDisplacingEntry) Value() []byte {
+	return marshalSingletonLock(e.runID, e.displaced)
+}
+
+func TestSingletonCheck_InvalidKeyIsPermanent(t *testing.T) {
+	kv := &fakeLockKV{createErr: jetstream.ErrInvalidKey}
+	result, err := checkSingleton(t, newFailClosedController(t, kv), dag.SingletonModeSkip)
+	if !errors.Is(err, errAdmissionPermanent) || !errors.Is(err, jetstream.ErrInvalidKey) {
+		t.Fatalf("err = %v, want a permanent invalid-key error", err)
+	}
+	if result.action != admissionProceed || result.cancelID != "" {
+		t.Fatalf("result = %+v, want nothing admitted or cancelled", result)
+	}
+	transient := &fakeLockKV{createErr: errLockBoom}
+	if _, err := checkSingleton(t, newFailClosedController(t, transient),
+		dag.SingletonModeSkip); errors.Is(err, errAdmissionPermanent) {
+		t.Fatalf("transient err = %v, want it retried, not permanent", err)
+	}
+}
+
+// Cancel mode records the run it displaces in the lock it writes, which
+// is what lets a redelivery finish the cancel.
+func TestSingletonCheck_CancelRecordsTheDisplacedHolder(t *testing.T) {
+	kv := &fakeLockKV{createErr: jetstream.ErrKeyExists,
+		getEntry: fakeLockEntry{runID: "old-run", created: time.Now()}}
+	result, err := checkSingleton(t, newFailClosedController(t, kv), dag.SingletonModeCancel)
+	if err != nil || result.cancelID != "old-run" || kv.updates != 1 {
+		t.Fatalf("cancel: %+v, %v after %d moves; want old-run cancelled", result, err, kv.updates)
+	}
+	var lock singletonLock
+	if err := json.Unmarshal(kv.updated, &lock); err != nil {
+		t.Fatalf("decode moved lock: %v", err)
+	}
+	if lock.RunID != "new-run" || lock.Displaced != "old-run" {
+		t.Fatalf("moved lock = %+v, want new-run displacing old-run", lock)
 	}
 }

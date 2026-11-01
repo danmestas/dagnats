@@ -157,7 +157,7 @@ func (kv *leaderReadKV) Get(ctx context.Context, key string) (jetstream.KeyValue
 	if kv.nc == nil {
 		panic("leaderReadKV.Get: nc must not be nil")
 	}
-	if !validKVKey(key) {
+	if !ValidKVKey(key) {
 		return nil, jetstream.ErrInvalidKey
 	}
 	bucket := kv.Bucket()
@@ -168,10 +168,10 @@ func (kv *leaderReadKV) Get(ctx context.Context, key string) (jetstream.KeyValue
 	return leaderEntry{bucket: bucket, key: key, entry: got}, nil
 }
 
-// validKVKey is jetstream's key rule (kv.go validKeyRe): letters,
+// ValidKVKey is jetstream's key rule (kv.go validKeyRe): letters,
 // digits and -/_=. with no leading or trailing dot. It keeps a wildcard
 // out of the last_by_subj request, where it would match another key.
-func validKVKey(key string) bool {
+func ValidKVKey(key string) bool {
 	if key == "" || len(key) > kvKeyBytesMax {
 		return false
 	}
