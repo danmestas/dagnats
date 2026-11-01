@@ -94,6 +94,10 @@ type Registrar struct {
 	// moment. Join-key uses are exact across nodes.
 	admitMu sync.Mutex
 	locks   programLocks
+	// beforeRollBack, when set, runs between an update's failed
+	// provisioning and its rollback: a test seam for forcing another
+	// node's registration into that window. Nil in production.
+	beforeRollBack func()
 }
 
 // NewRegistrar binds the programs bucket, creating it when absent.

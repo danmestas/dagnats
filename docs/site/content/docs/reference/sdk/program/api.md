@@ -120,7 +120,7 @@ func InboxPrefix(name string) string
 InboxPrefix is the reply\-inbox prefix a program must dial with, nats.CustomInboxPrefix\(InboxPrefix\(name\)\). Its permissions grant subscribe on this prefix only, so no program reads another's replies.
 
 <a name="Provision"></a>
-## func [Provision](<https://github.com/danmestas/dagnats/blob/main/program/provision.go#L22>)
+## func [Provision](<https://github.com/danmestas/dagnats/blob/main/program/provision.go#L28>)
 
 ```go
 func Provision(ctx context.Context, js jetstream.JetStream, m Manifest, g Grant) error
@@ -129,6 +129,8 @@ func Provision(ctx context.Context, js jetstream.JetStream, m Manifest, g Grant)
 Provision creates or updates the manifest's streams and buckets at the sizes in g. The host calls it over its own connection: a program's permissions grant no stream create or update, because a stream config can capture, mirror or republish subjects the program may not touch. Idempotent.
 
 An existing stream or bucket keeps every field the manifest does not own \(Discard, MaxMsgs, DenyDelete, MaxValueSize, compression and the rest\): only subjects, size, age limit, history, replicas and storage are written over its live config, so adopting a stream an operator made does not reset it to defaults.
+
+Those owned fields always come from the manifest and Grant, so a limit an operator tightened by hand \(MaxBytes, MaxAge, TTL, History, Replicas\) is undone by the next Provision. That stays within the Grant, so no data is lost. A bucket field KeyValueConfig cannot express, such as its stream's MaxMsgs, is reset to the KV default.
 
 <a name="Validate"></a>
 ## func [Validate](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L48>)

@@ -30,22 +30,24 @@ func (r *Registrar) programLock(name string) *sync.Mutex {
 	return &r.locks[hash.Sum32()%programLockStripes]
 }
 
-// provision applies m at g. When that fails part way, it puts back the
-// configs the existing streams and buckets had before, so the record the
-// caller then restores still describes what is applied.
-func (r *Registrar) provision(ctx context.Context, m program.Manifest, g program.Grant) error {
+// provision applies m at g. On failure it returns the configs the
+// existing streams and buckets had before, for the caller to restore
+// once its record rollback has won: restoring first could write them
+// over a newer registration's streams.
+func (r *Registrar) provision(
+	ctx context.Context, m program.Manifest, g program.Grant,
+) ([]jetstream.StreamConfig, error) {
 	if ctx == nil {
 		panic("programs.provision: ctx must not be nil")
 	}
 	before, err := r.liveConfigs(ctx, m)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	err = program.Provision(ctx, r.js, m, g)
-	if err == nil {
-		return nil
+	if err := program.Provision(ctx, r.js, m, g); err != nil {
+		return before, err
 	}
-	return errors.Join(err, r.restoreConfigs(before))
+	return nil, nil
 }
 
 // liveConfigs returns the configs of m's streams and bucket streams that

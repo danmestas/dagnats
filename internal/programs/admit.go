@@ -33,16 +33,20 @@ func (r *Registrar) admit(
 		// the Create; err is its stored Grant's outcome.
 		return grant, false, err
 	}
-	if err := r.provision(ctx, m, grant); err != nil {
-		return program.Grant{}, false, r.rollBack(m.Name, revision, err)
+	if before, err := r.provision(ctx, m, grant); err != nil {
+		return program.Grant{}, false, r.rollBack(m.Name, revision, before, err)
 	}
 	return grant, true, nil
 }
 
 // rollBack removes the record a failed provisioning left, but only at
 // the revision this call created: a record rewritten since then belongs
-// to a later registration and must survive.
-func (r *Registrar) rollBack(name string, revision uint64, cause error) error {
+// to a later registration and must survive, and so do the streams it
+// provisioned. Only a removal that wins puts back the configs the
+// adopted streams had before.
+func (r *Registrar) rollBack(
+	name string, revision uint64, before []jetstream.StreamConfig, cause error,
+) error {
 	if name == "" || revision == 0 {
 		panic("programs.rollBack: name and revision must be set")
 	}
@@ -50,10 +54,13 @@ func (r *Registrar) rollBack(name string, revision uint64, cause error) error {
 	defer cancel()
 	err := fmt.Errorf("provision program %q: %w", name, cause)
 	deleteErr := r.kv.Delete(ctx, name, jetstream.LastRevision(revision))
-	if deleteErr != nil && !errors.Is(deleteErr, jetstream.ErrKeyRevisionMismatch) {
-		err = errors.Join(err, fmt.Errorf("roll back program %q: %w", name, deleteErr))
+	switch {
+	case deleteErr == nil:
+		return errors.Join(err, r.restoreConfigs(before))
+	case errors.Is(deleteErr, jetstream.ErrKeyRevisionMismatch):
+		return err
 	}
-	return err
+	return errors.Join(err, fmt.Errorf("roll back program %q: %w", name, deleteErr))
 }
 
 // reserveName checks the manifest against every registered program

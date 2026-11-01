@@ -480,3 +480,66 @@ func fillBucket(t *testing.T, js jetstream.JetStream, bucket string, size int) {
 		}
 	}
 }
+
+// TestUpdate_RollBackLeavesANewerUpdatesStreams forces the interleaving
+// a rollback must survive: A's update U1 commits and fails to provision,
+// then, before A rolls back, B (another node) commits and provisions U2.
+// A's record compare-and-set then loses, so A must leave the streams as
+// U2 configured them rather than writing the configs from before U1
+// over them.
+func TestUpdate_RollBackLeavesANewerUpdatesStreams(t *testing.T) {
+	f := newFixture(t, Config{Open: true})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	peer, err := NewRegistrar(ctx, f.js, f.keys, f.registrar.cfg)
+	if err != nil {
+		t.Fatalf("second registrar: %v", err)
+	}
+	req := request(t, "notify", "")
+	f.mustRegister(t, req)
+	if _, err := f.js.CreateStream(ctx, jetstream.StreamConfig{
+		Name: "SQUAT", Subjects: []string{"notify.outbox.>"},
+	}); err != nil {
+		t.Fatalf("create squatting stream: %v", err)
+	}
+	u1 := req
+	u1.Manifest = cloneManifest(req.Manifest)
+	u1.Manifest.Streams[0].MaxBytesFloor = 2 << 20
+	u1.Manifest.Streams = append(u1.Manifest.Streams, program.StreamSpec{
+		Name: "NOTIFY_OUTBOX", Subjects: []string{"notify.outbox.>"}, MaxBytesFloor: 1 << 20,
+	})
+	u2 := u1
+	u2.Manifest = cloneManifest(u1.Manifest)
+	u2.Manifest.Streams[0].MaxBytesFloor = 3 << 20
+	u2.Manifest.Buckets[0].History = 5
+	f.registrar.beforeRollBack = func() {
+		if err := f.js.DeleteStream(ctx, "SQUAT"); err != nil {
+			t.Errorf("delete squatting stream: %v", err)
+		}
+		if _, err := peer.Register(ctx, u2); err != nil {
+			t.Errorf("B's update in A's rollback window: %v", err)
+		}
+	}
+	_, err = f.register(t, u1)
+	var refusal *program.ErrRefused
+	if err == nil || errors.As(err, &refusal) {
+		t.Fatalf("A's update err = %v, want its provisioning failure", err)
+	}
+	if !sameManifest(f.record(t, "notify").Manifest, u2.Manifest) {
+		t.Fatal("the record is not B's update")
+	}
+	events, err := f.js.Stream(ctx, "NOTIFY_EVENTS")
+	if err != nil {
+		t.Fatalf("NOTIFY_EVENTS: %v", err)
+	}
+	if got := events.CachedInfo().Config.MaxBytes; got != 3<<20 {
+		t.Fatalf("NOTIFY_EVENTS MaxBytes = %d, want B's 3 MiB", got)
+	}
+	bucket, err := f.js.Stream(ctx, "KV_notify_state")
+	if err != nil {
+		t.Fatalf("KV_notify_state: %v", err)
+	}
+	if got := bucket.CachedInfo().Config.MaxMsgsPerSubject; got != 5 {
+		t.Fatalf("notify_state History = %d, want B's 5", got)
+	}
+}

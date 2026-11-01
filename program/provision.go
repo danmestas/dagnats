@@ -19,6 +19,12 @@ import (
 // rest): only subjects, size, age limit, history, replicas and storage
 // are written over its live config, so adopting a stream an operator
 // made does not reset it to defaults.
+//
+// Those owned fields always come from the manifest and Grant, so a limit
+// an operator tightened by hand (MaxBytes, MaxAge, TTL, History,
+// Replicas) is undone by the next Provision. That stays within the
+// Grant, so no data is lost. A bucket field KeyValueConfig cannot
+// express, such as its stream's MaxMsgs, is reset to the KV default.
 func Provision(ctx context.Context, js jetstream.JetStream, m Manifest, g Grant) error {
 	if ctx == nil || js == nil {
 		panic("program.Provision: ctx and js must not be nil")

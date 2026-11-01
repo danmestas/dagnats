@@ -55,8 +55,12 @@ func (r *Registrar) update(
 		if err != nil || !pending.provision {
 			return pending.grant, err
 		}
-		if err := r.provision(ctx, req.Manifest, pending.grant); err != nil {
-			return program.Grant{}, r.rollBackUpdate(name, pending, err)
+		before, err := r.provision(ctx, req.Manifest, pending.grant)
+		if err != nil {
+			if r.beforeRollBack != nil {
+				r.beforeRollBack()
+			}
+			return program.Grant{}, r.rollBackUpdate(name, pending, before, err)
 		}
 		return pending.grant, nil
 	}
@@ -195,13 +199,16 @@ func (r *Registrar) writeRecord(
 	return written, err
 }
 
-// rollBackUpdate restores the record an update replaced when its
-// provisioning failed, but only at the revision the update wrote, so a
-// later registration's record survives. provision has already put back
-// the configs of the streams that existed, so the record and the
-// streams agree again. Streams the update created are left; the
-// program's next registration declares them again.
-func (r *Registrar) rollBackUpdate(name string, pending pendingUpdate, cause error) error {
+// rollBackUpdate puts back the record an update replaced when its
+// provisioning failed, at the revision the update wrote, and only then
+// the stream configs from before it, so record and streams agree again.
+// When the record has moved on, a newer registration (on another node)
+// owns it and may have provisioned since: its streams are left alone.
+// Streams the update created are left; the next registration declares
+// them again.
+func (r *Registrar) rollBackUpdate(
+	name string, pending pendingUpdate, before []jetstream.StreamConfig, cause error,
+) error {
 	if name == "" || pending.revision == 0 || len(pending.previous) == 0 {
 		panic("programs.rollBackUpdate: name, revision and previous record must be set")
 	}
@@ -209,10 +216,13 @@ func (r *Registrar) rollBackUpdate(name string, pending pendingUpdate, cause err
 	defer cancel()
 	err := fmt.Errorf("provision program %q update: %w", name, cause)
 	_, restoreErr := r.kv.Update(ctx, name, pending.previous, pending.revision)
-	if restoreErr != nil && !errors.Is(restoreErr, jetstream.ErrKeyRevisionMismatch) {
-		err = errors.Join(err, fmt.Errorf("restore program %q: %w", name, restoreErr))
+	switch {
+	case restoreErr == nil:
+		return errors.Join(err, r.restoreConfigs(before))
+	case errors.Is(restoreErr, jetstream.ErrKeyRevisionMismatch):
+		return err
 	}
-	return err
+	return errors.Join(err, fmt.Errorf("restore program %q: %w", name, restoreErr))
 }
 
 // versionOnly reports whether two manifests differ in Version alone,
