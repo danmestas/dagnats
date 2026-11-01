@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Raising `max_store_bytes` can be rolled out node by node.** A node restarted with a larger budget than its peers asked for stream ceilings the peers could not reserve yet. JetStream refused the update with 10047 ("insufficient storage resources available"), and dagnats exited with `setup NATS resources: create stream WORKFLOW_HISTORY: ...`, so systemd crash-looped it. Now an existing stream or bucket whose larger ceiling is refused keeps its current config, with a warning naming the stream and its current and wanted `MaxBytes`, and it grows on a later start once every peer's budget allows. Creating a stream that does not exist yet still fails.
+
 ## [0.0.44] - 2026-11-01
 
 ### Fixed

@@ -102,18 +102,53 @@ const jsErrCodeNoSuitablePeers jetstream.ErrorCode = 10005
 func createStreamWithRetry(
 	parent context.Context, js jetstream.JetStream, cfg jetstream.StreamConfig,
 ) error {
-	return provisionWithRetry(parent, func(c context.Context) error {
+	err := provisionWithRetry(parent, func(c context.Context) error {
 		return ensureStream(c, js, cfg)
 	})
+	return keepUnreservableGrowth(parent, js, cfg.Name, cfg.MaxBytes, err)
 }
 
 // createKeyValueWithRetry is ensureKeyValue under provisionWithRetry.
 func createKeyValueWithRetry(
 	parent context.Context, js jetstream.JetStream, cfg jetstream.KeyValueConfig,
 ) error {
-	return provisionWithRetry(parent, func(c context.Context) error {
+	err := provisionWithRetry(parent, func(c context.Context) error {
 		return ensureKeyValue(c, js, cfg)
 	})
+	return keepUnreservableGrowth(parent, js, "KV_"+cfg.Bucket, cfg.MaxBytes, err)
+}
+
+// keepUnreservableGrowth turns a refused update of an existing stream into
+// a warning. A cluster reserves a stream's MaxBytes on every replica, so a
+// node whose store budget was raised before its peers' asks for ceilings
+// they cannot reserve yet, and JetStream answers 10047. Failing there made
+// the node exit and crash-loop, so a budget raise could not be rolled out
+// node by node. The stream keeps its config and grows on a later start,
+// once every peer's budget allows. A stream that does not exist yet still
+// fails: there is nothing to run on.
+func keepUnreservableGrowth(
+	ctx context.Context, js jetstream.JetStream, streamName string, wantMaxBytes int64, err error,
+) error {
+	if streamName == "" {
+		panic("keepUnreservableGrowth: streamName must not be empty")
+	}
+	var apiErr *jetstream.APIError
+	if !errors.As(err, &apiErr) || apiErr.ErrorCode != jsErrCodeStorageResourcesExceeded {
+		return err
+	}
+	stream, lookupErr := js.Stream(ctx, streamName)
+	if lookupErr != nil {
+		return err
+	}
+	current := stream.CachedInfo().Config.MaxBytes
+	if stream.CachedInfo().Config.Name != streamName {
+		panic("keepUnreservableGrowth: lookup returned another stream")
+	}
+	slog.Warn("natsutil: keeping the existing stream; it will grow once every peer's "+
+		"store budget allows its new ceiling",
+		"stream", streamName, "current_max_bytes", current, "wanted_max_bytes", wantMaxBytes,
+		"error", err)
+	return nil
 }
 
 // BindKeyValue opens an existing bucket, re-sending the lookup when it
@@ -326,3 +361,8 @@ func provisionWithRetry(
 	}
 	return err
 }
+
+// jsErrCodeStorageResourcesExceeded is JetStream error 10047,
+// "insufficient storage resources available"; nats.go does not export a
+// constant for it.
+const jsErrCodeStorageResourcesExceeded jetstream.ErrorCode = 10047
