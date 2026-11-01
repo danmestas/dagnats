@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/protocol"
@@ -90,8 +91,21 @@ func (ac *AdmissionController) Admit(
 	return result, nil
 }
 
-// singletonCheck verifies the singleton lock. Returns an
-// admissionResult directly (not a tuple) for interface clarity.
+// singletonClaimAttemptsMax bounds the claim loop. Each extra pass
+// follows a rival changing the lock between this admission's read and
+// its write; past the bound the start is retried by redelivery.
+const singletonClaimAttemptsMax = 4
+
+// singletonUnsavedGrace is how long a lock whose holder has no run
+// snapshot still counts as held. Admission claims the lock before the
+// run is first saved, so a concurrent start can find a lock whose
+// holder is not stored yet; only a lock older than this (a holder that
+// crashed before its first save) is stale.
+const singletonUnsavedGrace = 2 * time.Minute
+
+// singletonCheck verifies the singleton lock. It fails closed: an
+// error reading or writing the lock refuses the admission (the start
+// is retried by redelivery) and never admits a second run.
 func (ac *AdmissionController) singletonCheck(
 	ctx context.Context,
 	workflowName string,
@@ -117,57 +131,132 @@ func (ac *AdmissionController) singletonCheck(
 				fmt.Sprintf("%v", keyVal)
 		}
 	}
-
-	lockData, _ := json.Marshal(map[string]string{
+	lockData, err := json.Marshal(map[string]string{
 		"run_id": newRunID,
 	})
-
-	// Try to claim
-	_, err := ac.singletonKV.Create(
-		ctx, kvKey, lockData,
-	)
-	if err == nil {
-		return admissionResult{}, kvKey, nil
-	}
-
-	// Key exists -- check if stale
-	entry, err := ac.singletonKV.Get(ctx, kvKey)
 	if err != nil {
-		return admissionResult{}, kvKey, nil
+		return admissionResult{}, kvKey, fmt.Errorf("marshal singleton lock: %w", err)
 	}
-	var lock struct {
-		RunID string `json:"run_id"`
-	}
-	if unmarshalErr := json.Unmarshal(
-		entry.Value(), &lock,
-	); unmarshalErr != nil {
-		return admissionResult{}, kvKey, nil
-	}
-
-	// Verify existing run is active
-	existingRun, loadErr := ac.store.Load(ctx, lock.RunID)
-	if loadErr != nil ||
-		existingRun.Status.IsTerminal() {
-		// Stale lock -- reclaim
-		_, updateErr := ac.singletonKV.Update(
-			ctx, kvKey, lockData, entry.Revision(),
+	for attempt := 0; attempt < singletonClaimAttemptsMax; attempt++ {
+		result, done, err := ac.trySingletonClaim(
+			ctx, cfg.Mode, kvKey, newRunID, lockData,
 		)
-		if updateErr != nil {
-			return admissionResult{}, kvKey, nil
+		if err != nil {
+			return admissionResult{}, kvKey, err
 		}
-		return admissionResult{}, kvKey, nil
+		if done {
+			return result, kvKey, nil
+		}
 	}
+	return admissionResult{}, kvKey, fmt.Errorf(
+		"singleton lock %s changed %d times during admission",
+		kvKey, singletonClaimAttemptsMax,
+	)
+}
 
-	// Active run exists
+// trySingletonClaim is one pass of the claim loop. done is false when
+// a rival changed the lock between the read and the write, and the
+// caller should look again.
+func (ac *AdmissionController) trySingletonClaim(
+	ctx context.Context,
+	mode dag.SingletonMode,
+	kvKey, newRunID string,
+	lockData []byte,
+) (admissionResult, bool, error) {
+	if kvKey == "" || newRunID == "" {
+		panic("trySingletonClaim: kvKey and newRunID must not be empty")
+	}
+	if ac.singletonKV == nil {
+		panic("trySingletonClaim: singletonKV must not be nil")
+	}
+	_, err := ac.singletonKV.Create(ctx, kvKey, lockData)
+	if err == nil {
+		return admissionResult{}, true, nil
+	}
+	if !errors.Is(err, jetstream.ErrKeyExists) {
+		return admissionResult{}, false, fmt.Errorf("claim singleton lock %s: %w", kvKey, err)
+	}
+	entry, err := ac.singletonKV.Get(ctx, kvKey)
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		return admissionResult{}, false, nil // released in between
+	}
+	if err != nil {
+		return admissionResult{}, false, fmt.Errorf("read singleton lock %s: %w", kvKey, err)
+	}
+	holder, held, err := ac.singletonHolder(ctx, entry)
+	if err != nil {
+		return admissionResult{}, false, err
+	}
+	if holder == newRunID {
+		// Our own claim, from a delivery of this start that stopped
+		// before saving the run.
+		return admissionResult{}, true, nil
+	}
+	if !held {
+		return ac.updateSingletonLock(ctx, kvKey, lockData, entry.Revision(), admissionResult{})
+	}
 	return ac.applySingletonMode(
-		ctx, cfg.Mode, kvKey, lock.RunID,
+		ctx, mode, kvKey, holder,
 		lockData, entry.Revision(),
 	)
 }
 
+// singletonHolder names the run holding entry's lock and whether it
+// still holds it. An unreadable lock, a finished holder, and a holder
+// with no snapshot past singletonUnsavedGrace are stale. Any other
+// failure to load the holder is an error: the holder may be live.
+func (ac *AdmissionController) singletonHolder(
+	ctx context.Context, entry jetstream.KeyValueEntry,
+) (string, bool, error) {
+	if entry == nil {
+		panic("singletonHolder: entry must not be nil")
+	}
+	if ac.store == nil {
+		panic("singletonHolder: store must not be nil")
+	}
+	var lock struct {
+		RunID string `json:"run_id"`
+	}
+	if err := json.Unmarshal(entry.Value(), &lock); err != nil || lock.RunID == "" {
+		return "", false, nil
+	}
+	holderRun, err := ac.store.Load(ctx, lock.RunID)
+	if errors.Is(err, ErrRunNotFound) {
+		unsaved := time.Since(entry.Created()) < singletonUnsavedGrace
+		return lock.RunID, unsaved, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("load singleton holder %s: %w", lock.RunID, err)
+	}
+	return lock.RunID, !holderRun.Status.IsTerminal(), nil
+}
+
+// updateSingletonLock moves the lock to this admission at revision and
+// returns result once it has. A revision mismatch means a rival moved
+// it first: done is false and the caller looks again.
+func (ac *AdmissionController) updateSingletonLock(
+	ctx context.Context, kvKey string, lockData []byte, revision uint64,
+	result admissionResult,
+) (admissionResult, bool, error) {
+	if kvKey == "" {
+		panic("updateSingletonLock: kvKey must not be empty")
+	}
+	if revision == 0 {
+		panic("updateSingletonLock: revision must be positive")
+	}
+	_, err := ac.singletonKV.Update(ctx, kvKey, lockData, revision)
+	if err == nil {
+		return result, true, nil
+	}
+	if errors.Is(err, jetstream.ErrKeyRevisionMismatch) || errors.Is(err, jetstream.ErrKeyExists) {
+		return admissionResult{}, false, nil
+	}
+	return admissionResult{}, false, fmt.Errorf("move singleton lock %s: %w", kvKey, err)
+}
+
 // applySingletonMode handles the mode-based action for an
-// active singleton lock. Extracted to keep singletonCheck
-// within the 70-line limit.
+// active singleton lock. Skip needs no write; cancel moves the lock to
+// the new run first and cancels the holder only once it has.
 func (ac *AdmissionController) applySingletonMode(
 	ctx context.Context,
 	mode dag.SingletonMode,
@@ -175,7 +264,7 @@ func (ac *AdmissionController) applySingletonMode(
 	existingRunID string,
 	lockData []byte,
 	revision uint64,
-) (admissionResult, string, error) {
+) (admissionResult, bool, error) {
 	if kvKey == "" {
 		panic(
 			"applySingletonMode: kvKey must not be empty",
@@ -191,20 +280,12 @@ func (ac *AdmissionController) applySingletonMode(
 		return admissionResult{
 			action:    admissionSkip,
 			skippedBy: existingRunID,
-		}, kvKey, nil
+		}, true, nil
 	case dag.SingletonModeCancel:
-		_, updateErr := ac.singletonKV.Update(
-			ctx, kvKey, lockData,
-			revision,
+		return ac.updateSingletonLock(
+			ctx, kvKey, lockData, revision,
+			admissionResult{cancelID: existingRunID},
 		)
-		if updateErr != nil {
-			slog.ErrorContext(ctx,
-				"singleton cancel: update lock failed",
-				"error", updateErr,
-			)
-		}
-		return admissionResult{cancelID: existingRunID},
-			kvKey, nil
 	default:
 		panic("applySingletonMode: unknown mode")
 	}

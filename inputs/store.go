@@ -142,6 +142,9 @@ func Open(ctx context.Context, js jetstream.JetStream) (*Store, error) {
 	if js.Conn() == nil {
 		return nil, errors.New("inputs: jetstream context has no connection")
 	}
+	// Reads are leader reads: a submission is read back right after it
+	// is created (a duplicate submit, a client reading its own POST).
+	kv = natsutil.LeaderReadKV(js.Conn(), kv)
 	return &Store{nc: js.Conn(), kv: kv, stream: stream}, nil
 }
 

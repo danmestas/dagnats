@@ -336,6 +336,11 @@ func NewOrchestrator(
 	singletonKV := natsutil.BindOptionalKeyValue(
 		context.Background(), js, "singleton_locks",
 	)
+	if singletonKV != nil {
+		// Concurrent starts of a singleton race for the lock; the
+		// loser must see the winner's claim, not a lagging replica.
+		singletonKV = natsutil.LeaderReadKV(nc, singletonKV)
+	}
 	ac := NewAdmissionController(
 		nc, js, tp, store, cm, singletonKV,
 	)
@@ -348,6 +353,11 @@ func NewOrchestrator(
 	stickyKV := natsutil.BindOptionalKeyValue(
 		context.Background(), js, "sticky_bindings",
 	)
+	if stickyKV != nil {
+		// The binding is written when a step completes and read for
+		// the next dispatch at once.
+		stickyKV = natsutil.LeaderReadKV(nc, stickyKV)
+	}
 	sticky := NewStickyRouter(
 		stickyKV, js, tp, sleepTimer, tracer,
 		pm.stepEnqueue,

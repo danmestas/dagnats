@@ -12,8 +12,10 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/kvmirror"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/internal/secret"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
@@ -47,6 +49,8 @@ type Store struct {
 	// per call would cost a second round trip for a name that never
 	// changes.
 	stream jetstream.Stream
+	// nc carries the cache-miss fallback's leader read.
+	nc *nats.Conn
 
 	mu     sync.RWMutex
 	tokens map[string]Token // id -> Token, includes revoked (for List/audit)
@@ -93,9 +97,14 @@ func Open(ctx context.Context, js jetstream.JetStream) (*Store, error) {
 		slog.Warn("workertoken watch_failures counter not registered",
 			"error", meterErr)
 	}
+	if js.Conn() == nil {
+		cancel()
+		return nil, errors.New("workertoken: jetstream context has no connection")
+	}
 	s := &Store{
 		kv:            kv,
 		stream:        stream,
+		nc:            js.Conn(),
 		tokens:        make(map[string]Token),
 		revisions:     make(map[string]uint64),
 		ctx:           watchCtx,
@@ -433,7 +442,7 @@ func (s *Store) Revoke(ctx context.Context, id string) error {
 	return nil
 }
 
-// lookupOrFetch reads id from the cache, falling back to one direct KV
+// lookupOrFetch reads id from the cache, falling back to one leader KV
 // read on a cache miss. A miss can mean the id is genuinely unknown OR
 // this Store's watch has not yet replayed a mint committed by another
 // instance (bounded by the reconnect window on a live watch, but
@@ -452,11 +461,14 @@ func (s *Store) lookupOrFetch(ctx context.Context, id string) (Token, bool) {
 	if ok {
 		return tok, true
 	}
-	entry, err := s.kv.Get(ctx, id)
+	// From the leader: a direct get could land on a replica that has
+	// not applied the mint either, and Revoke would then report a live
+	// token unknown and leave it valid.
+	entry, err := natsutil.KVGetLeader(ctx, s.nc, bucketName, id)
 	if err != nil {
 		return Token{}, false
 	}
-	if err := json.Unmarshal(entry.Value(), &tok); err != nil {
+	if err := json.Unmarshal(entry.Value, &tok); err != nil {
 		slog.Warn("workertoken: unparsable record on KV fallback read",
 			"id", id, "error", err)
 		return Token{}, false
