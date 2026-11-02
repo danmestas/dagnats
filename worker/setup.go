@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -85,6 +86,8 @@ func (w *Worker) precheckTaskQueues(types []string) error {
 // concurrent-dedup race (ADR-006 §3). The collision check (ADR-010) is
 // best-effort: it catches the steady-state collision after one worker
 // creates the durable, though a TOCTOU window at the create remains.
+// Start's shared listing widens that window: it is taken once, before
+// any type is created, rather than just before each type's create.
 func (w *Worker) precheckPullConsumer(
 	ctx context.Context, view taskQueueView, taskType, group string,
 ) error {
@@ -101,7 +104,10 @@ func (w *Worker) precheckPullConsumer(
 
 // subscribeTasks sets up every task type's consumers, up to
 // w.setupInFlight at a time, after precheckTaskQueues. Errors are
-// joined in task-type order, so the first type to fail leads.
+// joined in task-type order, so the first type to fail leads. Once one
+// type fails no further type is started, as when setup was serial. A
+// panic in a setup (an assertion) is re-raised here, on Start's
+// goroutine, after every started setup has finished.
 func (w *Worker) subscribeTasks(types []string) error {
 	if len(types) == 0 || w.setupInFlight < 1 {
 		panic("subscribeTasks: types and a positive in-flight bound are required")
@@ -112,19 +118,45 @@ func (w *Worker) subscribeTasks(types []string) error {
 		sticky = nil
 	}
 	errs := make([]error, len(types))
+	panics := make([]any, len(types))
 	slots := make(chan struct{}, w.setupInFlight)
+	var failed atomic.Bool
 	var wg sync.WaitGroup
 	for i, taskType := range types {
 		slots <- struct{}{}
+		if failed.Load() {
+			<-slots
+			break
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			defer func() { <-slots }()
-			errs[i] = w.setupTask(taskType, w.handlers[taskType], sticky)
+			panics[i], errs[i] = w.guardedSetupTask(taskType, sticky)
+			if errs[i] != nil || panics[i] != nil {
+				failed.Store(true)
+			}
 		}()
 	}
 	wg.Wait()
+	for _, recovered := range panics {
+		if recovered != nil {
+			panic(recovered)
+		}
+	}
 	return errors.Join(errs...)
+}
+
+// guardedSetupTask runs setupTask, returning a panic it raised instead
+// of letting it end the process from a setup goroutine.
+func (w *Worker) guardedSetupTask(
+	taskType string, sticky jetstream.Stream,
+) (recovered any, err error) {
+	if taskType == "" {
+		panic("guardedSetupTask: taskType must not be empty")
+	}
+	defer func() { recovered = recover() }()
+	return nil, w.setupTask(taskType, w.handlers[taskType], sticky)
 }
 
 // setupTask creates one task type's consumers and starts consuming:
