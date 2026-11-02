@@ -4,7 +4,7 @@ go 1.27.1
 
 require (
 	github.com/duckdb/duckdb-go/v2 v2.20000.0
-	github.com/mark3labs/mcp-go v1.3.0
+	github.com/mark3labs/mcp-go v1.4.0
 )
 
 require (
