@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A worker with many task types starts much faster over a slow link.** `Worker.Start` set up each task type's consumers one at a time, and each type cost about seven sequential JetStream round trips: two lookups and two full consumer listings of `TASK_QUEUES` for orphan cleanup and the collision check, its consumer create, then a `STICKY_TASKS` lookup and the sticky consumer create. A program with 16 task types reaching a stream leader 160 ms or more away spent about 30 seconds there. Start now lists `TASK_QUEUES` once for every type's cleanup and collision check (still in task-type order, before any create) and looks up `STICKY_TASKS` once, then creates the types' consumers up to 8 at a time. A failure names every failing type, the first in task-type order leading. The consumers created are unchanged.
+
 ## [0.0.47] - 2026-11-01
 
 ### Fixed
