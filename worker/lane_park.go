@@ -85,6 +85,8 @@ func (w *Worker) trackLane(consume jetstream.ConsumeContext, park *lanePark) {
 	if park == nil {
 		panic("trackLane: park must not be nil")
 	}
+	w.setupMu.Lock()
+	defer w.setupMu.Unlock()
 	w.lanes = append(w.lanes, drainingLane{consume: consume, park: park})
 }
 

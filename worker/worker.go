@@ -171,15 +171,20 @@ type Worker struct {
 	// retained as a test seam — withPublishMsgFunc overrides it to
 	// inject failures into publishStarted. Production code goes
 	// through tp.JSPublishMsg* on the publish path.
-	tp           *natsutil.TracingPublisher
-	publishMsg   publishMsgFunc
-	tracer       trace.Tracer
-	handlers     map[string]HandlerFunc
-	stoppers     []interface{ Stop() } // all consumer lifecycles
-	checkpointKV jetstream.KeyValue
-	signalKV     jetstream.KeyValue
-	groups       []string
-	partitions   int
+	tp         *natsutil.TracingPublisher
+	publishMsg publishMsgFunc
+	tracer     trace.Tracer
+	handlers   map[string]HandlerFunc
+	stoppers   []interface{ Stop() } // all consumer lifecycles
+	// setupInFlight bounds Start's concurrent task-type setup
+	// (setupInFlightMax); setupMu guards stoppers and lanes while
+	// those setups append to them.
+	setupInFlight int
+	setupMu       sync.Mutex
+	checkpointKV  jetstream.KeyValue
+	signalKV      jetstream.KeyValue
+	groups        []string
+	partitions    int
 	// catchupKeysMax caps the WatchTriggers startup scan. Defaults to
 	// maxCatchupKeys; a field rather than the bare constant so tests
 	// can prove the cap with a small fixture instead of 10k KV writes.
@@ -449,6 +454,7 @@ func NewWorker(
 		cancelledTasksSkipped: skipped,
 		logChunkFailures:      logChunkFail,
 		drainTimeout:          defaultDrainTimeout,
+		setupInFlight:         setupInFlightMax,
 		heartbeatMax:          DefaultHeartbeatMax,
 		catchupKeysMax:        maxCatchupKeys,
 		stopping:              make(chan struct{}),
@@ -607,12 +613,14 @@ func (w *Worker) Start() error {
 	w.registerDirectory()
 	w.subscribeCancel()
 
-	for _, taskType := range slices.Sorted(maps.Keys(w.handlers)) {
-		err := w.subscribeTask(taskType, w.handlers[taskType])
-		if err != nil {
-			w.Stop()
-			return fmt.Errorf("worker start: %w", err)
-		}
+	types := slices.Sorted(maps.Keys(w.handlers))
+	if err := w.precheckTaskQueues(types); err != nil {
+		w.Stop()
+		return fmt.Errorf("worker start: %w", err)
+	}
+	if err := w.subscribeTasks(types); err != nil {
+		w.Stop()
+		return fmt.Errorf("worker start: %w", err)
 	}
 	return nil
 }
@@ -734,43 +742,6 @@ func (w *Worker) registerDirectory() {
 	go w.heartbeatLoop(reg)
 }
 
-// subscribeTask creates JetStream subscriptions for a single task
-// type. When groups are configured, subscribes per-group. Also
-// subscribes to the sticky subject for worker-affinity routing.
-// Each consumer joins w.lanes (elastic ones w.stoppers) as soon as it
-// exists, so a later failure's Stop ends it.
-func (w *Worker) subscribeTask(
-	taskType string, handler HandlerFunc,
-) error {
-	if taskType == "" {
-		panic("subscribeTask: taskType must not be empty")
-	}
-	if handler == nil {
-		panic("subscribeTask: handler must not be nil")
-	}
-	if w.partitions > 0 {
-		return w.subscribeElastic(taskType, handler)
-	}
-	if len(w.groups) > 0 {
-		for _, group := range w.groups {
-			if _, err := w.subscribePullConsumer(
-				taskType, group, handler,
-			); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	if _, err := w.subscribePullConsumer(taskType, "", handler); err != nil {
-		return err
-	}
-	// Sticky subscription on STICKY_TASKS stream (separate from
-	// TASK_QUEUES to avoid work queue filter conflict). Missing
-	// stream is fine.
-	w.createStickyConsumer(taskType, handler)
-	return nil
-}
-
 // subscribeElastic joins taskType's pcgroups elastic consumer group,
 // one per worker group when groups are configured.
 //
@@ -806,21 +777,17 @@ func (w *Worker) subscribeElastic(
 		if err != nil {
 			return err
 		}
+		w.setupMu.Lock()
 		w.stoppers = append(w.stoppers, cc)
+		w.setupMu.Unlock()
 	}
 	return nil
 }
 
 // subscribePullConsumer attaches a worker to a durable JetStream pull
-// consumer on TASK_QUEUES, creating it if absent. Idempotent across
-// worker restarts. Cleans up orphan ephemeral consumers with the same
-// filter subject before creation (see ADR-006 §3, added in Task 7).
-// Returns setup failures (stream missing, permission denied) for Start to
-// report; panics only on programmer errors.
-//
-// The durable name and filter subject are derived from (taskType, group)
-// via consumerNameFor and consumerFilterFor. AckWait derives from per-task
-// override (see WithAckWait) or defaultAckWait.
+// consumer on TASK_QUEUES, creating it if absent: one type's prechecks
+// (precheckPullConsumer, against a fresh listing) and then its create.
+// Start does the same for every type, with one listing shared.
 func (w *Worker) subscribePullConsumer(
 	taskType, group string, handler HandlerFunc,
 ) (jetstream.ConsumeContext, error) {
@@ -830,35 +797,45 @@ func (w *Worker) subscribePullConsumer(
 	if handler == nil {
 		panic("subscribePullConsumer: handler must not be nil")
 	}
+	ctx := context.Background()
+	view, err := w.loadTaskQueueView(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := w.precheckPullConsumer(ctx, view, taskType, group); err != nil {
+		return nil, err
+	}
+	if group != "" {
+		checkStrandedGroupSubject(ctx, w.js, taskType, group)
+	}
+	return w.createPullConsumer(taskType, group, handler)
+}
+
+// createPullConsumer creates or updates (taskType, group)'s durable on
+// TASK_QUEUES and starts consuming it. Idempotent across worker
+// restarts. Returns setup failures (stream missing, permission denied)
+// for Start to report; panics only on programmer errors.
+//
+// The durable name and filter subject are derived from (taskType, group)
+// via consumerNameFor and consumerFilterFor. AckWait derives from per-task
+// override (see WithAckWait) or defaultAckWait.
+func (w *Worker) createPullConsumer(
+	taskType, group string, handler HandlerFunc,
+) (jetstream.ConsumeContext, error) {
+	if taskType == "" {
+		panic("createPullConsumer: taskType must not be empty")
+	}
+	if handler == nil {
+		panic("createPullConsumer: handler must not be nil")
+	}
 	if defaultAckWait <= 0 {
-		panic("subscribePullConsumer: defaultAckWait must be positive")
+		panic("createPullConsumer: defaultAckWait must be positive")
 	}
 
 	durable := consumerNameFor(taskType, group)
 	filter := consumerFilterFor(taskType, group)
 	ackWait := w.coalesceAckWait(taskType)
 	ctx := context.Background()
-
-	// Orphan cleanup first, cross-process collision check second.
-	// The two helpers operate on disjoint consumer sets — cleanup on
-	// ephemerals with our filter, xprocess on durables with our name —
-	// so order is interchangeable for correctness. Cleanup-first
-	// preserves the timing of cleanup's concurrent-dedup race
-	// (ADR-006 §3): adding work before cleanup tightens the window in
-	// which two workers both observe the orphan as still present and
-	// both log the deletion. xprocess (ADR-010) is best-effort — it
-	// catches the steady-state collision after one worker creates the
-	// durable, even though a TOCTOU window at CreateOrUpdateConsumer
-	// remains; running it after cleanup does not change that property.
-	if err := w.cleanupOrphanEphemerals(ctx, filter, durable); err != nil {
-		return nil, err
-	}
-	if err := assertNoCrossProcessCollision(ctx, w.js, filter, durable); err != nil {
-		return nil, err
-	}
-	if group != "" {
-		checkStrandedGroupSubject(ctx, w.js, taskType, group)
-	}
 
 	cfg := jetstream.ConsumerConfig{
 		Durable:       durable,
@@ -915,10 +892,9 @@ func consumeErrHandler(label string) jetstream.ConsumeErrHandlerFunc {
 // TASK_QUEUES whose FilterSubject matches the one we're about to claim.
 // 3-prong identity: matching filter, Durable=="" (ephemeral), and Name
 // not under the "workers-" prefix (belt-and-suspenders against future state
-// we haven't anticipated). Iterator form, not single-page list — past page
-// 1 a stale orphan would re-trigger #136 in deployments with enough state.
-func (w *Worker) cleanupOrphanEphemerals(
-	ctx context.Context, filter, durable string,
+// we haven't anticipated). It reads view's listing (loadTaskQueueView).
+func cleanupOrphanEphemerals(
+	ctx context.Context, view taskQueueView, filter, durable string,
 ) error {
 	if filter == "" {
 		panic("cleanupOrphanEphemerals: filter must not be empty")
@@ -927,13 +903,8 @@ func (w *Worker) cleanupOrphanEphemerals(
 		panic("cleanupOrphanEphemerals: durable must not be empty")
 	}
 
-	stream, err := w.js.Stream(ctx, "TASK_QUEUES")
-	if err != nil {
-		return fmt.Errorf("orphan cleanup: open TASK_QUEUES: %w", err)
-	}
-
-	iter := stream.ListConsumers(ctx)
-	for info := range iter.Info() {
+	stream := view.stream
+	for _, info := range view.consumers {
 		if info.Config.FilterSubject != filter {
 			continue
 		}
@@ -976,17 +947,14 @@ func (w *Worker) cleanupOrphanEphemerals(
 			"reason", "ephemeral with matching filter; pre-fix dagnats orphan",
 		)
 	}
-	if err := iter.Err(); err != nil {
-		return fmt.Errorf("orphan cleanup: list TASK_QUEUES consumers: %w", err)
-	}
 	return nil
 }
 
 // createStickyConsumer sets up a pull consumer on the STICKY_TASKS
-// stream for worker-affinity routing. Returns nil if the stream
-// does not exist — sticky routing is optional.
+// stream for worker-affinity routing. Returns nil if it cannot: sticky
+// routing is optional, and a caller without the stream skips it.
 func (w *Worker) createStickyConsumer(
-	taskType string, handler HandlerFunc,
+	taskType string, handler HandlerFunc, stream jetstream.Stream,
 ) jetstream.ConsumeContext {
 	if taskType == "" {
 		panic(
@@ -998,11 +966,10 @@ func (w *Worker) createStickyConsumer(
 			"createStickyConsumer: handler must not be nil",
 		)
 	}
-	ctx := context.Background()
-	stream, err := w.js.Stream(ctx, "STICKY_TASKS")
-	if err != nil {
-		return nil // Stream not provisioned — skip
+	if stream == nil {
+		panic("createStickyConsumer: stream must not be nil")
 	}
+	ctx := context.Background()
 	cfg := stickyConsumerConfig(taskType, w.workerID, stream.CachedInfo())
 	subject := cfg.FilterSubject
 	cons, err := stream.CreateOrUpdateConsumer(ctx, cfg)

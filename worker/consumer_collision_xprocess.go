@@ -38,13 +38,14 @@ import (
 // another process registered a different task type that sanitized to the
 // same durable — silent routing corruption follows if we proceed.
 //
-// Cost: one ListConsumers iteration per call. Bounded at typical N (≤50
-// consumers); revisit if N grows. See ADR-010 "Consolidation path."
+// Cost: none of its own: it reads view's listing (loadTaskQueueView),
+// which Start takes once for every task type. See ADR-010
+// "Consolidation path."
 //
-// Returns the infrastructure failures (stream missing, listing failed);
-// a collision itself is a configuration error and panics.
+// Returns the infrastructure failures (a legacy upgrade's lookup or
+// delete); a collision itself is a configuration error and panics.
 func assertNoCrossProcessCollision(
-	ctx context.Context, js jetstream.JetStream, filter, durable string,
+	ctx context.Context, view taskQueueView, filter, durable string,
 ) error {
 	if filter == "" {
 		panic("assertNoCrossProcessCollision: filter must not be empty")
@@ -53,13 +54,10 @@ func assertNoCrossProcessCollision(
 		panic("assertNoCrossProcessCollision: durable must not be empty")
 	}
 
-	stream, err := js.Stream(ctx, "TASK_QUEUES")
-	if err != nil {
-		return fmt.Errorf("collision check: open TASK_QUEUES: %w", err)
+	if view.stream == nil {
+		panic("assertNoCrossProcessCollision: view must be loaded")
 	}
-
-	iter := stream.ListConsumers(ctx)
-	for info := range iter.Info() {
+	for _, info := range view.consumers {
 		if info.Config.Durable != durable {
 			continue
 		}
@@ -68,7 +66,7 @@ func assertNoCrossProcessCollision(
 			continue
 		}
 		if consumername.FilterIsLegacyUpgrade(filter, info.Config.FilterSubject) {
-			if err := upgradeLegacyDurable(ctx, stream, durable, filter); err != nil {
+			if err := upgradeLegacyDurable(ctx, view.stream, durable, filter); err != nil {
 				return err
 			}
 			continue
@@ -80,9 +78,6 @@ func assertNoCrossProcessCollision(
 				"type so their sanitized durable names differ.",
 			durable, info.Config.FilterSubject, filter,
 		))
-	}
-	if err := iter.Err(); err != nil {
-		return fmt.Errorf("collision check: list TASK_QUEUES consumers: %w", err)
 	}
 	return nil
 }
