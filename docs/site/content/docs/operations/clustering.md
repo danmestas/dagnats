@@ -11,6 +11,20 @@ A single node loses its data if its disk is lost, and it stops serving while it 
 
 Clusters are fixed-size. You declare the other nodes in each node's config, and changing the size means changing every node's config and restarting them one at a time. There is no dynamic membership. Clusters and leaf nodes are mutually exclusive: setting both `nats_cluster_routes` and `leaf_remotes` is a config error.
 
+## Regional clusters, far sites
+
+Keep a cluster in one region. Every node should be within about 100 ms round trip of the others, ideally a few milliseconds. JetStream's Raft timers are fixed (1-second heartbeats, 4 to 9-second election timeouts), every replicated write waits for a quorum, and every engine pulls work from the same consumer leaders wherever it runs. One node across an ocean or a home internet link slows every write it leads, slows the work its engine picks up, and causes timeouts whenever its link degrades.
+
+Choose one of three shapes:
+
+| Shape | Use it when |
+|-------|-------------|
+| **Regional cluster** | All nodes are in one region. This is the cluster this page describes. |
+| **Leaf node with its own `jetstream_domain`** | One machine is far away: a home server, a laptop, an edge site. It runs a standalone `dagnats serve` with `leaf_remotes` pointing at the cluster nodes' leafnode listeners (`leaf_port`). It does not vote. Request/reply and subscriptions cross the leaf link, and its own JetStream stays local; mirror or source the streams it needs. |
+| **Supercluster** | A second region needs its own engine and quorum. Run a regional cluster there and join the two with NATS gateways. dagnats does not configure gateways yet. |
+
+If a far node is already in a cluster, set [`preferred_leaders`]({{< ref "/docs/operations/configuration" >}}) on every node to the nearby nodes' server names, and plan to move the far node to a leaf. A replica-only node role (`engine: false`), which keeps the node voting and storing but stops its engine, is in progress. See [ADR-030](https://github.com/danmestas/dagnats/blob/main/docs/architecture/adr-030-regional-clusters-and-far-sites.md) for the reasoning and a migration, and [Deployment Models]({{< ref "/docs/operations/deployment-models" >}}) for leaf node setup.
+
 ## Configuration
 
 Set these on every node. Each is a `dagnats.yaml` key and has an environment variable that overrides it.
