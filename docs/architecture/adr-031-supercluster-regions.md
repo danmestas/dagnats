@@ -1,6 +1,6 @@
 # ADR-031: Supercluster regions
 
-**Status:** Proposed (2026-11-04)
+**Status:** Accepted (2026-11-04)
 **Deciders:** Dan Mestas
 **Depends on:** ADR-005, ADR-030
 
@@ -85,7 +85,9 @@ cluster name and the JetStream domain are both the region name: `eu` and
 programs and join keys. A region keeps working, including restarts and
 new consumers, when the other region or the link between them is gone.
 
-**The regions are linked by a leafnode connection, not gateways.** Every
+**The regions are linked by a leafnode connection, not gateways.** This
+replaces the gateway supercluster in the starting brief, for the reasons
+in the Context. Every
 US node dials the EU nodes' leafnode listeners. A leafnode link is the
 mechanism nats-server provides for two JetStream domains to coexist
 (`server/leafnode.go:2156-2180`). It maps `$JS.<domain>.API` to the remote
@@ -243,18 +245,21 @@ across regions, which is the meta problem again.
   WAN voter inside US, with ADR-030's elections and slow quorum writes
   whenever its link is poor.
 
-Mitigations for the MacBook, in order:
+**Operating rule for the MacBook.** The MacBook Pro is the third US voter
+on these terms:
 
-1. On power, `sudo pmset -c sleep 0 disksleep 0` and `pmset -c
-   tcpkeepalive 1`, and run `dagnats serve` under a launchd job wrapped in
-   `caffeinate -s`. The requirement is that the MacBook is a US voter only
-   while it is on mains power and on the home LAN.
-2. Before taking it away, stop `dagnats serve` on it cleanly. Two of
-   three remain, as above, and an unplanned failure of the mini or iMac
-   then stops US. Accept this for travel, or
-3. Replace it with a fixed always-on host (a second Mac mini or a small
-   Linux box at home). This is the recommended end state; the MacBook is
-   a stopgap third voter.
+1. It votes only while it is on AC power and on the home LAN.
+2. Sleep is disabled on AC: `sudo pmset -c sleep 0 disksleep 0` and
+   `sudo pmset -c tcpkeepalive 1`, with `dagnats serve` run by a launchd
+   job wrapped in `caffeinate -s`.
+3. Before it is unplugged or leaves the house, `dagnats serve` on it is
+   stopped cleanly.
+
+The risk this accepts: whenever the MacBook is away or stopped, US runs
+on two of three voters, and an unplanned failure of the mini or the iMac
+then stops US until one of them returns. A fixed always-on host can
+replace the MacBook later without changing anything else in this
+design.
 
 ### 7. Migration from dagnats-mesh
 
@@ -284,14 +289,15 @@ Today `mesh-mini` is the third EU voter, with `preferred_leaders` set and
    at the mini's local node, keep its seed, and start it. It registers in
    US and registers its workflows and triggers there. Enable its triggers
    in US. Then delete notify's program entry, workflows and triggers in
-   EU. Notify's past EU runs stay in EU history; they are not copied.
+   EU. Notify's past EU runs stay in EU history.
 6. **Link the regions.** Once the clustered-leaf and allow-list PRs ship,
    open `leaf_port` on the EU nodes with a leaf login and the allow-list,
    and set `leaf_remotes` on the US nodes. Verify with the cross-region
    `task.>` test above run against the live pair, and with
    `nats --js-domain us stream ls` from an EU node.
 
-Steps 2 to 5 are the notify outage window. Before step 3 every step is
+Steps 2 to 5 are a brief, planned notify outage. Notify starts fresh in
+US: its past EU runs stay in EU and are neither migrated nor mirrored. Before step 3 every step is
 reversible by undoing the config. After it, the mini can rejoin EU only
 with an empty data directory.
 
@@ -368,7 +374,7 @@ truth. Rejected for now; per-region registration is one extra command.
   for the deferred region-addressed control plane.
 - **Two of everything to operate:** join keys, program registrations,
   console URLs.
-- **US quorum leans on a laptop** until it is replaced by a fixed host.
+- **US quorum leans on a laptop** under the operating rule above.
 - **The name "supercluster" no longer fits the mechanism.** The regions
   are a cluster pair linked by leafnodes. This ADR keeps the name for
   continuity with ADR-030, which should be read with this correction.
