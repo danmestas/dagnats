@@ -143,6 +143,13 @@ For stateful workers (large model caches, local file context), use **sticky bind
 - **TELEMETRY**: 7-day retention, capped at 10% of `max_store_bytes`.
 - **KV buckets**: typically small. `workflow_runs` is the largest, proportional to active + recently completed runs.
 
+### Low-Disk Warning
+
+A full disk wedges the embedded JetStream until restart, and its errors (`context deadline exceeded`, `jetstream meta group not available`) do not say why. dagnats checks the filesystem under `data_dir` at startup and every 60 seconds, and logs an `ERROR` naming the path, free bytes and threshold when free space drops below `max(disk_free_min_bytes, 2 x max_store_bytes)`. `disk_free_min_bytes` (`DAGNATS_DISK_FREE_MIN_BYTES`) defaults to 10 GiB. The log repeats at most every 10 minutes and an `INFO` marks recovery.
+
+- Alert on that log line, or on `disk.low` in `GET /health/cluster`. A low disk also adds `disk` to `jetstream.degraded`, and the status stays `200`.
+- Keep `data_dir` on a filesystem nothing else fills.
+
 ### Recommended Minimums
 
 | Deployment Size | CPU | Memory | Disk |

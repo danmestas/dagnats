@@ -311,6 +311,13 @@ Monitor JetStream storage usage via the NATS monitoring port or the
 max_store_bytes: 53687091200
 ```
 
+### Watching free disk
+
+dagnats logs an `ERROR` when free space under `data_dir` falls below
+`max(disk_free_min_bytes, 2 x max_store_bytes)` and reports `disk` in
+`/health/cluster`. See the Low-Disk Warning section of the production
+checklist for the details.
+
 ### Backup and Restore
 
 DagNats stores all state in the `data_dir` directory. To back up:

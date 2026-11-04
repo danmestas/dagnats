@@ -316,3 +316,65 @@ func TestClassifyUnavailable(t *testing.T) {
 		t.Error("nothing answered: want quorum failure")
 	}
 }
+
+// TestHealthCluster_DiskStatus pins the wire shape of the disk block with
+// literal keys and checks low disk is reported as degraded-but-200 in
+// cluster mode, matching the existing Degraded precedent, and that a
+// healthy reading adds no degradation.
+func TestHealthCluster_DiskStatus(t *testing.T) {
+	_, nc := natstest.StartServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	routes := []string{"nats://peer-a:6222", "nats://peer-b:6222"}
+	reporter := NewClusterReporter(nc, routes, nil)
+	reporter.SetDiskStatus(func() DiskStatus {
+		return DiskStatus{FreeBytes: 5, ThresholdBytes: 100, Low: true}
+	})
+	body, status := reporter.report(context.Background())
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (low disk is a warning)", status)
+	}
+	if !slices.Contains(body.JetStream.Degraded, "disk") {
+		t.Errorf("degraded = %v, want it to name disk", body.JetStream.Degraded)
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	disk, _ := wire["disk"].(map[string]any)
+	if disk["free_bytes"] != float64(5) || disk["threshold_bytes"] != float64(100) ||
+		disk["low"] != true {
+		t.Errorf("disk wire = %v", disk)
+	}
+
+	reporter.SetDiskStatus(func() DiskStatus {
+		return DiskStatus{FreeBytes: 500, ThresholdBytes: 100}
+	})
+	body, _ = reporter.report(context.Background())
+	if slices.Contains(body.JetStream.Degraded, "disk") || body.Disk == nil || body.Disk.Low {
+		t.Errorf("healthy disk reported degraded: %+v", body)
+	}
+}
+
+// TestHealthCluster_DiskStatusStandalone checks standalone nodes report
+// disk too, and omit the block when no monitor is attached.
+func TestHealthCluster_DiskStatusStandalone(t *testing.T) {
+	_, nc := natstest.StartServer(t)
+	reporter := NewClusterReporter(nc, nil, nil)
+	body, _ := reporter.report(context.Background())
+	if body.Disk != nil {
+		t.Errorf("disk = %+v without a monitor, want nil", body.Disk)
+	}
+	reporter.SetDiskStatus(func() DiskStatus {
+		return DiskStatus{FreeBytes: 1, ThresholdBytes: 2, Low: true}
+	})
+	body, status := reporter.report(context.Background())
+	if status != http.StatusOK || body.Disk == nil || !body.Disk.Low {
+		t.Errorf("standalone status=%d disk=%+v", status, body.Disk)
+	}
+}

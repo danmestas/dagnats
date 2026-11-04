@@ -141,6 +141,7 @@ For clusters, start with `GET /health/cluster` on each node. See [Clustering]({{
 
 - **`cluster quorum did not form` at startup**: the node waited 60 seconds and no JetStream meta leader answered. Check that every node is running, that `nats_cluster_routes` lists the other nodes on the route port, that `nats_cluster_name` and `nats_cluster_auth_token` match everywhere, and that the route port is reachable between nodes.
 - **`/health/cluster` returns 503**: a replicated stream or bucket lost quorum. The names are under `jetstream.unavailable`. Bring the missing node back.
+  A 503 with `jetstream meta group not available` or `context deadline exceeded` in the logs can also mean the node's disk is full, which wedges JetStream until restart. Check `disk.low` and `disk.free_bytes` in the response body, and free space under `data_dir`.
 - **`/health/cluster` returns 200 with `jetstream.degraded`**: only single-replica assets are unreachable. The cluster still has quorum.
 - **A node left an old replica behind after a restart**: nodes before 0.0.27 named themselves from the process ID, so each restart joined as a new JetStream peer. Set `nats_server_name`, or upgrade; the name then stays the same across restarts.
 
