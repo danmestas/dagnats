@@ -36,6 +36,7 @@ Zero-config starts everything on defaults. Environment variables always win.
 | `nats_server_name` | string | `<cluster>-<hostname>-<cluster port>` | `<cluster>-<hostname>-<cluster port>` |
 | `nats_jetstream_replicas` | int | `0` (auto-derive) | `0` (auto-derive) |
 | `preferred_leaders` | []string | (none: off) | (none: off) |
+| `engine` | bool | `true` | `true` |
 | `jetstream_domain` | string | (none) | (none) |
 | `region` | string | (none) | (none) |
 | `monitor_port` | int | (none) | (none) |
@@ -61,6 +62,15 @@ Zero-config starts everything on defaults. Environment variables always win.
 On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 
 The `nats_cluster_*`, `nats_server_name` and `nats_jetstream_replicas` keys are explained on the [Clustering]({{< ref "/docs/operations/clustering" >}}) page. `nats_cluster_routes` needs 2 to 10 entries, and `nats_cluster_name` is required whenever routes are set.
+
+`engine: false` (`DAGNATS_ENGINE=false`) makes a node **replica-only**. It stays a JetStream voter and stream replica, but runs no dagnats work:
+- **No work:** no orchestrator, no control plane (the `api.*` and `api.p.*` NATS services), no program registration, HTTP bridge, triggers, embedded workers or `dagnats.yaml` watcher.
+- **Still runs:** its program users, so a program that dials it still logs in with its key; the leader rebalancer; and the disk monitor.
+- **Requests go elsewhere:** a control-plane request sent through it is answered by an engine node in the same queue group.
+- **HTTP:** it serves `/health`, `/health/cluster` (with `"replica_only": true`) and `/ready`. Every other route, the REST API and console included, answers 503 `replica-only node: engine off`.
+- **Startup:** it logs `replica-only node: engine off`.
+
+Use it for a node across a slow link, for example a home machine 150 ms to 1 s from two cloud nodes that are 1 ms apart. Its engine would otherwise pull a share of the cluster's work, and pay that link on every KV round trip. Pair it with `preferred_leaders` naming the other nodes. Keep at least one engine node.
 
 `preferred_leaders` lists server names (`nats_server_name`) that should lead replicated streams. JetStream elects any in-sync replica, so after restarts and elections a stream's leader can land on any node, and every write to that stream goes through its leader. Set it when one node is far from the others, for example a laptop 160-700 ms from two cloud nodes that are 1 ms apart. Every write to a stream that node leads would cross the slow link. The node that is the JetStream meta leader checks 15 seconds after start and then every minute: a stream with more than one replica, whose leader is not preferred and which has an in-sync preferred replica, has its leader step down in favour of that replica. It moves at most 4 streams per check, rotates over the preferred servers, and leaves a moved stream alone for 5 minutes so nothing flaps. R1 streams are never touched.
 
@@ -98,6 +108,7 @@ Each move is logged at INFO and each failure at WARN. Empty, the default, leaves
 | `DAGNATS_NATS_PASSWORD_FILE` | `nats_password_file` | File holding that user's password (chmod 600) |
 | `DAGNATS_API_TOKEN_FILE` | `api_token_file` | File holding a bearer token every HTTP request must carry, except `/health`, `/health/cluster` and `/ready`. On the bridge's worker routes a token the bridge accepts also passes. Unset: open. Neither login covers `monitor_port` or cluster routes (use `nats_cluster_auth_token`) |
 | `DAGNATS_NATS_SERVER_NAME` | `nats_server_name` | Stable server name; default derived from host |
+| `DAGNATS_ENGINE` | `engine` | `false` makes the node replica-only (see below); default `true` |
 | `DAGNATS_PREFERRED_LEADERS` | `preferred_leaders` | Comma-separated server names that should lead replicated streams; default none (off) |
 | `DAGNATS_JETSTREAM_DOMAIN` | `jetstream_domain` | JetStream domain a leaf hub addresses this server by; default none |
 | `DAGNATS_REGION` | `region` | Region name; defaults `nats_cluster_name` and `jetstream_domain` |

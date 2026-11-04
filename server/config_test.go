@@ -911,3 +911,28 @@ func TestPreferredLeaders(t *testing.T) {
 		t.Fatalf("file PreferredLeaders = %q, want [eu-2 eu-3]", got)
 	}
 }
+
+// TestEngineSetting: engine: false (or DAGNATS_ENGINE=false) makes the
+// node replica-only; the default, and true, keep the engine.
+func TestEngineSetting(t *testing.T) {
+	// Negative: the engine is on by default.
+	if DefaultConfig().ReplicaOnly {
+		t.Fatal("default config is replica-only")
+	}
+	cfg := DefaultConfig()
+	if err := applyConfigValue("engine", "false", 1, &cfg); err != nil || !cfg.ReplicaOnly {
+		t.Fatalf("engine: false = %v, ReplicaOnly %v; want replica-only", err, cfg.ReplicaOnly)
+	}
+	if err := applyConfigValue("engine", "maybe", 1, &cfg); err == nil {
+		t.Fatal("engine: maybe accepted, want an error")
+	}
+	t.Setenv("DAGNATS_ENGINE", "true")
+	if err := applyEngineEnv(&cfg); err != nil || cfg.ReplicaOnly {
+		t.Fatalf("DAGNATS_ENGINE=true = %v, ReplicaOnly %v; want the engine on", err, cfg.ReplicaOnly)
+	}
+	t.Setenv("DAGNATS_ENGINE", "false")
+	// Positive: the env var turns it off.
+	if err := applyEngineEnv(&cfg); err != nil || !cfg.ReplicaOnly {
+		t.Fatalf("DAGNATS_ENGINE=false = %v, ReplicaOnly %v", err, cfg.ReplicaOnly)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 )
 
 // csrf.go owns the lightweight CSRF protection the console applies
@@ -28,10 +29,18 @@ import (
 // page (not just guessing form actions). For loopback, that bar is
 // the OS access-control already in place.
 
-// CSRFSecret holds the active server secret. Set once at startup via
-// LoadCSRFSecret; subsequent reads are concurrent-safe (string assign
-// + read is atomic on Go's GC, and we never mutate after init).
-var csrfSecret []byte
+// csrfSecret holds the active server secret, set at startup by
+// LoadCSRFSecret. Atomic: a process can start several servers (the
+// cluster tests do), and each loads it while another serves the console.
+var csrfSecret atomic.Pointer[[]byte]
+
+// activeCSRFSecret returns the loaded secret, or nil before any load.
+func activeCSRFSecret() []byte {
+	if secret := csrfSecret.Load(); secret != nil {
+		return *secret
+	}
+	return nil
+}
 
 // csrfSecretLen is the byte length used when CONSOLE_CSRF_SECRET is
 // unset and we generate a fresh secret. 32 bytes = 256 bits of entropy,
@@ -45,15 +54,16 @@ const csrfSecretLen = 32
 // restarts will rotate the secret unless they set the variable.
 func LoadCSRFSecret(envValue string) ([]byte, bool, error) {
 	if envValue != "" {
-		csrfSecret = []byte(envValue)
-		return csrfSecret, false, nil
+		secret := []byte(envValue)
+		csrfSecret.Store(&secret)
+		return secret, false, nil
 	}
 	buf := make([]byte, csrfSecretLen)
 	if _, err := rand.Read(buf); err != nil {
 		return nil, false, err
 	}
-	csrfSecret = buf
-	return csrfSecret, true, nil
+	csrfSecret.Store(&buf)
+	return buf, true, nil
 }
 
 // LoadCSRFSecretFromEnv is the entry the server startup path calls.
@@ -68,7 +78,8 @@ func LoadCSRFSecretFromEnv() ([]byte, bool, error) {
 // that don't apply CSRF on loopback can short-circuit without a
 // branch on the actor type.
 func CSRFTokenForActor(a Actor) string {
-	if len(csrfSecret) == 0 {
+	secret := activeCSRFSecret()
+	if len(secret) == 0 {
 		// Misconfiguration: serve a stable but non-validating token.
 		// The middleware's verifyCSRF returns false on empty secrets,
 		// so this just keeps the form rendering testable.
@@ -77,7 +88,7 @@ func CSRFTokenForActor(a Actor) string {
 	if a.Display() == "loopback" {
 		return ""
 	}
-	mac := hmac.New(sha256.New, csrfSecret)
+	mac := hmac.New(sha256.New, secret)
 	_, _ = mac.Write([]byte(a.Display()))
 	return hex.EncodeToString(mac.Sum(nil))
 }
@@ -86,7 +97,7 @@ func CSRFTokenForActor(a Actor) string {
 // actor. Constant-time compare via hmac.Equal. Empty secret or empty
 // token always fails.
 func VerifyCSRFToken(a Actor, token string) bool {
-	if len(csrfSecret) == 0 || token == "" {
+	if len(activeCSRFSecret()) == 0 || token == "" {
 		return false
 	}
 	want := CSRFTokenForActor(a)

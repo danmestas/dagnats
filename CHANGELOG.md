@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`engine: false` (`DAGNATS_ENGINE=false`) makes a node replica-only.** It stays a JetStream voter and replica. It still runs health (`/health/cluster` reports `replica_only`), its program users, the leader rebalancer and the disk monitor. It runs no orchestrator, control plane, program registration, bridge, triggers, embedded workers or `dagnats.yaml` watcher. Control-plane requests through it are answered by the engine nodes, and its other HTTP routes answer 503 `replica-only node: engine off`. This is for a node across a slow link: on the mesh, mesh-mini's engine pulled a third of the shared work and paid the transatlantic link on every KV round trip.
+
 - **A cluster node can hold `leaf_remotes` to link two regions (ADR-031).** `nats_cluster_routes` and `leaf_remotes` were mutually exclusive. They may now both be set when the node has a `jetstream_domain` (or `region`), which must differ from the remote cluster's. Without a domain, config load fails as before. Every node of one region lists every leaf listener of the other, and each region keeps its own meta group, streams and engine when the link or the other region is down.
 
 - **`region` (`DAGNATS_REGION`) names a regional cluster (ADR-031).** One key sets both `nats_cluster_name` and `jetstream_domain`, so a region's cluster name and JetStream domain cannot drift apart. Either key set explicitly to a different value fails config load with an error naming both. `/health/cluster` reports the answering node's `region`, and the console header shows it.

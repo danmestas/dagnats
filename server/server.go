@@ -258,6 +258,9 @@ func (s *Server) startComponents() error {
 	}
 	s.telShutdown = telShutdown
 	printStep(os.Stderr, "telemetry initialized")
+	if s.cfg.ReplicaOnly {
+		return s.startReplicaOnly()
+	}
 
 	// One grant-policy holder shared by the api service (promotion auth) and
 	// the orchestrator (enqueue-time capability strip). Unset → deny-by-
@@ -640,6 +643,9 @@ func listenHTTPWithFallback(
 }
 
 func (s *Server) startHTTP() (<-chan error, error) {
+	if s.cfg.ReplicaOnly {
+		return s.serveHTTP(s.replicaOnlyMux())
+	}
 	if s.svc == nil {
 		panic("startHTTP: svc is nil")
 	}
@@ -697,20 +703,31 @@ func (s *Server) startHTTP() (<-chan error, error) {
 	mux.Handle("/docs", docsHandler)
 	mux.Handle("/docs/", docsHandler)
 
+	s.startMetricsAggregator()
+	s.startQueueSnapshotPublisher()
+	return s.serveHTTP(mux)
+}
+
+// serveHTTP binds the listener and serves handler behind the API token
+// gate. The metrics exporter and console mount here, on the engine's
+// mux only, because they need the bound address.
+func (s *Server) serveHTTP(mux *http.ServeMux) (<-chan error, error) {
+	if mux == nil {
+		panic("serveHTTP: mux is nil")
+	}
 	ln, err := listenHTTPWithFallback(s.cfg.HTTPAddr, s.cfg.FailOnPortConflict)
 	if err != nil {
 		return nil, err
 	}
 	s.cfg.HTTPAddr = ln.Addr().String()
-
-	s.startMetricsAggregator()
-	s.startQueueSnapshotPublisher()
-	mountMetricsExporter(
-		mux, s.metricsAgg, slog.Default(), s.cfg.HTTPAddr,
-		s.metricsErrorReason,
-	)
-	mountConsole(mux, s.cfg.HTTPAddr, s.svc, s.nc,
-		s.metricsAgg, s.metricsErrorReason, s.ns, s.cfg.Build, s.cfg.Region)
+	if !s.cfg.ReplicaOnly {
+		mountMetricsExporter(
+			mux, s.metricsAgg, slog.Default(), s.cfg.HTTPAddr,
+			s.metricsErrorReason,
+		)
+		mountConsole(mux, s.cfg.HTTPAddr, s.svc, s.nc,
+			s.metricsAgg, s.metricsErrorReason, s.ns, s.cfg.Build, s.cfg.Region)
+	}
 
 	s.httpSrv = &http.Server{Handler: apiTokenGate(s.cfg.apiToken, s.bridgeWorkerAuth(), mux)}
 

@@ -77,7 +77,10 @@ type clusterHealthResponse struct {
 	// Disk is the answering node's data-dir free space; omitted when no
 	// monitor is attached (library embedders).
 	Disk *DiskStatus `json:"disk,omitempty"`
-	OK   bool        `json:"ok"`
+	// ReplicaOnly marks a node that runs no dagnats work (engine: false):
+	// a JetStream replica only.
+	ReplicaOnly bool `json:"replica_only,omitempty"`
+	OK          bool `json:"ok"`
 }
 
 // DiskStatus is the free space on the filesystem holding the node's data
@@ -125,11 +128,12 @@ type ClusterMembershipFunc func() (ClusterMembership, error)
 // ClusterReporter builds the cluster health report. It is the single
 // implementation behind both transports (HTTP and NATS request/reply).
 type ClusterReporter struct {
-	nc      *nats.Conn
-	routes  []string
-	members ClusterMembershipFunc
-	disk    DiskStatusFunc
-	region  string
+	nc          *nats.Conn
+	routes      []string
+	members     ClusterMembershipFunc
+	disk        DiskStatusFunc
+	region      string
+	replicaOnly bool
 }
 
 // NewClusterReporter returns a reporter. routes is the configured
@@ -163,6 +167,15 @@ func (r *ClusterReporter) SetRegion(region string) {
 		panic("ClusterReporter.SetRegion: region must not be empty")
 	}
 	r.region = region
+}
+
+// SetReplicaOnly marks the report as from a replica-only node. Call it
+// before the reporter serves requests.
+func (r *ClusterReporter) SetReplicaOnly() {
+	if r == nil {
+		panic("ClusterReporter.SetReplicaOnly: r must not be nil")
+	}
+	r.replicaOnly = true
 }
 
 // NewClusterHealthHandler returns an http.Handler serving GET
@@ -231,13 +244,15 @@ func (r *ClusterReporter) report(
 	return resp, http.StatusOK
 }
 
-// applyDisk adds the disk reading. Low disk follows the Degraded
+// applyDisk adds the node's own facts: whether it is replica-only, and
+// the disk reading. Low disk follows the Degraded
 // precedent: reported, but 200, because the node still serves and a load
 // balancer must not drain it on a warning.
 func (r *ClusterReporter) applyDisk(resp *clusterHealthResponse) {
 	if resp == nil {
 		panic("applyDisk: resp must not be nil")
 	}
+	resp.ReplicaOnly = r.replicaOnly
 	if r.disk == nil {
 		return
 	}

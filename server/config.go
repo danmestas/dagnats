@@ -153,6 +153,14 @@ type Config struct {
 	// leader moves them back (natsutil.LeaderRebalancer). Empty, the
 	// default, leaves leaders where JetStream puts them.
 	PreferredLeaders []string `json:"preferred_leaders"`
+	// ReplicaOnly is set by `engine: false` (DAGNATS_ENGINE=false): the
+	// node runs NATS and JetStream as a voting replica, with what a
+	// replica needs (health, program users, the leader rebalancer, the
+	// disk monitor), and no dagnats work: no orchestrator, control
+	// plane, triggers, workers or program registration. For a node
+	// across a slow link, whose engine would otherwise pull a share of
+	// the cluster's work and pay that link on every KV round trip.
+	ReplicaOnly bool `json:"replica_only"`
 
 	MonitorPort   int   `json:"monitor_port"`
 	MaxStoreBytes int64 `json:"max_store_bytes"`
@@ -414,6 +422,9 @@ func ConfigWithPath(
 		return Config{}, "", err
 	}
 	if err := applyRegion(&cfg); err != nil {
+		return Config{}, "", err
+	}
+	if err := applyEngineEnv(&cfg); err != nil {
 		return Config{}, "", err
 	}
 	if err := validateLoadedConfig(cfg); err != nil {
@@ -1134,6 +1145,12 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 			routes = routes[:maxClusterRoutes]
 		}
 		cfg.NATSClusterRoutes = routes
+	case "engine":
+		engine, err := strconv.ParseBool(val)
+		if err != nil {
+			return fmt.Errorf("invalid engine %q: want true or false", val)
+		}
+		cfg.ReplicaOnly = !engine
 	case "preferred_leaders":
 		cfg.PreferredLeaders = serverNameList(val)
 	case "nats_cluster_port":
@@ -1640,4 +1657,22 @@ func serverNameList(val string) []string {
 		}
 	}
 	return names
+}
+
+// applyEngineEnv reads DAGNATS_ENGINE: false makes the node
+// replica-only, true keeps the engine; anything else refuses startup.
+func applyEngineEnv(cfg *Config) error {
+	if cfg == nil {
+		panic("applyEngineEnv: cfg must not be nil")
+	}
+	val := os.Getenv("DAGNATS_ENGINE")
+	if val == "" {
+		return nil
+	}
+	engine, err := strconv.ParseBool(strings.TrimSpace(val))
+	if err != nil {
+		return fmt.Errorf("invalid DAGNATS_ENGINE %q: want true or false", val)
+	}
+	cfg.ReplicaOnly = !engine
+	return nil
 }
