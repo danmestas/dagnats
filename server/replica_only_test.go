@@ -39,6 +39,7 @@ func startReplicaCluster(t *testing.T) []*Server {
 		routes[i] = fmt.Sprintf("nats://127.0.0.1:%d", port)
 	}
 	servers := make([]*Server, len(ports))
+	errChs := make([]chan error, len(ports))
 	for i, port := range ports {
 		cfg := testConfig(t)
 		cfg.NATSClusterName = "replica-test"
@@ -49,17 +50,14 @@ func startReplicaCluster(t *testing.T) []*Server {
 		cfg.MaxStoreBytes = 512 << 20
 		cfg.ReplicaOnly = i == 2
 		servers[i] = New(cfg)
-		errCh := make(chan error, 1)
-		go func(srv *Server) { errCh <- srv.Run() }(servers[i])
-		t.Cleanup(func() {
-			servers[i].Stop()
-			select {
-			case <-errCh:
-			case <-time.After(30 * time.Second):
-				t.Errorf("n%d did not stop", i)
-			}
-		})
+		errChs[i] = make(chan error, 1)
+		go func(srv *Server, errCh chan error) { errCh <- srv.Run() }(servers[i], errChs[i])
 	}
+	// One cleanup stops all three together. Stopped one at a time, the
+	// last node shut down without JetStream quorum, its shutdown could
+	// pass shutdownDeadline, and Run returned while its NATS server still
+	// wrote the store t.TempDir was removing.
+	t.Cleanup(func() { stopReplicaCluster(t, servers, errChs) })
 	deadline := time.Now().Add(replicaClusterWait)
 	for _, srv := range servers {
 		for srv.NATSURL() == "" {
@@ -70,6 +68,25 @@ func startReplicaCluster(t *testing.T) []*Server {
 		}
 	}
 	return servers
+}
+
+// stopReplicaCluster stops every server at once and fails if any did
+// not shut down cleanly within the deadline.
+func stopReplicaCluster(t *testing.T, servers []*Server, errChs []chan error) {
+	t.Helper()
+	for _, srv := range servers {
+		srv.Stop()
+	}
+	for i, errCh := range errChs {
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Errorf("n%d shutdown: %v", i, err)
+			}
+		case <-time.After(shutdownDeadline + 5*time.Second):
+			t.Errorf("n%d did not stop", i)
+		}
+	}
 }
 
 func dialNode(t *testing.T, srv *Server) *nats.Conn {
