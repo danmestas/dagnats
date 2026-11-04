@@ -378,3 +378,40 @@ func TestHealthCluster_DiskStatusStandalone(t *testing.T) {
 		t.Errorf("standalone status=%d disk=%+v", status, body.Disk)
 	}
 }
+
+// TestHealthCluster_Region checks a node reports the region it was
+// configured with, in standalone and cluster mode, and that the key is
+// absent when no region is set (literal JSON key, not the decoded field).
+func TestHealthCluster_Region(t *testing.T) {
+	_, nc := natstest.StartServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	bare := NewClusterReporter(nc, nil, nil)
+	raw := clusterHealthJSON(t, bare)
+	if _, ok := raw["region"]; ok {
+		t.Errorf("region key present without a region: %v", raw)
+	}
+	for _, routes := range [][]string{nil, {"nats://a:6222", "nats://b:6222"}} {
+		reporter := NewClusterReporter(nc, routes, nil)
+		reporter.SetRegion("us")
+		raw = clusterHealthJSON(t, reporter)
+		if got, _ := raw["region"].(string); got != "us" {
+			t.Errorf("routes %v: region = %v, want \"us\" (body %v)", routes, raw["region"], raw)
+		}
+	}
+}
+
+// clusterHealthJSON serves one GET /health/cluster from reporter and
+// decodes the body into a generic map so tests can check literal keys.
+func clusterHealthJSON(t *testing.T, reporter *ClusterReporter) map[string]any {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/health/cluster", nil)
+	NewClusterHealthHandler(reporter).ServeHTTP(rec, req)
+	var raw map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode %q: %v", rec.Body.String(), err)
+	}
+	return raw
+}

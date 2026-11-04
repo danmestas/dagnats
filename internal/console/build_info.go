@@ -58,7 +58,9 @@ func consoleBuildLabel(build string) string {
 // fragment: known is the static list of streams natsutil provisions,
 // provisioned is the subset confirmed reachable via JetStream.
 type BuildInfo struct {
-	DagnatsBuild       string
+	DagnatsBuild string
+	// Region is cfg.Region; the header shows it when non-empty.
+	Region             string
 	NATSHost           string
 	NATSEmbedded       bool
 	StreamsProvisioned int
@@ -76,7 +78,7 @@ func buildBuildInfo(ctx context.Context, cfg Config) BuildInfo {
 	if ctx == nil {
 		panic("buildBuildInfo: ctx is nil")
 	}
-	info := BuildInfo{DagnatsBuild: consoleBuildLabel(cfg.Build)}
+	info := BuildInfo{DagnatsBuild: consoleBuildLabel(cfg.Build), Region: cfg.Region}
 	if cfg.Data == nil {
 		return info
 	}

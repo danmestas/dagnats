@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`region` (`DAGNATS_REGION`) names a regional cluster (ADR-031).** One key sets both `nats_cluster_name` and `jetstream_domain`, so a region's cluster name and JetStream domain cannot drift apart. Either key set explicitly to a different value fails config load with an error naming both. `/health/cluster` reports the answering node's `region`, and the console header shows it.
+
 ## [0.0.50] - 2026-11-04
 
 ### Added

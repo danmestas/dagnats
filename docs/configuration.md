@@ -29,6 +29,7 @@ DagNats uses a three-tier configuration system. Each tier overrides the previous
 | `nats_server_name`        | string   | `<cluster>-<hostname>-<cluster port>`              | `<cluster>-<hostname>-<cluster port>`    |
 | `nats_jetstream_replicas` | int      | `0` (auto-derive)                                  | `0` (auto-derive)                        |
 | `jetstream_domain`        | string   | (none)                                             | (none)                                   |
+| `region`                  | string   | (none)                                             | (none)                                   |
 | `monitor_port`            | int      | (none)                                             | (none)                                   |
 | `max_store_bytes`         | int64    | half of free disk, capped at 10 GiB                | half of free disk, capped at 10 GiB      |
 | `disk_free_min_bytes`     | int64    | `0` (10 GiB)                                       | `0` (10 GiB)                             |
@@ -84,6 +85,10 @@ jetstream_domain: e-mac
 
 `jetstream_domain` (string, default none) names this server's JetStream domain. A server linked to this one over a leaf connection reaches its JetStream as `$JS.<domain>.API` (for example `jetstream.NewWithDomain(nc, "e-mac")`), while that server's own `$JS.API` stays its own. Local clients, dagnats itself included, keep using plain `$JS.API`: a server with a domain answers both. Set it on a leaf node that runs its own JetStream, such as a laptop that works offline and is mirrored by a hub; leave it unset on the hub. The value must be one NATS subject token: no dots, spaces or wildcards (`*`, `>`), max 64 bytes. Non-ASCII letters are accepted, since they are legal in a NATS token. In embedded cluster mode the domain belongs to the whole cluster, so every node sets the same value.
 
+### Region
+
+`region` (string, default none; env `DAGNATS_REGION`) names a regional cluster ([ADR-031](architecture/adr-031-supercluster-regions.md)). It sets both `nats_cluster_name` and `jetstream_domain` to its value, so a region's cluster name and JetStream domain cannot disagree. Setting either key explicitly to the same value is allowed; setting it to a different value fails config load with an error naming both keys. The value follows `jetstream_domain`'s rules: one NATS subject token, max 64 bytes. `/health/cluster` reports it as `region`, and the console header shows it. Unset, the two keys keep their own values.
+
 ### Message size
 
 `max_payload` (int, bytes) sets the embedded NATS server's `max_payload`, the largest message a client may publish. Unset keeps the nats-server default of 1 MiB (1048576). Raise it when producers publish larger messages, for example `max_payload: 4194304` for 4 MiB. An explicit value must be between 1 and 8388608 (8 MiB); zero, negative or larger values fail config load, because nats-server warns above 8 MB and advises against going higher. Clients learn the limit from the server's INFO, so nothing else needs changing. In a cluster or leaf topology, set the same value on every node.
@@ -134,6 +139,7 @@ On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 | `DAGNATS_API_TOKEN_FILE` | `api_token_file` | File holding a bearer token every HTTP request must carry, except `/health`, `/health/cluster` and `/ready`. On the bridge's worker routes (`POST /v1/workers/connect` and `POST /v1/tasks/...`) a token the bridge accepts also passes: its `DAGNATS_BRIDGE_TOKEN` or a minted worker token. Unset: open. Neither login covers `monitor_port` or cluster routes (use `nats_cluster_auth_token`) |
 | `DAGNATS_NATS_SERVER_NAME` | `nats_server_name` | Stable server name; default derived from host |
 | `DAGNATS_JETSTREAM_DOMAIN` | `jetstream_domain` | JetStream domain a leaf hub addresses this server by; default none |
+| `DAGNATS_REGION` | `region` | Region name; defaults `nats_cluster_name` and `jetstream_domain`, and conflicts with either set to another value |
 | `DAGNATS_NATS_JETSTREAM_REPLICAS` | `nats_jetstream_replicas` | One of `{0,1,3,5}`; `0`=auto |
 | `DAGNATS_MONITOR_PORT`    | `monitor_port`    | NATS monitoring HTTP port        |
 | `DAGNATS_MAX_STORE_BYTES` | `max_store_bytes` | Must be a positive integer       |

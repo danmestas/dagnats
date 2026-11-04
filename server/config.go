@@ -143,6 +143,10 @@ type Config struct {
 	// linked over a leaf connection can address it as $JS.<domain>.API;
 	// local clients keep using plain $JS.API. "" means no domain.
 	JetStreamDomain string `json:"jetstream_domain"`
+	// Region names a regional cluster (ADR-031). Set, it is both
+	// NATSClusterName and JetStreamDomain; either set to another value is
+	// a load error. "" leaves both keys as configured.
+	Region string `json:"region"`
 	// PreferredLeaders names the servers (by server_name) that should
 	// lead replicated streams. JetStream elects any in-sync replica, so a
 	// node across a slow link can end up leading hot streams; the meta
@@ -407,6 +411,9 @@ func ConfigWithPath(
 		return Config{}, "", err
 	}
 	if err := applyLeafEnv(&cfg); err != nil {
+		return Config{}, "", err
+	}
+	if err := applyRegion(&cfg); err != nil {
 		return Config{}, "", err
 	}
 	if err := validateLoadedConfig(cfg); err != nil {
@@ -1151,6 +1158,8 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 		cfg.NATSServerName = val
 	case "jetstream_domain":
 		cfg.JetStreamDomain = val
+	case "region":
+		cfg.Region = val
 	case "nats_jetstream_replicas":
 		r, err := strconv.Atoi(val)
 		if err != nil {
@@ -1579,11 +1588,20 @@ const jetStreamDomainMaxLength = 64
 // would split $JS.<domain>.API into extra tokens and a wildcard would match
 // other domains' APIs.
 func validateJetStreamDomain(domain string) error {
-	if len(domain) > jetStreamDomainMaxLength {
-		return fmt.Errorf("jetstream_domain is %d bytes; max %d",
-			len(domain), jetStreamDomainMaxLength)
+	return validateSubjectToken("jetstream_domain", domain)
+}
+
+// validateSubjectToken accepts "" or a single NATS subject token of at most
+// jetStreamDomainMaxLength bytes; key names the setting in the error.
+func validateSubjectToken(key, value string) error {
+	if key == "" {
+		panic("validateSubjectToken: key is empty")
 	}
-	for _, r := range domain {
+	if len(value) > jetStreamDomainMaxLength {
+		return fmt.Errorf("%s is %d bytes; max %d",
+			key, len(value), jetStreamDomainMaxLength)
+	}
+	for _, r := range value {
 		reason := ""
 		switch {
 		case r == '.':
@@ -1594,8 +1612,8 @@ func validateJetStreamDomain(domain string) error {
 			reason = "contains whitespace or a control character"
 		}
 		if reason != "" {
-			return fmt.Errorf("jetstream_domain must be one NATS token; %q %s",
-				domain, reason)
+			return fmt.Errorf("%s must be one NATS token; %q %s",
+				key, value, reason)
 		}
 	}
 	return nil
