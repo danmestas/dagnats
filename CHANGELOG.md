@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.48] - 2026-11-04
+
 ### Changed
 
+- **The embedded NATS server is 2.15.2 and the client nats.go 1.55.0.** nats-server 2.15.2 carries security fixes: OCSP responses are bound to the certificate serial, leafnode ACLs no longer implicitly allow `$MQTT.>`, and recovered stream snapshots bound their subject lengths and counts. nats.go 1.55 stops a micro service on async errors only for its own subscriptions, and no longer closes a connection for good after a partial write. Also golang.org/x/net 0.62.0, and mcp-go 1.4.0 in `dagnats-mcp-duckdb`.
 - **A worker with many task types starts much faster over a slow link.** `Worker.Start` set up each task type's consumers one at a time, and each type cost about seven sequential JetStream round trips: two lookups and two full consumer listings of `TASK_QUEUES` for orphan cleanup and the collision check, its consumer create, then a `STICKY_TASKS` lookup and the sticky consumer create. A program with 16 task types reaching a stream leader 160 ms or more away spent about 30 seconds there. Start now lists `TASK_QUEUES` once for every type's cleanup and collision check (still in task-type order, before any create) and looks up `STICKY_TASKS` once, then creates the types' consumers up to 8 at a time. As before, no type is started after one fails, the first failing type in task-type order leads the error, and an assertion in a type's setup panics on `Start`'s goroutine. The consumers created are unchanged.
 
 ## [0.0.47] - 2026-11-01
