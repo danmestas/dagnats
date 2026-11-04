@@ -133,7 +133,7 @@ type Config struct {
     // public interfaces.
     NATSClusterHost string `json:"nats_cluster_host"`
     // NATSHost is the client listener's bind address; "" means 127.0.0.1,
-    // or 0.0.0.0 in leaf mode. Set 127.0.0.1 to keep a leaf node's clients
+    // or 0.0.0.0 on a standalone leaf. Set 127.0.0.1 to keep a leaf node's clients
     // on this machine: leaf connections are outbound and need no listener.
     NATSHost string `json:"nats_host"`
     // NATSUser and NATSPasswordFile, set together, require a login on the

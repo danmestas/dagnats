@@ -461,16 +461,21 @@ func TestNATSBindHost(t *testing.T) {
 		host    string
 		remotes []string
 		want    string
+		routes  []string
 	}{
-		{"standalone stays on loopback", "", nil, "127.0.0.1"},
-		{"leaf mode listens everywhere by default", "", leaf, "0.0.0.0"},
-		{"nats_host keeps a leaf on loopback", "127.0.0.1", leaf, "127.0.0.1"},
-		{"nats_host picks a private address", "100.64.0.9", nil, "100.64.0.9"},
+		{"standalone stays on loopback", "", nil, "127.0.0.1", nil},
+		{"leaf mode listens everywhere by default", "", leaf, "0.0.0.0", nil},
+		{"nats_host keeps a leaf on loopback", "127.0.0.1", leaf, "127.0.0.1", nil},
+		{"nats_host picks a private address", "100.64.0.9", nil, "100.64.0.9", nil},
+		// A cluster node linking regions keeps its clients on loopback.
+		{"clustered leaf stays on loopback", "", leaf, "127.0.0.1",
+			[]string{"nats://a:6222", "nats://b:6222"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			cfg := DefaultConfig()
 			cfg.NATSHost, cfg.LeafRemotes = c.host, c.remotes
+			cfg.NATSClusterRoutes = c.routes
 			if got := natsBindHost(cfg); got != c.want {
 				t.Errorf("natsBindHost = %q, want %q", got, c.want)
 			}
@@ -580,13 +585,22 @@ func TestValidateClusterConfig(t *testing.T) {
 			wantPanic: "nats_cluster_routes",
 		},
 		{
-			name: "leaf and cluster mutually exclusive",
+			name: "clustered leaf needs a jetstream domain",
 			mut: func(c *Config) {
 				c.NATSClusterName = "x"
 				c.NATSClusterRoutes = []string{"nats://a:6222", "nats://b:6222"}
 				c.LeafRemotes = []string{"nats://hub:7422"}
 			},
-			wantPanic: "leaf_remotes",
+			wantPanic: "jetstream_domain",
+		},
+		{
+			name: "clustered leaf with a jetstream domain accepted",
+			mut: func(c *Config) {
+				c.NATSClusterName = "us"
+				c.JetStreamDomain = "us"
+				c.NATSClusterRoutes = []string{"nats://a:6222", "nats://b:6222"}
+				c.LeafRemotes = []string{"nats-leaf://eu:7422"}
+			},
 		},
 		{
 			name: "cluster host must be an IP",

@@ -180,8 +180,8 @@ func configureLeafNode(opts *natsserver.Options, cfg Config) error {
 }
 
 // configureCluster wires cfg.NATSClusterRoutes into opts.Cluster/Routes.
-// Cluster mode is mutually exclusive with leaf mode; config validation
-// panics if both are set. Routes lives on Options (not ClusterOpts) in
+// A clustered node may also hold leaf remotes when it has a JetStream
+// domain (ADR-031); configureLeafNode wires them. Routes lives on Options (not ClusterOpts) in
 // nats-server v2. Cluster authorization rejects token-based auth, so the
 // auth token is wired into Cluster.Username (single shared secret;
 // Password left empty). Extracted from startNATS to keep it under the
@@ -389,12 +389,14 @@ func clusterServerName(cfg Config, clusterPort int) string {
 }
 
 // natsBindHost is the client listener's address: cfg.NATSHost when set,
-// else 0.0.0.0 in leaf mode for remote access, else loopback.
+// else 0.0.0.0 on a standalone leaf for remote access, else loopback.
 func natsBindHost(cfg Config) string {
 	if cfg.NATSHost != "" {
 		return cfg.NATSHost
 	}
-	if len(cfg.LeafRemotes) > 0 {
+	// A standalone leaf serves remote clients; a cluster node linking
+	// regions keeps the cluster's loopback default.
+	if len(cfg.LeafRemotes) > 0 && len(cfg.NATSClusterRoutes) == 0 {
 		return "0.0.0.0"
 	}
 	return "127.0.0.1"
