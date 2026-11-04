@@ -103,8 +103,11 @@ type Config struct {
 	AuthMode AuthMode
 	Password string
 	Build    string
-	Logger   *slog.Logger
-	Data     DataSource
+	// Region is the node's region (ADR-031), shown in the header; ""
+	// shows nothing.
+	Region string
+	Logger *slog.Logger
+	Data   DataSource
 	// HeartbeatInterval, when zero, defaults to 5 * time.Second. Tests
 	// override this so the lifecycle assertions complete quickly.
 	HeartbeatInterval time.Duration

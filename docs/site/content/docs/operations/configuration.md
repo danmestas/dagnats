@@ -37,6 +37,7 @@ Zero-config starts everything on defaults. Environment variables always win.
 | `nats_jetstream_replicas` | int | `0` (auto-derive) | `0` (auto-derive) |
 | `preferred_leaders` | []string | (none: off) | (none: off) |
 | `jetstream_domain` | string | (none) | (none) |
+| `region` | string | (none) | (none) |
 | `monitor_port` | int | (none) | (none) |
 | `max_store_bytes` | int64 | half of free disk, capped at 10 GiB | half of free disk, capped at 10 GiB |
 | `max_memory_bytes` | int64 | `1073741824` (1 GiB) | `1073741824` (1 GiB) |
@@ -54,6 +55,8 @@ Zero-config starts everything on defaults. Environment variables always win.
 `leaf_port` (default `0`, off) opens a leafnode listener other servers dial with a `nats-leaf://` remote. `leaf_host` is its bind IP, `127.0.0.1` when unset; name a private or tailnet IP for a hub that leaves dial over the network. `leaf_listen_user` and `leaf_listen_password_file` are the login a leaf must present, and both are required whenever `leaf_port` is set, on loopback too: a linked leaf shares every subject and stream. The listener works in embedded cluster mode. On the dialing side, `leaf_user` and `leaf_password_file` log in to every leaf remote whose URL has no login of its own, with a plain user and password instead of the operator-mode creds file `leaf_credentials` takes; they are set together and exclude `leaf_credentials`. Password files are read at start, like `nats_password_file`. A leaf binds its client port to all interfaces unless `nats_host` is set, and a client there shares every subject of the hub, so on a laptop set `nats_host: 127.0.0.1` or `nats_user`; dagnats warns at start when neither is set, and when `leaf_host` is `0.0.0.0` or `::`, since the leaf login travels without TLS. A linked leaf has the hub's whole account, not only the streams it mirrors.
 
 `jetstream_domain` names this server's JetStream domain, so a server linked to it over a leaf connection can reach its JetStream as `$JS.<domain>.API` (`jetstream.NewWithDomain(nc, "e-mac")`) while keeping its own `$JS.API`. Local clients, dagnats included, keep using plain `$JS.API`. Set it on a leaf node that runs its own JetStream, such as a laptop that works offline; leave it unset on the hub. The value must be one NATS subject token: no dots, spaces or wildcards, max 64 bytes. Non-ASCII letters are accepted, since they are legal in a NATS token. In embedded cluster mode the domain belongs to the whole cluster, so every node sets the same value.
+
+`region` (`DAGNATS_REGION`) names a regional cluster. It sets both `nats_cluster_name` and `jetstream_domain` to its value, so the two cannot disagree; setting either explicitly to a different value fails config load. It follows `jetstream_domain`'s token rules. `/health/cluster` reports it as `region`, and the console header shows it.
 
 On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 
@@ -97,6 +100,7 @@ Each move is logged at INFO and each failure at WARN. Empty, the default, leaves
 | `DAGNATS_NATS_SERVER_NAME` | `nats_server_name` | Stable server name; default derived from host |
 | `DAGNATS_PREFERRED_LEADERS` | `preferred_leaders` | Comma-separated server names that should lead replicated streams; default none (off) |
 | `DAGNATS_JETSTREAM_DOMAIN` | `jetstream_domain` | JetStream domain a leaf hub addresses this server by; default none |
+| `DAGNATS_REGION` | `region` | Region name; defaults `nats_cluster_name` and `jetstream_domain` |
 | `DAGNATS_NATS_JETSTREAM_REPLICAS` | `nats_jetstream_replicas` | One of `{0,1,3,5}`; `0` = auto |
 | `DAGNATS_NATS_WS_PORT` | `nats_ws_port` | Browser WebSocket listener; `0` disables |
 | `DAGNATS_NATS_WS_NO_TLS` | `nats_ws_no_tls` | Required with `nats_ws_port` until NATS TLS is wired |

@@ -105,6 +105,10 @@
         </nav>
       </details>
       <div class="console-header-utils">
+        {{with .BuildInfo.Region}}
+        <span class="console-mode-pill console-region-pill" role="status"
+              title="This node's region: its cluster name and JetStream domain">Region {{.}}</span>
+        {{end}}
         {{if .ReadOnly}}
         <span class="console-mode-pill" role="status"
               title="Mutations are disabled (CONSOLE_READ_ONLY is set on the server)">

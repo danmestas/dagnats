@@ -60,7 +60,10 @@ type clusterJetStreamInfo struct {
 // Empty pointer/zero fields are omitted from the response so standalone
 // payloads stay minimal.
 type clusterHealthResponse struct {
-	Mode           string `json:"mode"`
+	Mode string `json:"mode"`
+	// Region is the answering node's region (ADR-031); omitted when the
+	// node has none.
+	Region         string `json:"region,omitempty"`
 	ExpectedPeers  int    `json:"expected_peers,omitempty"`
 	ConnectedPeers int    `json:"connected_peers,omitempty"`
 	Leader         string `json:"leader,omitempty"`
@@ -126,6 +129,7 @@ type ClusterReporter struct {
 	routes  []string
 	members ClusterMembershipFunc
 	disk    DiskStatusFunc
+	region  string
 }
 
 // NewClusterReporter returns a reporter. routes is the configured
@@ -147,6 +151,18 @@ func (r *ClusterReporter) SetDiskStatus(fn DiskStatusFunc) {
 		panic("ClusterReporter.SetDiskStatus: r and fn must not be nil")
 	}
 	r.disk = fn
+}
+
+// SetRegion attaches the node's region to the report. Call it before the
+// reporter serves requests.
+func (r *ClusterReporter) SetRegion(region string) {
+	if r == nil {
+		panic("ClusterReporter.SetRegion: r must not be nil")
+	}
+	if region == "" {
+		panic("ClusterReporter.SetRegion: region must not be empty")
+	}
+	r.region = region
 }
 
 // NewClusterHealthHandler returns an http.Handler serving GET
@@ -180,12 +196,13 @@ func (r *ClusterReporter) report(
 		panic("ClusterReporter.report: parent must not be nil")
 	}
 	if len(r.routes) == 0 {
-		resp := clusterHealthResponse{Mode: "standalone", OK: true}
+		resp := clusterHealthResponse{Mode: "standalone", Region: r.region, OK: true}
 		r.applyDisk(&resp)
 		return resp, http.StatusOK
 	}
 	resp := clusterHealthResponse{
 		Mode:           "cluster",
+		Region:         r.region,
 		ExpectedPeers:  len(r.routes),
 		ConnectedPeers: len(r.routes),
 		OK:             true,

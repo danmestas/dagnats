@@ -58,7 +58,7 @@ func TestProductionMountReceivesNonNilMetricsSource(t *testing.T) {
 	consoleCfg := buildConsoleConfig(
 		httpAddr, srv.svc, srv.nc,
 		srv.metricsAgg, srv.metricsErrorReason, srv.ns,
-		"v9.9.9-test",
+		"v9.9.9-test", "us",
 	)
 	if consoleCfg.Metrics == nil {
 		t.Fatal("buildConsoleConfig returned nil Metrics — the " +
@@ -72,14 +72,18 @@ func TestProductionMountReceivesNonNilMetricsSource(t *testing.T) {
 		t.Fatalf("buildConsoleConfig dropped Build: got %q, want %q",
 			consoleCfg.Build, "v9.9.9-test")
 	}
+	if consoleCfg.Region != "us" {
+		t.Fatalf("buildConsoleConfig dropped Region: got %q, want us",
+			consoleCfg.Region)
+	}
 	// Negative space: an empty build threads through as empty so the
 	// console-side consoleBuildLabel degrades it to the honest "dev".
 	emptyCfg := buildConsoleConfig(
 		httpAddr, srv.svc, srv.nc,
 		srv.metricsAgg, srv.metricsErrorReason, srv.ns,
-		"",
+		"", "",
 	)
-	if emptyCfg.Build != "" {
+	if emptyCfg.Build != "" || emptyCfg.Region != "" {
 		t.Fatalf("empty build must thread through verbatim: got %q",
 			emptyCfg.Build)
 	}
