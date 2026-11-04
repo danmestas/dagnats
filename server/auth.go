@@ -25,7 +25,16 @@ const (
 	// joinUser is anonymous in required mode: it may only ask to
 	// register a program and read the reply.
 	joinUser = "_dagnats_join"
+	// systemUser is in the system account, which owns the JetStream meta
+	// group's API ($JS.API.META.>). Only dagnats itself dials it, in
+	// process, to move the meta leader (preferred_leaders); it is never
+	// the NoAuthUser.
+	systemUser = "_dagnats_system"
 )
+
+// systemAccountName is nats-server's default system account, declared
+// so systemUser can be placed in it.
+const systemAccountName = "$SYS"
 
 // applyAuth sets opts' client authorization at start: the operator's
 // nats_user login (unrestricted) when configured, and the built-in
@@ -54,6 +63,25 @@ func applyAuth(opts *natsserver.Options, login, password string) {
 	}
 	opts.NoAuthUser = anonymous.Username
 	opts.Nkeys = programUsers(nil)
+	system := natsserver.NewAccount(systemAccountName)
+	opts.Accounts = append(opts.Accounts, system)
+	opts.SystemAccount = systemAccountName
+	opts.Users = append(opts.Users, &natsserver.User{
+		Username: systemUser, Password: randomPassword(), Account: system,
+	})
+}
+
+// systemPassword is systemUser's password in opts, set by applyAuth.
+func systemPassword(opts *natsserver.Options) string {
+	if opts == nil {
+		panic("systemPassword: opts must not be nil")
+	}
+	for _, user := range opts.Users {
+		if user.Username == systemUser {
+			return user.Password
+		}
+	}
+	panic("systemPassword: applyAuth did not add the system user")
 }
 
 // placeholderNkey is a user key whose seed was discarded at birth, so

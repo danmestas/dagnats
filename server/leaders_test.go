@@ -26,6 +26,12 @@ func TestServer_LeaderRebalancerOnlyWithPreferredLeaders(t *testing.T) {
 	if srv.leaderRebalanceStop == nil {
 		t.Fatal("rebalancer not started with preferred_leaders set")
 	}
+	// The meta leader is moved through the in-process system user.
+	system := srv.dialSystem()
+	if system == nil {
+		t.Fatal("the system user did not connect in process")
+	}
+	system.Close()
 	srv.Stop()
 	select {
 	case err := <-errCh:
