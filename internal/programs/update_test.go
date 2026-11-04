@@ -603,3 +603,34 @@ func TestUpdate_RefusedWideningRefundsItsUse(t *testing.T) {
 		t.Fatalf("UsesLeft = %d, want 1: a refused widening refunds its use", got)
 	}
 }
+
+// TestUpdate_NewDiscoversNeedsAJoinKeyForTheProgram (#931): adding a
+// micro service to Discovers widens like a protocol or a read, so it
+// needs a join key, but one covering only the program: discovery reads
+// service metadata, and service names are not program names.
+func TestUpdate_NewDiscoversNeedsAJoinKeyForTheProgram(t *testing.T) {
+	f := newFixture(t, Config{})
+	_, plaintext := f.createKey(t, joinkey.Spec{Label: "k", UsesMax: 1})
+	req := request(t, "notify", plaintext)
+	f.mustRegister(t, req)
+	changed := req
+	changed.JoinKey = ""
+	changed.Manifest = cloneManifest(req.Manifest)
+	changed.Manifest.Discovers = []string{"agents"}
+	_, err := f.register(t, changed)
+	// Negative: no key, refused, naming the service.
+	wantRefusedNaming(t, err, "agents")
+	if got := f.record(t, "notify").Manifest.Discovers; len(got) != 0 {
+		t.Fatalf("refused discovers stored: %v", got)
+	}
+	own, ownPlain := f.createKey(t, joinkey.Spec{Label: "own", NameGlob: "notify*", UsesMax: 2})
+	changed.JoinKey = ownPlain
+	f.mustRegister(t, changed)
+	// Positive: a key for the program alone admits it and spends a use.
+	if got := f.record(t, "notify").Manifest.Discovers; !slices.Equal(got, []string{"agents"}) {
+		t.Fatalf("stored discovers = %v, want [agents]", got)
+	}
+	if got := f.usesLeft(t, own.ID); got != 1 {
+		t.Fatalf("UsesLeft = %d, want 1", got)
+	}
+}
