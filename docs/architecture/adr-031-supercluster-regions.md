@@ -10,9 +10,13 @@ ADR-030 made a cluster one region and named a second regional cluster as
 the way to give a far site its own engine and quorum. This ADR designs
 that for `dagnats-mesh`:
 
-- **Region `eu`:** the existing cluster. `mesh-vps` and `mesh-eu` on
-  Hetzner, plus a third Hetzner node to be added, which replaces
-  `mesh-mini` as an EU voter.
+- **Region `eu`:** the existing cluster. `mesh-vps` and `mesh-eu`, two
+  Hetzner hosts in Germany 1.3 ms apart, plus a new Hetzner server in
+  Helsinki, which replaces `mesh-mini` as the third EU voter. Its round
+  trip to the German pair is estimated at 20 to 30 ms, to be measured
+  once it is up. That is inside ADR-030's bound of about 100 ms, though
+  above the single-digit milliseconds ADR-030's migration hoped for; the
+  leader placement below keeps it off the commit path.
 - **Region `us`:** a new three-node cluster on the owner's machines over
   LAN and Tailscale. `mesh-mini` (Mac mini), the iMac (x86_64, macOS 13)
   and the owner's MacBook Pro (M4).
@@ -119,7 +123,7 @@ Per region, the existing keys:
 | `jetstream_domain` | `eu` | `us` |
 | `nats_cluster_routes` | the other EU nodes | the other US nodes |
 | `nats_cluster_host` | tailnet IP | tailnet or LAN IP |
-| `preferred_leaders` | the three EU server names | `mesh-mini`, the iMac |
+| `preferred_leaders` | `mesh-vps`, `mesh-eu` | `mesh-mini`, the iMac |
 | `leaf_port`, `leaf_host`, `leaf_listen_user`, `leaf_listen_password_file` | set (#866) | unset |
 | `leaf_remotes`, `leaf_user`, `leaf_password_file` | unset | the EU leaf listeners |
 
@@ -143,6 +147,13 @@ New configuration:
   each hold a leaf remote. The check is relaxed to allow both when
   `jetstream_domain` is set and differs from the remote's, which
   nats-server reports when the link comes up.
+
+**EU leaders stay on the German pair.** Helsinki is a voter and holds a
+replica of every R3 stream, but it is not in `preferred_leaders`, so the
+rebalancer keeps stream leaders and the meta leader on `mesh-vps` and
+`mesh-eu`. An R3 commit needs the leader plus one follower, and the other
+German node acknowledges in about 1.3 ms, so Helsinki's round trip does
+not sit on the commit path while both German nodes are up.
 
 `preferred_leaders` keeps working per region: the rebalancer acts only
 while its node leads its own domain's meta group (`server/leaders.go:17-40`),
@@ -209,6 +220,17 @@ across regions, which is the meta problem again.
 - **Regions partitioned.** Both keep working. Each has its own meta
   group, stream quorums and engine. The leaf link reconnects when the
   network returns. Only cross-domain requests fail, with a timeout.
+- **Helsinki down or slow.** EU keeps quorum on the German pair, and
+  commits are unaffected because Helsinki is never the deciding ack while
+  both German nodes are up. Its replicas catch up when it returns.
+- **One German node down.** EU keeps quorum with the other German node
+  and Helsinki. Commits then need Helsinki's acknowledgement, so EU write
+  latency rises to roughly its round trip (estimated 20 to 30 ms). Leaders
+  the lost node held re-elect onto the surviving German node, a 4 to 9 s
+  pause (`server/raft.go:317-323`). If the election lands a leader on
+  Helsinki, the rebalancer moves it back once a German node is available.
+- **Both German nodes down.** EU loses quorum; Helsinki alone cannot
+  commit. US is unaffected.
 - **MacBook asleep.** US keeps two of three voters, so stream and meta
   quorums hold. Streams the MacBook led re-elect, a 4 to 9 s pause
   (`server/raft.go:317-323`); `preferred_leaders` naming only the mini and
@@ -239,18 +261,21 @@ Mitigations for the MacBook, in order:
 Today `mesh-mini` is the third EU voter, with `preferred_leaders` set and
 `engine: false` replica-only being built (ADR-030 interim).
 
-1. **Add the third Hetzner node to EU.** Join it to `nats_cluster_routes`
-   on all EU nodes, rolling restart, let R3 streams replicate to it, and
-   add it to `preferred_leaders`. EU now has four voters, the mini
-   included.
+1. **Add the Helsinki node to EU.** Measure its round trip to
+   `mesh-vps` and `mesh-eu` first and confirm it is well under 100 ms
+   (the estimate is 20 to 30 ms). Join it to `nats_cluster_routes` on all
+   EU nodes, rolling restart, and let R3 streams replicate to it. Set
+   `preferred_leaders` on every EU node to `mesh-vps` and `mesh-eu` only,
+   and leave Helsinki out. EU now has four voters, the mini included.
 2. **Pause notify's EU triggers.** Notify runs on the mini against its
    local EU node. Disable its triggers and schedules in EU and let its
    in-flight runs finish (or cancel them). From here notify is not taking
    new work.
 3. **Remove the mini from EU.** Drop it from every EU node's routes,
    rolling restart, and remove its peer from the EU meta group. EU is back
-   to three voters, all in Germany. Stop `dagnats serve` on the mini and
-   move its data directory aside; its EU replicas are not reused.
+   to three voters: the German pair and Helsinki. Stop `dagnats serve` on
+   the mini and move its data directory aside; its EU replicas are not
+   reused.
 4. **Stand up US.** The mini, iMac and MacBook with `region: us` (or
    `nats_cluster_name` and `jetstream_domain` set to `us` until `region`
    ships), routes to each other, `preferred_leaders` the mini and the
