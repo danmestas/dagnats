@@ -139,6 +139,9 @@ func (r *LeaderRebalancer) Tick(ctx context.Context, meta MetaState) ([]LeaderMo
 	now := time.Now()
 	r.forgetCooledDown(now)
 	if move, ok := r.planMetaMove(meta, now); ok {
+		// Stamped before the attempt on purpose: a refused or failed
+		// step-down waits out the cooldown too, so a meta leader that
+		// cannot move is not asked again every tick.
 		r.metaMovedAt = now
 		if err := r.stepDownMeta(ctx, move); err != nil {
 			slog.Warn("natsutil: meta leader not moved", "from", move.From, "to", move.To,

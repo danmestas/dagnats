@@ -11,6 +11,7 @@ import (
 
 	"github.com/danmestas/dagnats/internal/programs"
 	"github.com/danmestas/dagnats/program"
+	"github.com/nats-io/jwt/v2"
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nkeys"
 )
@@ -66,8 +67,12 @@ func applyAuth(opts *natsserver.Options, login, password string) {
 	system := natsserver.NewAccount(systemAccountName)
 	opts.Accounts = append(opts.Accounts, system)
 	opts.SystemAccount = systemAccountName
+	// The system user may only connect in process: its password is never
+	// handed out, but a login over the client or WebSocket listener would
+	// reach $SYS (server kicks and reloads) if it ever leaked.
 	opts.Users = append(opts.Users, &natsserver.User{
 		Username: systemUser, Password: randomPassword(), Account: system,
+		AllowedConnectionTypes: map[string]struct{}{jwt.ConnectionTypeInProcess: {}},
 	})
 }
 
