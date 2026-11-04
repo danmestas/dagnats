@@ -313,20 +313,10 @@ max_store_bytes: 53687091200
 
 ### Watching free disk
 
-A full disk wedges the embedded JetStream until restart, and its own errors
-(`context deadline exceeded`, `jetstream meta group not available`) do not
-say why. Production checklist: keep the filesystem under `data_dir` above
-the warning threshold, and alert on the log line or on `disk.low` in
-`/health/cluster`.
-
-dagnats probes that filesystem at startup and every 60 seconds. It is low
-when free space is under `max(disk_free_min_bytes, 2 x max_store_bytes)`
-(`disk_free_min_bytes` defaults to 10 GiB). On entering the low state it
-logs an `ERROR` naming the path, free bytes and threshold, repeats it at
-most every 10 minutes, and logs `INFO` on recovery. `/health/cluster` adds
-`"disk": {"free_bytes", "threshold_bytes", "low"}` for the answering node;
-when low, `jetstream.degraded` also lists `disk` and the status stays `200`,
-like other degraded-but-serving states.
+dagnats logs an `ERROR` when free space under `data_dir` falls below
+`max(disk_free_min_bytes, 2 x max_store_bytes)` and reports `disk` in
+`/health/cluster`. See the Low-Disk Warning section of the production
+checklist for the details.
 
 ### Backup and Restore
 
