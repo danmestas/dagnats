@@ -143,6 +143,12 @@ type Config struct {
 	// linked over a leaf connection can address it as $JS.<domain>.API;
 	// local clients keep using plain $JS.API. "" means no domain.
 	JetStreamDomain string `json:"jetstream_domain"`
+	// PreferredLeaders names the servers (by server_name) that should
+	// lead replicated streams. JetStream elects any in-sync replica, so a
+	// node across a slow link can end up leading hot streams; the meta
+	// leader moves them back (natsutil.LeaderRebalancer). Empty, the
+	// default, leaves leaders where JetStream puts them.
+	PreferredLeaders []string `json:"preferred_leaders"`
 
 	MonitorPort   int   `json:"monitor_port"`
 	MaxStoreBytes int64 `json:"max_store_bytes"`
@@ -584,6 +590,9 @@ func applyEnvOverrides(cfg *Config) {
 			routes = routes[:maxClusterRoutes]
 		}
 		cfg.NATSClusterRoutes = routes
+	}
+	if val := os.Getenv("DAGNATS_PREFERRED_LEADERS"); val != "" {
+		cfg.PreferredLeaders = serverNameList(val)
 	}
 	if val := os.Getenv("DAGNATS_NATS_CLUSTER_PORT"); val != "" {
 		if port, err := strconv.Atoi(val); err == nil {
@@ -1086,6 +1095,8 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 			routes = routes[:maxClusterRoutes]
 		}
 		cfg.NATSClusterRoutes = routes
+	case "preferred_leaders":
+		cfg.PreferredLeaders = serverNameList(val)
 	case "nats_cluster_port":
 		port, err := strconv.Atoi(val)
 		if err != nil {
@@ -1545,4 +1556,23 @@ func validateJetStreamDomain(domain string) error {
 		}
 	}
 	return nil
+}
+
+// preferredLeadersMax bounds the preferred_leaders list; a cluster has a
+// handful of servers.
+const preferredLeadersMax = 16
+
+// serverNameList splits a comma list of server names, trimming each and
+// dropping empty ones, up to preferredLeadersMax.
+func serverNameList(val string) []string {
+	var names []string
+	for _, name := range strings.Split(val, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			names = append(names, name)
+		}
+		if len(names) == preferredLeadersMax {
+			break
+		}
+	}
+	return names
 }

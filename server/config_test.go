@@ -873,3 +873,27 @@ func TestRuntimeBounds_DefaultConstsMatchAPILayer(t *testing.T) {
 			api.DefaultMaxRegistersPerMinutePerRoot)
 	}
 }
+
+// TestPreferredLeaders: the env var and the config key both read a comma
+// list of server names, trimmed, with empty entries dropped; unset is
+// empty, which leaves the leader rebalancer off.
+func TestPreferredLeaders(t *testing.T) {
+	// Negative: off by default.
+	if got := DefaultConfig().PreferredLeaders; len(got) != 0 {
+		t.Fatalf("default PreferredLeaders = %v, want none", got)
+	}
+	t.Setenv("DAGNATS_PREFERRED_LEADERS", " eu-1, ,eu-2 ")
+	cfg := DefaultConfig()
+	applyEnvOverrides(&cfg)
+	// Positive: the env list, cleaned.
+	if got := cfg.PreferredLeaders; len(got) != 2 || got[0] != "eu-1" || got[1] != "eu-2" {
+		t.Fatalf("env PreferredLeaders = %q, want [eu-1 eu-2]", got)
+	}
+	fromFile := DefaultConfig()
+	if err := applyConfigValue("preferred_leaders", "eu-2,eu-3", 1, &fromFile); err != nil {
+		t.Fatalf("applyConfigValue: %v", err)
+	}
+	if got := fromFile.PreferredLeaders; len(got) != 2 || got[1] != "eu-3" {
+		t.Fatalf("file PreferredLeaders = %q, want [eu-2 eu-3]", got)
+	}
+}

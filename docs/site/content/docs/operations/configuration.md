@@ -35,6 +35,7 @@ Zero-config starts everything on defaults. Environment variables always win.
 | `nats_cluster_host` | string | `0.0.0.0` | `0.0.0.0` |
 | `nats_server_name` | string | `<cluster>-<hostname>-<cluster port>` | `<cluster>-<hostname>-<cluster port>` |
 | `nats_jetstream_replicas` | int | `0` (auto-derive) | `0` (auto-derive) |
+| `preferred_leaders` | []string | (none: off) | (none: off) |
 | `jetstream_domain` | string | (none) | (none) |
 | `monitor_port` | int | (none) | (none) |
 | `max_store_bytes` | int64 | half of free disk, capped at 10 GiB | half of free disk, capped at 10 GiB |
@@ -57,6 +58,8 @@ Zero-config starts everything on defaults. Environment variables always win.
 On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 
 The `nats_cluster_*`, `nats_server_name` and `nats_jetstream_replicas` keys are explained on the [Clustering]({{< ref "/docs/operations/clustering" >}}) page. `nats_cluster_routes` needs 2 to 10 entries, and `nats_cluster_name` is required whenever routes are set.
+
+`preferred_leaders` lists server names (`nats_server_name`) that should lead replicated streams. JetStream elects any in-sync replica, so after restarts and elections a stream's leader can land on any node, and every write to that stream goes through its leader. Set it when one node is far from the others, for example a laptop 160-700 ms from two cloud nodes that are 1 ms apart. Every write to a stream that node leads would cross the slow link. The node that is the JetStream meta leader checks 15 seconds after start and then every minute: a stream with more than one replica, whose leader is not preferred and which has an in-sync preferred replica, has its leader step down in favour of that replica. It moves at most 4 streams per check, rotates over the preferred servers, and leaves a moved stream alone for 5 minutes so nothing flaps. R1 streams are never touched. Each move is logged at INFO. Empty, the default, leaves leaders where JetStream elects them.
 
 ## Environment Variables
 
@@ -88,6 +91,7 @@ The `nats_cluster_*`, `nats_server_name` and `nats_jetstream_replicas` keys are 
 | `DAGNATS_NATS_PASSWORD_FILE` | `nats_password_file` | File holding that user's password (chmod 600) |
 | `DAGNATS_API_TOKEN_FILE` | `api_token_file` | File holding a bearer token every HTTP request must carry, except `/health`, `/health/cluster` and `/ready`. On the bridge's worker routes a token the bridge accepts also passes. Unset: open. Neither login covers `monitor_port` or cluster routes (use `nats_cluster_auth_token`) |
 | `DAGNATS_NATS_SERVER_NAME` | `nats_server_name` | Stable server name; default derived from host |
+| `DAGNATS_PREFERRED_LEADERS` | `preferred_leaders` | Comma-separated server names that should lead replicated streams; default none (off) |
 | `DAGNATS_JETSTREAM_DOMAIN` | `jetstream_domain` | JetStream domain a leaf hub addresses this server by; default none |
 | `DAGNATS_NATS_JETSTREAM_REPLICAS` | `nats_jetstream_replicas` | One of `{0,1,3,5}`; `0` = auto |
 | `DAGNATS_NATS_WS_PORT` | `nats_ws_port` | Browser WebSocket listener; `0` disables |

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`preferred_leaders` (`DAGNATS_PREFERRED_LEADERS`) keeps replicated streams' leaders on the servers you name.** JetStream elects any in-sync replica, so on a cluster with one node across a slow link, stream leaders drift onto it after restarts and elections, and every write to those streams then crosses the link. On a 3-node mesh with a laptop 160-700 ms from two cloud nodes, that took an agent's turns from 2.5 s to 8-10 s. With the list set, the node that is the JetStream meta leader checks 15 s after start and then every minute. It asks a drifted stream's leader to step down in favour of an in-sync preferred replica (`$JS.API.STREAM.LEADER.STEPDOWN` with a preferred placement), at most 4 streams per check, rotating over the preferred servers, and leaves each moved stream alone for 5 minutes. R1 streams are never touched. Empty, the default, is off.
+
 ## [0.0.48] - 2026-11-04
 
 ### Changed
