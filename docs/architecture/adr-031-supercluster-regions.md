@@ -12,7 +12,8 @@ that for `dagnats-mesh`:
 
 - **Region `eu`:** the existing cluster. `mesh-vps` and `mesh-eu`, two
   Hetzner hosts in Germany 1.3 ms apart, plus a new Hetzner server in
-  Helsinki, which replaces `mesh-mini` as the third EU voter. Its round
+  Helsinki, host `hetzner-hell`, which joins the mesh with server name
+  `mesh-hel` and replaces `mesh-mini` as the third EU voter. Its round
   trip to the German pair is estimated at 20 to 30 ms, to be measured
   once it is up. That is inside ADR-030's bound of about 100 ms, though
   above the single-digit milliseconds ADR-030's migration hoped for; the
@@ -150,7 +151,7 @@ New configuration:
   `jetstream_domain` is set and differs from the remote's, which
   nats-server reports when the link comes up.
 
-**EU leaders stay on the German pair.** Helsinki is a voter and holds a
+**EU leaders stay on the German pair.** `mesh-hel` is a voter and holds a
 replica of every R3 stream, but it is not in `preferred_leaders`, so the
 rebalancer keeps stream leaders and the meta leader on `mesh-vps` and
 `mesh-eu`. An R3 commit needs the leader plus one follower, and the other
@@ -266,20 +267,21 @@ design.
 Today `mesh-mini` is the third EU voter, with `preferred_leaders` set and
 `engine: false` replica-only being built (ADR-030 interim).
 
-1. **Add the Helsinki node to EU.** Measure its round trip to
-   `mesh-vps` and `mesh-eu` first and confirm it is well under 100 ms
-   (the estimate is 20 to 30 ms). Join it to `nats_cluster_routes` on all
+1. **Add `mesh-hel` to EU.** On `hetzner-hell`, set `nats_server_name`
+   to `mesh-hel`. Measure its round trip to `mesh-vps` and `mesh-eu`
+   first and confirm it is well under 100 ms (the estimate is 20 to
+   30 ms). Join it to `nats_cluster_routes` on all
    EU nodes, rolling restart, and let R3 streams replicate to it. Set
    `preferred_leaders` on every EU node to `mesh-vps` and `mesh-eu` only,
-   and leave Helsinki out. EU now has four voters, the mini included.
+   and leave `mesh-hel` out. EU now has four voters, the mini included.
 2. **Pause notify's EU triggers.** Notify runs on the mini against its
    local EU node. Disable its triggers and schedules in EU and let its
    in-flight runs finish (or cancel them). From here notify is not taking
    new work.
 3. **Remove the mini from EU.** Drop it from every EU node's routes,
    rolling restart, and remove its peer from the EU meta group. EU is back
-   to three voters: the German pair and Helsinki. Stop `dagnats serve` on
-   the mini and move its data directory aside; its EU replicas are not
+   to three voters: the German pair and `mesh-hel`. Stop `dagnats serve`
+   on the mini and move its data directory aside; its EU replicas are not
    reused.
 4. **Stand up US.** The mini, iMac and MacBook with `region: us` (or
    `nats_cluster_name` and `jetstream_domain` set to `us` until `region`
