@@ -91,6 +91,8 @@ When leaf remotes are configured:
 
 Leaf node mode enables geographic distribution, multi-team isolation, or connecting edge deployments to a central cluster. A maximum of 10 leaf remotes can be configured.
 
+A far site belongs on a leaf node, not in a cluster: keep cluster nodes within about 100 ms of each other. See [Regional clusters, far sites](/docs/operations/clustering#regional-clusters-far-sites).
+
 ## When to Use Each Model
 
 | Scenario | Model |

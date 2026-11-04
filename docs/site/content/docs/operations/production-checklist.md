@@ -33,6 +33,10 @@ Each file-backed stream has a max age and a byte ceiling that is a share of `max
 
 In a cluster with one node across a slow link, set `preferred_leaders` to the well-connected nodes' server names. JetStream otherwise lets stream leaders drift onto the far node after restarts and elections, and every write to those streams then crosses the slow link. See [Configuration]({{< ref "/docs/operations/configuration" >}}).
 
+### Cluster Round Trip
+
+Keep the round trip between cluster nodes under about 100 ms. For a node farther away, set `preferred_leaders`, run it with `engine: false` once that role ships, or move it to a leaf node. See [Regional clusters, far sites](/docs/operations/clustering#regional-clusters-far-sites).
+
 ### Dedup Window
 
 `WORKFLOW_HISTORY` and `TELEMETRY` use a 5-second dedup window via `Nats-Msg-Id` (`DEAD_LETTERS` uses 24 hours and `BUILD_LOGS` 2 minutes). This prevents duplicate events during retries. Do not reduce this below 5 seconds unless you understand the implications for at-least-once delivery.
