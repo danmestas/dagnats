@@ -94,7 +94,7 @@ func PrintDryRun(w io.Writer, rc ResolvedConfig) bool
 PrintDryRun writes the dry\-run report to w. Returns true if all validations passed.
 
 <a name="Config"></a>
-## type [Config](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L88-L261>)
+## type [Config](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L88-L267>)
 
 Config holds all server configuration.
 
@@ -151,6 +151,12 @@ type Config struct {
     // linked over a leaf connection can address it as $JS.<domain>.API;
     // local clients keep using plain $JS.API. "" means no domain.
     JetStreamDomain string `json:"jetstream_domain"`
+    // PreferredLeaders names the servers (by server_name) that should
+    // lead replicated streams. JetStream elects any in-sync replica, so a
+    // node across a slow link can end up leading hot streams; the meta
+    // leader moves them back (natsutil.LeaderRebalancer). Empty, the
+    // default, leaves leaders where JetStream puts them.
+    PreferredLeaders []string `json:"preferred_leaders"`
 
     MonitorPort   int   `json:"monitor_port"`
     MaxStoreBytes int64 `json:"max_store_bytes"`
@@ -271,7 +277,7 @@ type Config struct {
 ```
 
 <a name="ConfigFromEnv"></a>
-### func [ConfigFromEnv](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L337>)
+### func [ConfigFromEnv](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L343>)
 
 ```go
 func ConfigFromEnv() Config
@@ -280,7 +286,7 @@ func ConfigFromEnv() Config
 ConfigFromEnv loads config from defaults, config file, then env vars. Config file is dagnats.yaml in CWD. Missing file is not an error. Panics if DataDir is empty after resolution. Exits \(via log.Fatalf\) if MaxStoreBytes still resolves to \<= 0 \(e.g. the disk backing DataDir has no space left\) \-\- see ConfigWithPath.
 
 <a name="ConfigWithPath"></a>
-### func [ConfigWithPath](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L354-L356>)
+### func [ConfigWithPath](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L360-L362>)
 
 ```go
 func ConfigWithPath(configPath string) (Config, string, error)
@@ -289,7 +295,7 @@ func ConfigWithPath(configPath string) (Config, string, error)
 ConfigWithPath loads config using an explicit path or standard search. Returns the resolved config and the path of the file that was loaded \(empty string if no file was found\). When configPath is non\-empty, the file must exist or an error is returned. Panics if DataDir is empty after resolution. Returns an error if MaxStoreBytes still resolves to \<= 0 after the disk\-derived default is applied \(e.g. the disk backing DataDir has no space left\) \-\- that is operator/host state, not a programmer error, so it is reported rather than panicked on. See deriveMaxStoreBytes \(\#687\).
 
 <a name="DefaultConfig"></a>
-### func [DefaultConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L271>)
+### func [DefaultConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L277>)
 
 ```go
 func DefaultConfig() Config
@@ -376,7 +382,7 @@ func ResolveConfig() ResolvedConfig
 ResolveConfig loads config and tracks the source of each value. Returns resolved config with provenance for every key.
 
 <a name="Server"></a>
-## type [Server](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L42-L89>)
+## type [Server](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L42-L91>)
 
 Server is the all\-in\-one DagNats server lifecycle manager.
 
@@ -387,7 +393,7 @@ type Server struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L97>)
+### func [New](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L99>)
 
 ```go
 func New(cfg Config) *Server
@@ -398,7 +404,7 @@ New creates a Server with the given config. Panics if DataDir is empty.
 A caller that built cfg via DefaultConfig\(\) directly \(rather than through ConfigWithPath/ConfigFromEnv\) still has MaxStoreBytes at the 0 "derive from disk" sentinel \(\#687\); resolve it here too so every construction path enters Run/startNATS with a usable, non\-zero budget.
 
 <a name="Server.HTTPAddr"></a>
-### func \(\*Server\) [HTTPAddr](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L158>)
+### func \(\*Server\) [HTTPAddr](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L162>)
 
 ```go
 func (s *Server) HTTPAddr() string
@@ -407,7 +413,7 @@ func (s *Server) HTTPAddr() string
 HTTPAddr returns the actual bound "host:port" the server is serving HTTP on, or "" if Run has not finished starting yet. Safe to call concurrently with Run: startHTTP writes the resolved s.cfg.HTTPAddr before Run stores s.ready, and sync/atomic gives that store/load pair release/acquire ordering, so a caller observing ready==true is guaranteed to see the final address. Callers that need to wait for the address \(e.g. tests\) should poll this instead of pre\-reserving a port.
 
 <a name="Server.NATSURL"></a>
-### func \(\*Server\) [NATSURL](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L176>)
+### func \(\*Server\) [NATSURL](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L180>)
 
 ```go
 func (s *Server) NATSURL() string
@@ -416,7 +422,7 @@ func (s *Server) NATSURL() string
 NATSURL returns the client URL of the embedded NATS server, or "" if Run has not finished starting yet. An embedder that set NATSPort \-1 reads the real port here instead of probing for a free one. The same ready release/acquire pair as HTTPAddr publishes s.ns.
 
 <a name="Server.Run"></a>
-### func \(\*Server\) [Run](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L112>)
+### func \(\*Server\) [Run](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L114>)
 
 ```go
 func (s *Server) Run() error
@@ -425,7 +431,7 @@ func (s *Server) Run() error
 Run starts all server components, serves HTTP, and blocks until shutdown. Returns nil on clean shutdown, error otherwise.
 
 <a name="Server.Stop"></a>
-### func \(\*Server\) [Stop](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L751>)
+### func \(\*Server\) [Stop](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L755>)
 
 ```go
 func (s *Server) Stop()

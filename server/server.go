@@ -65,21 +65,23 @@ type Server struct {
 	programUsersStop context.CancelFunc
 	// programsExpiryStop ends the pending-registration expiry sweep.
 	programsExpiryStop context.CancelFunc
-	programUsersDone   chan struct{}
-	httpSrv            *http.Server
-	telShutdown        func(context.Context)
-	metricsAgg         *metrics.Aggregator
-	metricsStop        func()
-	metricsErrorReason string
-	queueSnapshotStop  func()
-	ready              atomic.Bool
-	stopCh             chan struct{}
-	workerShims        []*WorkerShim
-	workers            []*worker.Worker
-	running            atomic.Bool
-	tempCreds          string              // inline creds temp file; cleaned on shutdown
-	cfgWatcher         *configfile.Watcher // hot-reload watcher (#358)
-	cfgWatcherCancel   context.CancelFunc  // cleanup paired with cfgWatcher
+	// leaderRebalanceStop ends the preferred-leader rebalancer, if on.
+	leaderRebalanceStop context.CancelFunc
+	programUsersDone    chan struct{}
+	httpSrv             *http.Server
+	telShutdown         func(context.Context)
+	metricsAgg          *metrics.Aggregator
+	metricsStop         func()
+	metricsErrorReason  string
+	queueSnapshotStop   func()
+	ready               atomic.Bool
+	stopCh              chan struct{}
+	workerShims         []*WorkerShim
+	workers             []*worker.Worker
+	running             atomic.Bool
+	tempCreds           string              // inline creds temp file; cleaned on shutdown
+	cfgWatcher          *configfile.Watcher // hot-reload watcher (#358)
+	cfgWatcherCancel    context.CancelFunc  // cleanup paired with cfgWatcher
 	// grantHolder holds the hot-reloadable capability-grant policy (#380),
 	// shared with the orchestrator (enqueue-time capability strip) and the
 	// api service (promotion authorization). The configfile reload closure
@@ -142,6 +144,8 @@ func (s *Server) Run() error {
 		return err
 	}
 
+	// Started once nothing can fail startup, so shutdown always stops it.
+	s.startLeaderRebalancer()
 	s.ready.Store(true)
 	printBanner(os.Stderr, s.cfg.HTTPAddr, s.ns.ClientURL())
 
@@ -820,6 +824,9 @@ func (s *Server) shutdown() error {
 		}
 		if s.programsExpiryStop != nil {
 			s.programsExpiryStop()
+		}
+		if s.leaderRebalanceStop != nil {
+			s.leaderRebalanceStop()
 		}
 		s.stopProgramUsers()
 		if s.joinKeyStore != nil {

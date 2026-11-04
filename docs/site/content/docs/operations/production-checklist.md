@@ -29,6 +29,10 @@ Each file-backed stream has a max age and a byte ceiling that is a share of `max
 - **BUILD_LOGS**: `DAGNATS_BUILD_LOGS_TTL`, default 7 days, 5% of the budget.
 - **TASK_QUEUES** and **SLEEP_TIMERS** have no max age, because their messages are pending work.
 
+### Stream Leaders
+
+In a cluster with one node across a slow link, set `preferred_leaders` to the well-connected nodes' server names. JetStream otherwise lets stream leaders drift onto the far node after restarts and elections, and every write to those streams then crosses the slow link. See [Configuration]({{< ref "/docs/operations/configuration" >}}).
+
 ### Dedup Window
 
 `WORKFLOW_HISTORY` and `TELEMETRY` use a 5-second dedup window via `Nats-Msg-Id` (`DEAD_LETTERS` uses 24 hours and `BUILD_LOGS` 2 minutes). This prevents duplicate events during retries. Do not reduce this below 5 seconds unless you understand the implications for at-least-once delivery.
