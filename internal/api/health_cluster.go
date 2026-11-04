@@ -71,8 +71,25 @@ type clusterHealthResponse struct {
 	NodesUp       int                   `json:"nodes_up,omitempty"`
 	Members       []ClusterMember       `json:"members,omitempty"`
 	JetStream     *clusterJetStreamInfo `json:"jetstream,omitempty"`
-	OK            bool                  `json:"ok"`
+	// Disk is the answering node's data-dir free space; omitted when no
+	// monitor is attached (library embedders).
+	Disk *DiskStatus `json:"disk,omitempty"`
+	OK   bool        `json:"ok"`
 }
+
+// DiskStatus is the free space on the filesystem holding the node's data
+// dir against the level below which it counts as low.
+type DiskStatus struct {
+	FreeBytes      int64 `json:"free_bytes"`
+	ThresholdBytes int64 `json:"threshold_bytes"`
+	Low            bool  `json:"low"`
+}
+
+// DiskStatusFunc reads the latest disk reading.
+type DiskStatusFunc func() DiskStatus
+
+// diskDegraded is the name low disk takes in JetStream.Degraded.
+const diskDegraded = "disk"
 
 // ClusterMember is one node in the embedded cluster as seen from the
 // reporting node.
@@ -108,6 +125,7 @@ type ClusterReporter struct {
 	nc      *nats.Conn
 	routes  []string
 	members ClusterMembershipFunc
+	disk    DiskStatusFunc
 }
 
 // NewClusterReporter returns a reporter. routes is the configured
@@ -120,6 +138,15 @@ func NewClusterReporter(
 		panic("NewClusterReporter: nc must not be nil")
 	}
 	return &ClusterReporter{nc: nc, routes: routes, members: members}
+}
+
+// SetDiskStatus attaches the node's disk reading to the report. Call it
+// before the reporter serves requests.
+func (r *ClusterReporter) SetDiskStatus(fn DiskStatusFunc) {
+	if r == nil || fn == nil {
+		panic("ClusterReporter.SetDiskStatus: r and fn must not be nil")
+	}
+	r.disk = fn
 }
 
 // NewClusterHealthHandler returns an http.Handler serving GET
@@ -153,8 +180,9 @@ func (r *ClusterReporter) report(
 		panic("ClusterReporter.report: parent must not be nil")
 	}
 	if len(r.routes) == 0 {
-		return clusterHealthResponse{Mode: "standalone", OK: true},
-			http.StatusOK
+		resp := clusterHealthResponse{Mode: "standalone", OK: true}
+		r.applyDisk(&resp)
+		return resp, http.StatusOK
 	}
 	resp := clusterHealthResponse{
 		Mode:           "cluster",
@@ -167,11 +195,16 @@ func (r *ClusterReporter) report(
 		},
 	}
 	if r.members != nil && !applyMembership(&resp, r.members) {
+		// A full disk is the likely cause of a lost meta group; keep it visible.
+		r.applyDisk(&resp)
 		return resp, http.StatusServiceUnavailable
 	}
 	ctx, cancel := context.WithTimeout(parent, clusterHealthTimeout)
 	defer cancel()
-	if err := r.collectJetStream(ctx, &resp); err != nil {
+	err := r.collectJetStream(ctx, &resp)
+	// After collection: classifyUnavailable rewrites Degraded.
+	r.applyDisk(&resp)
+	if err != nil {
 		if !errors.Is(err, errUnavailableAssets) {
 			slog.Warn("cluster health: jetstream lookup failed", "error", err)
 		}
@@ -179,6 +212,23 @@ func (r *ClusterReporter) report(
 		return resp, http.StatusServiceUnavailable
 	}
 	return resp, http.StatusOK
+}
+
+// applyDisk adds the disk reading. Low disk follows the Degraded
+// precedent: reported, but 200, because the node still serves and a load
+// balancer must not drain it on a warning.
+func (r *ClusterReporter) applyDisk(resp *clusterHealthResponse) {
+	if resp == nil {
+		panic("applyDisk: resp must not be nil")
+	}
+	if r.disk == nil {
+		return
+	}
+	status := r.disk()
+	resp.Disk = &status
+	if status.Low && resp.JetStream != nil {
+		resp.JetStream.Degraded = append(resp.JetStream.Degraded, diskDegraded)
+	}
 }
 
 // applyMembership fills member rows, the meta leader and the derived

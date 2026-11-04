@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A low-disk warning for the filesystem holding `data_dir`.** When a node's disk filled, its embedded JetStream went unhealthy and stayed that way until a restart, and nothing said why: `/health/cluster` returned 503 with "jetstream meta group not available" and the log showed only "context deadline exceeded". dagnats now checks free space at startup and every 60 s, and logs an `ERROR` naming the path, free bytes and threshold when it falls below `max(disk_free_min_bytes, 2 x max_store_bytes)`, repeating at most every 10 minutes and logging `INFO` on recovery. `disk_free_min_bytes` (`DAGNATS_DISK_FREE_MIN_BYTES`) sets the floor; `0` or unset means 10 GiB. `/health/cluster` reports `disk` (`free_bytes`, `threshold_bytes`, `low`) for the answering node, and a low disk adds `disk` to `jetstream.degraded` without changing the 200 status.
+
 ### Changed
 
 - **`preferred_leaders` now moves the JetStream meta leader too.** Stream and consumer create, update and info go through the meta leader, so with it on the far node every one crossed the slow link. Clients cannot step it down: `$JS.API.META.LEADER.STEPDOWN` belongs to the system account, which the mesh exposes to no client. Each dagnats NATS server now has a built-in system-account user (`_dagnats_system`) with a random password per start, which only dagnats dials, in process. When the meta leader is not a preferred server and a preferred peer is current and online, it steps down in favour of that peer, at most once per check with a 5-minute cooldown. The new meta leader then moves the streams.

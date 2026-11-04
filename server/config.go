@@ -152,6 +152,10 @@ type Config struct {
 
 	MonitorPort   int   `json:"monitor_port"`
 	MaxStoreBytes int64 `json:"max_store_bytes"`
+	// DiskFreeMinBytes is the absolute floor of the low-disk warning on the
+	// data dir's filesystem; the threshold is max(floor, 2 x MaxStoreBytes).
+	// 0 means defaultDiskFreeMinBytes.
+	DiskFreeMinBytes int64 `json:"disk_free_min_bytes"`
 	// MaxMemoryBytes caps the JetStream in-memory store
 	// (JetStreamMaxMemory) and is applied as the soft Go memory limit at
 	// startup (#441). Defaults to defaultMaxMemoryBytes; <= 0 disables the
@@ -376,6 +380,10 @@ func ConfigWithPath(
 	applyEnvOverrides(&cfg)
 
 	if err := applyMaxStoreBytesEnv(&cfg); err != nil {
+		return Config{}, "", err
+	}
+
+	if err := applyDiskFreeMinBytesEnv(&cfg); err != nil {
 		return Config{}, "", err
 	}
 
@@ -734,6 +742,30 @@ func applyMaxStoreBytesEnv(cfg *Config) error {
 		)
 	}
 	cfg.MaxStoreBytes = maxBytes
+	return nil
+}
+
+// applyDiskFreeMinBytesEnv resolves DAGNATS_DISK_FREE_MIN_BYTES into
+// cfg.DiskFreeMinBytes. Unset leaves the file/default value; 0 means the
+// built-in floor; negatives are rejected.
+func applyDiskFreeMinBytesEnv(cfg *Config) error {
+	if cfg == nil {
+		panic("applyDiskFreeMinBytesEnv: cfg is nil")
+	}
+	val := os.Getenv("DAGNATS_DISK_FREE_MIN_BYTES")
+	if val == "" {
+		return nil
+	}
+	minBytes, err := strconv.ParseInt(val, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid DAGNATS_DISK_FREE_MIN_BYTES %q: %w", val, err)
+	}
+	if minBytes < 0 {
+		return fmt.Errorf(
+			"invalid DAGNATS_DISK_FREE_MIN_BYTES %q: must not be negative", val,
+		)
+	}
+	cfg.DiskFreeMinBytes = minBytes
 	return nil
 }
 
@@ -1142,6 +1174,17 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 			)
 		}
 		cfg.MaxStoreBytes = maxBytes
+	case "disk_free_min_bytes":
+		minBytes, err := strconv.ParseInt(val, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid disk_free_min_bytes: %w", err)
+		}
+		if minBytes < 0 {
+			return fmt.Errorf(
+				"invalid disk_free_min_bytes: must not be negative, got %d", minBytes,
+			)
+		}
+		cfg.DiskFreeMinBytes = minBytes
 	case "max_memory_bytes":
 		maxBytes, err := strconv.ParseInt(val, 10, 64)
 		if err != nil {
