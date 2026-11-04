@@ -57,3 +57,4 @@ This convention makes dependency between proposals explicit and prevents acciden
 - `adr-028-cancellation-crash-loops-spawn.md` — cancel reaches running handlers, a crash-loop guard, idempotent child spawn.
 - `adr-029-hosting-pi-durable.md` — running pi-durable agents as dagnats steps on a JetStream storage adapter (Proposed, deferred).
 - `adr-030-regional-clusters-and-far-sites.md` — a cluster is one region (voters within about 100 ms); a far site joins as a leafnode with its own JetStream domain, or as a separate cluster through gateways.
+- `adr-031-supercluster-regions.md` — regions `eu` and `us`, each its own cluster and JetStream domain with its own engine, linked by an allow-listed leafnode connection rather than gateways; runs are homed where they start (Proposed).
