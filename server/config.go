@@ -121,7 +121,7 @@ type Config struct {
 	// public interfaces.
 	NATSClusterHost string `json:"nats_cluster_host"`
 	// NATSHost is the client listener's bind address; "" means 127.0.0.1,
-	// or 0.0.0.0 in leaf mode. Set 127.0.0.1 to keep a leaf node's clients
+	// or 0.0.0.0 on a standalone leaf. Set 127.0.0.1 to keep a leaf node's clients
 	// on this machine: leaf connections are outbound and need no listener.
 	NATSHost string `json:"nats_host"`
 	// NATSUser and NATSPasswordFile, set together, require a login on the
@@ -1391,7 +1391,7 @@ func applyWorkerConfigValue(
 //   - Clustering requires NATSClusterName non-empty.
 //   - NATSClusterRoutes must have between 2 and maxClusterRoutes entries.
 //   - NATSJetStreamReplicas must be in {0, 1, 3, 5}.
-//   - Cluster mode and leaf mode are mutually exclusive.
+//   - Cluster mode with leaf_remotes requires a JetStream domain.
 func validateClusterConfig(cfg *Config) {
 	if cfg == nil {
 		panic("validateClusterConfig: cfg is nil")
@@ -1440,8 +1440,12 @@ func validateClusterConfig(cfg *Config) {
 			maxClusterRoutes, len(cfg.NATSClusterRoutes),
 		))
 	}
-	if len(cfg.LeafRemotes) > 0 {
-		panic("nats_cluster_routes and leaf_remotes are mutually exclusive")
+	// A clustered leaf links two regions (ADR-031). Without a domain of its
+	// own the cluster's JetStream would claim the remote's API, so a domain
+	// is required; nats-server reports both domains when the link comes up.
+	if len(cfg.LeafRemotes) > 0 && cfg.JetStreamDomain == "" {
+		panic("nats_cluster_routes with leaf_remotes requires jetstream_domain " +
+			"(or region), distinct from the remote cluster's")
 	}
 }
 

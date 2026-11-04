@@ -9,7 +9,7 @@ Three or five `dagnats serve` nodes can form their own NATS cluster, with JetStr
 
 A single node loses its data if its disk is lost, and it stops serving while it restarts. A cluster keeps serving with one node down (three nodes) or two nodes down (five nodes), because JetStream needs a majority of the replicas to accept writes.
 
-Clusters are fixed-size. You declare the other nodes in each node's config, and changing the size means changing every node's config and restarting them one at a time. There is no dynamic membership. Clusters and leaf nodes are mutually exclusive: setting both `nats_cluster_routes` and `leaf_remotes` is a config error.
+Clusters are fixed-size. You declare the other nodes in each node's config, and changing the size means changing every node's config and restarting them one at a time. There is no dynamic membership. A cluster node may also set `leaf_remotes` to link to another regional cluster, but only with its own `jetstream_domain` (or `region`), distinct from the other cluster's; without one, config load fails.
 
 ## Regional clusters, far sites
 
