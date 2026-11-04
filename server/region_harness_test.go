@@ -2,9 +2,9 @@
 // region is three dagnats NATS servers started through startNATS (so the
 // production options, leaf wiring included, are what runs), with its own
 // cluster name and JetStream domain. The listening region opens a leaf
-// listener on every node; the dialing region holds a leaf remote to every
-// one of those listeners on every node. Ports come from freeTCPPorts and
-// every wait is bounded.
+// listener on every node; every node of the dialing region lists all of
+// those listeners in leaf_remotes, which is one link that fails over
+// between them. Ports come from freeTCPPorts and every wait is bounded.
 package server
 
 import (
@@ -44,13 +44,14 @@ type regionOptions struct {
 	mutate func(*Config)
 }
 
-// startRegionPair starts region "eu" with leaf listeners and region "us"
-// linked to every eu listener from every node, and waits for the links.
+// startRegionPair starts region "eu" with leaf listeners and region "us",
+// whose every node lists every eu listener, and waits for each us node's
+// one link.
 func startRegionPair(t *testing.T, euMutate func(*Config)) (*testRegion, *testRegion) {
 	t.Helper()
 	eu := startTestRegion(t, "eu", regionOptions{listen: true, mutate: euMutate})
 	us := startTestRegion(t, "us", regionOptions{dial: eu.leafPorts})
-	waitRegionLinked(t, us, len(eu.leafPorts))
+	waitRegionLinked(t, us, 1)
 	return eu, us
 }
 

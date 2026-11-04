@@ -89,7 +89,12 @@ new consumers, when the other region or the link between them is gone.
 **The regions are linked by a leafnode connection, not gateways.** This
 replaces the gateway supercluster in the starting brief, for the reasons
 in the Context. Every
-US node dials the EU nodes' leafnode listeners. A leafnode link is the
+US node lists every EU node's leafnode listener in `leaf_remotes` and
+holds one link to one of them, failing over to another when that node
+goes away. One link per node matters: parallel links from one server to
+several nodes of the same cluster deliver every crossing message once per
+link (found while building the allow-list PR; dagnats now puts every
+`leaf_remotes` URL in one nats-server remote). A leafnode link is the
 mechanism nats-server provides for two JetStream domains to coexist
 (`server/leafnode.go:2156-2180`). It maps `$JS.<domain>.API` to the remote
 domain's API for non-system accounts (`server/leafnode.go:2208-2215`), so
@@ -106,10 +111,12 @@ queues, and both engines would run it. The leaf login on the EU listener
 therefore permits only:
 
 - `$JS.eu.API.>`, `$JS.us.API.>` and replies on `_INBOX.>`, for explicit
-  cross-domain JetStream access (operator inspection with a domain, and
-  mirrors or sources if adopted later).
-- The mirror and source delivery subjects those need, pinned by the PR
-  that adds the allow-list.
+  cross-domain JetStream access (operator inspection with a domain).
+- `$JS.ACK.>` and `$JS.FC.>`, so a client in one region can ack and
+  flow-control a consumer it works in the other by domain. Without
+  `$JS.ACK.>` a fetch by domain succeeds but its ack never arrives.
+- Mirror and source delivery subjects are not in the list; they are added
+  if mirrors or sources are adopted.
 
 No dagnats subject (`task.>`, `history.>`, `event.>`, `sleep.>`,
 `api.>`, `$KV.>`) crosses the link. A test in that PR publishes on
@@ -140,10 +147,42 @@ New configuration:
   key set explicitly to a different value is a load error. `/health/cluster`
   and the console report it.
 - **`leaf_listen_allow`.** The publish and subscribe allow-list for the
-  leaf login on the listener (nats-server `LeafNodeOpts.Users` with
-  permissions, `server/opts.go:191`). Unset keeps today's behaviour, which
+  leaf login on the listener. Unset keeps today's behaviour, which
   ADR-030's single-machine leaf needs: core request/reply to the cluster.
   A region link sets it to the list above.
+
+  *Correction (2026-11-05).* This section first said the list would be
+  permissions on nats-server `LeafNodeOpts.Users`. nats-server v2.15.2
+  ignores them: `isLeafNodeAuthorized` matches a `LeafNodeOpts.Users`
+  entry and only binds its account (`server/auth.go:1553-1568`,
+  `1642-1684`), and the `leafnodes.authorization` parser has no
+  permissions key (`server/opts.go:2952`, `3027`). A probe confirmed a
+  denied subject still crossed. The mechanism used instead:
+
+  - The leaf block carries no login of its own (`LeafNode.Username`,
+    `Password` and `Users` empty), so nats-server authenticates a leaf
+    against the server's users table (`server/auth.go:1689`,
+    `isClientAuthorized`; `auth.go:235-236` notes the leaf block must set
+    no credentials for that).
+  - The leaf login is a users-table user with
+    `AllowedConnectionTypes: {LEAFNODE}` and the allow-list as its publish
+    and subscribe permissions. `registerUser` applies them to the leaf
+    connection (`server/client.go:1016-1034`); the accepting side reverses
+    their direction (`server/leafnode.go:2408-2418`) and sends them to the
+    dialing server in INFO (`server/leafnode.go:2515-2535`, `1804-1824`),
+    so both sides enforce the list. The NATS leafnode docs say the same:
+    leaf traffic "assumes the restrictions of the user configuration used
+    to create the leaf connection".
+  - Every other user and NKey (the anonymous `_dagnats_root` or
+    `_dagnats_join`, the `nats_user` login, program NKeys) gets
+    `AllowedConnectionTypes` of STANDARD, WEBSOCKET and IN_PROCESS, so it
+    cannot link as a leaf. Without this a server dialing with no
+    credentials is accepted as the anonymous user, unrestricted in open
+    mode (`server/auth.go:997-1003`).
+
+  Deny lists on the dialing side (`RemoteLeafOpts.DenyImports` and
+  `DenyExports` on the US nodes) were considered and not used: the
+  listener would then depend on every dialer being configured right.
 - **Clustered leaf.** `validateClusterConfig` panics when
   `nats_cluster_routes` and `leaf_remotes` are both set
   (`server/config.go:1435`). nats-server supports a cluster whose members
@@ -317,7 +356,8 @@ Rough PR breakdown, each small and independently useful:
    regions provision independently; one region keeps creating consumers
    while the link is down.
 3. **Leaf link allow-list.** `leaf_listen_allow`, applied as permissions
-   on the listener's user. Tests: `task.>` and `history.>` published in
+   on the leaf login, moved into the users table (see the correction in
+   section 1). Tests: `task.>` and `history.>` published in
    one region are not stored in the other; `$JS.<domain>.API` requests
    cross.
 4. **`engine: false`.** Already in flight for ADR-030; used by the

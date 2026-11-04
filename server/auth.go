@@ -52,15 +52,22 @@ func applyAuth(opts *natsserver.Options, login, password string) {
 	}
 	opts.Username, opts.Password = "", ""
 	opts.AlwaysEnableNonce = true
-	anonymous := &natsserver.User{Username: rootUser, Password: randomPassword()}
+	anonymous := &natsserver.User{
+		Username: rootUser, Password: randomPassword(),
+		AllowedConnectionTypes: clientConnectionTypes(),
+	}
 	if login != "" {
 		anonymous = &natsserver.User{
 			Username: joinUser, Password: randomPassword(), Permissions: joinPermissions(),
+			AllowedConnectionTypes: clientConnectionTypes(),
 		}
 	}
 	opts.Users = []*natsserver.User{anonymous}
 	if login != "" {
-		opts.Users = append(opts.Users, &natsserver.User{Username: login, Password: password})
+		opts.Users = append(opts.Users, &natsserver.User{
+			Username: login, Password: password,
+			AllowedConnectionTypes: clientConnectionTypes(),
+		})
 	}
 	opts.NoAuthUser = anonymous.Username
 	opts.Nkeys = programUsers(nil)
@@ -74,6 +81,44 @@ func applyAuth(opts *natsserver.Options, login, password string) {
 		Username: systemUser, Password: randomPassword(), Account: system,
 		AllowedConnectionTypes: map[string]struct{}{jwt.ConnectionTypeInProcess: {}},
 	})
+}
+
+// clientConnectionTypes is every way a client login may connect: not as a
+// leafnode. When the leaf listener has no auth block of its own, nats-server
+// authenticates a leaf against the users table (auth.go isClientAuthorized),
+// and a leaf presenting no login would become the NoAuthUser. Only the leaf
+// login (leafLoginUser) may link.
+func clientConnectionTypes() map[string]struct{} {
+	return map[string]struct{}{
+		jwt.ConnectionTypeStandard:  {},
+		jwt.ConnectionTypeWebsocket: {},
+		jwt.ConnectionTypeInProcess: {},
+	}
+}
+
+// leafLoginUser is the leaf listener's login as a users-table user that
+// may only link as a leafnode. allow, when set, is the subjects the link
+// may publish and subscribe to; nats-server applies a users-table user's
+// permissions to its leaf connection and sends them to the dialing side,
+// which LeafNodeOpts.Users ignores.
+func leafLoginUser(name, password string, allow []string) *natsserver.User {
+	if name == "" || password == "" {
+		panic("leafLoginUser: name and password must be set")
+	}
+	user := &natsserver.User{
+		Username: name, Password: password,
+		AllowedConnectionTypes: map[string]struct{}{jwt.ConnectionTypeLeafnode: {}},
+	}
+	if len(allow) > 0 {
+		user.Permissions = &natsserver.Permissions{
+			Publish:   &natsserver.SubjectPermission{Allow: slices.Clone(allow)},
+			Subscribe: &natsserver.SubjectPermission{Allow: slices.Clone(allow)},
+		}
+	}
+	if len(user.AllowedConnectionTypes) != 1 {
+		panic("leafLoginUser: the leaf login must be leafnode-only")
+	}
+	return user
 }
 
 // systemPassword is systemUser's password in opts, set by applyAuth.
@@ -116,11 +161,15 @@ func programUsers(records []programs.Record) []*natsserver.NkeyUser {
 		return strings.Compare(a.Manifest.Name, b.Manifest.Name)
 	})
 	users := make([]*natsserver.NkeyUser, 0, len(sorted)+1)
-	users = append(users, &natsserver.NkeyUser{Nkey: placeholderNkey, Permissions: denyAll()})
+	users = append(users, &natsserver.NkeyUser{
+		Nkey: placeholderNkey, Permissions: denyAll(),
+		AllowedConnectionTypes: clientConnectionTypes(),
+	})
 	for _, record := range sorted {
 		users = append(users, &natsserver.NkeyUser{
-			Nkey:        record.PublicKey,
-			Permissions: serverPermissions(programs.UserPermissions(record)),
+			Nkey:                   record.PublicKey,
+			Permissions:            serverPermissions(programs.UserPermissions(record)),
+			AllowedConnectionTypes: clientConnectionTypes(),
 		})
 	}
 	return users

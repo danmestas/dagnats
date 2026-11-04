@@ -153,10 +153,19 @@ func configureLeafNode(opts *natsserver.Options, cfg Config) error {
 	if cfg.LeafPort != 0 {
 		opts.LeafNode.Host = leafBindHost(cfg)
 		opts.LeafNode.Port = cfg.LeafPort
-		opts.LeafNode.Username = cfg.LeafListenUser
-		opts.LeafNode.Password = cfg.leafListenPassword
+		// The login lives in the users table, not LeafNodeOpts, because
+		// nats-server enforces permissions only there (ADR-031).
+		opts.Users = append(opts.Users, leafLoginUser(
+			cfg.LeafListenUser, cfg.leafListenPassword, cfg.LeafListenAllow))
 	}
-	remotes := make([]*natsserver.RemoteLeafOpts, 0, len(cfg.LeafRemotes))
+	if len(cfg.LeafRemotes) == 0 {
+		return nil
+	}
+	// One remote holding every URL: one connection that fails over
+	// between them, as nats-server expects for a hub cluster. A remote per
+	// URL opens a parallel link to each hub node, and every message that
+	// crosses is delivered once per link.
+	urls := make([]*url.URL, 0, len(cfg.LeafRemotes))
 	for _, remote := range cfg.LeafRemotes {
 		remoteURL, err := url.Parse(remote)
 		if err != nil {
@@ -167,15 +176,10 @@ func configureLeafNode(opts *natsserver.Options, cfg Config) error {
 		if cfg.LeafUser != "" && remoteURL.User == nil {
 			remoteURL.User = url.UserPassword(cfg.LeafUser, cfg.leafPassword)
 		}
-		leaf := &natsserver.RemoteLeafOpts{
-			URLs: []*url.URL{remoteURL},
-		}
-		if cfg.LeafCredentials != "" {
-			leaf.Credentials = cfg.LeafCredentials
-		}
-		remotes = append(remotes, leaf)
+		urls = append(urls, remoteURL)
 	}
-	opts.LeafNode.Remotes = remotes
+	leaf := &natsserver.RemoteLeafOpts{URLs: urls, Credentials: cfg.LeafCredentials}
+	opts.LeafNode.Remotes = []*natsserver.RemoteLeafOpts{leaf}
 	return nil
 }
 

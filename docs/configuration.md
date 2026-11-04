@@ -21,6 +21,7 @@ DagNats uses a three-tier configuration system. Each tier overrides the previous
 | `leaf_host`               | string   | `127.0.0.1`                                        | `127.0.0.1`                              |
 | `leaf_listen_user`        | string   | (none)                                             | (none)                                   |
 | `leaf_listen_password_file` | string | (none)                                             | (none)                                   |
+| `leaf_listen_allow`       | []string | (none: every subject)                              | (none: every subject)                    |
 | `nats_cluster_name`       | string   | (none)                                             | (none)                                   |
 | `nats_cluster_routes`     | []string | (none)                                             | (none)                                   |
 | `nats_cluster_auth_token` | string   | (none)                                             | (none)                                   |
@@ -60,7 +61,17 @@ These fields enable self-clustered topology (see [`production.md`](production.md
 
 ### Leaf listener and leaf logins
 
-A dagnats can accept leaf nodes as well as dial out as one. `leaf_port` (default `0`, off) opens a leafnode listener that other servers dial with a `nats-leaf://` remote; `leaf_host` is its bind IP, `127.0.0.1` when unset and never all interfaces by default, so a hub reachable over a private network or tailnet names that IP. The listener always requires a login: `leaf_listen_user` and `leaf_listen_password_file` (a file holding the password, read at start like `nats_password_file`) must both be set whenever `leaf_port` is, on loopback too, because a leaf that links shares every subject and stream of the server. The listener works in embedded cluster mode, where every node can open one.
+A dagnats can accept leaf nodes as well as dial out as one. `leaf_port` (default `0`, off) opens a leafnode listener that other servers dial with a `nats-leaf://` remote; `leaf_host` is its bind IP, `127.0.0.1` when unset and never all interfaces by default, so a hub reachable over a private network or tailnet names that IP. The listener always requires a login: `leaf_listen_user` and `leaf_listen_password_file` (a file holding the password, read at start like `nats_password_file`) must both be set whenever `leaf_port` is, on loopback too, because a leaf that links shares every subject and stream of the server. The listener works in embedded cluster mode, where every node can open one. Only `leaf_listen_user` can link: the anonymous user, `nats_user` and program keys may connect as clients but not as leaf nodes, so a server that dials with no login, or with a client login, is refused. `leaf_listen_user` must differ from `nats_user` and may not start with `_dagnats_`.
+
+`leaf_listen_allow` (comma-separated subjects, at most 32) limits what a leaf linked with that login may publish and subscribe to, in both directions; both servers enforce it. Unset, the link carries every subject, which a single-machine leaf needs. A link between two regions must set it, or a `task.>` publish in one region is stored and run in both. For a link between regions `eu` and `us`, set it on the listening region:
+
+```yaml
+leaf_listen_allow: $JS.eu.API.>, $JS.us.API.>, $JS.ACK.>, $JS.FC.>, _INBOX.>
+```
+
+That lets each region reach the other's JetStream by domain, including fetching and acking a consumer there, and keeps every dagnats subject in its own region.
+
+The URLs in `leaf_remotes` are one hub cluster's leaf listeners: dagnats opens one leaf link to one of them and fails over to another when that node goes away. They are not parallel links; listing several hubs gives failover between them, not a link to each.
 
 On the dialing side, `leaf_user` and `leaf_password_file` log in to every leaf remote whose URL carries no login of its own, with a plain user and password instead of the NKey/JWT creds file `leaf_credentials` needs (which assumes operator mode). They are set together, need `leaf_remotes`, and exclude `leaf_credentials`.
 
@@ -91,7 +102,7 @@ jetstream_domain: e-mac
 
 ### Linked regions
 
-A clustered node may also hold `leaf_remotes`, which links two regional clusters ([ADR-031](architecture/adr-031-supercluster-regions.md)): every node of one region lists every leaf listener of the other in `leaf_remotes`, with `leaf_user` and `leaf_password_file`. Each region keeps its own meta group, streams and engine, and keeps working when the other region or the link is down. This needs a JetStream domain on the dialing cluster, set with `region` or `jetstream_domain`, distinct from the other region's; without one, config load fails. dagnats cannot see the remote's domain at load, so give each region its own name. nats-server logs both domains when the link comes up. Across the link, one region reaches the other's JetStream only by domain, for example `nats --js-domain eu stream ls`.
+A clustered node may also hold `leaf_remotes`, which links two regional clusters ([ADR-031](architecture/adr-031-supercluster-regions.md)): every node of one region lists every leaf listener of the other in `leaf_remotes`, with `leaf_user` and `leaf_password_file`, so each node holds one link that fails over across the other region's nodes. Each region keeps its own meta group, streams and engine, and keeps working when the other region or the link is down. This needs a JetStream domain on the dialing cluster, set with `region` or `jetstream_domain`, distinct from the other region's; without one, config load fails. dagnats cannot see the remote's domain at load, so give each region its own name. nats-server logs both domains when the link comes up. Across the link, one region reaches the other's JetStream only by domain, for example `nats --js-domain eu stream ls`.
 
 ### Message size
 
@@ -124,7 +135,7 @@ On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 | `DAGNATS_DATA_DIR`        | `data_dir`        |                                  |
 | `DAGNATS_HTTP_ADDR`       | `http_addr`       |                                  |
 | `DAGNATS_NATS_PORT`       | `nats_port`       | Must be a valid integer          |
-| `DAGNATS_LEAF_REMOTES`    | `leaf_remotes`    | Comma-separated, max 10 entries  |
+| `DAGNATS_LEAF_REMOTES`    | `leaf_remotes`    | Comma-separated, max 10 entries; one link that fails over between them |
 | `DAGNATS_LEAF_CREDENTIALS`| `leaf_credentials`| Path to creds file or inline PEM |
 | `DAGNATS_LEAF_USER`       | `leaf_user`       | Login sent to leaf remotes; pairs with `DAGNATS_LEAF_PASSWORD_FILE` |
 | `DAGNATS_LEAF_PASSWORD_FILE` | `leaf_password_file` | File holding the leaf remotes' password |
@@ -132,6 +143,7 @@ On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 | `DAGNATS_LEAF_HOST`       | `leaf_host`       | Leafnode listener bind IP; default 127.0.0.1 |
 | `DAGNATS_LEAF_LISTEN_USER` | `leaf_listen_user` | Login a leaf must present; required with `DAGNATS_LEAF_PORT` |
 | `DAGNATS_LEAF_LISTEN_PASSWORD_FILE` | `leaf_listen_password_file` | File holding the listener's password |
+| `DAGNATS_LEAF_LISTEN_ALLOW` | `leaf_listen_allow` | Comma-separated subjects a leaf linked with the listener's login may publish and subscribe to; unset carries every subject |
 | `DAGNATS_NATS_CLUSTER_NAME` | `nats_cluster_name` | Required with cluster routes |
 | `DAGNATS_NATS_CLUSTER_ROUTES` | `nats_cluster_routes` | Comma-separated, 2 to 10 entries |
 | `DAGNATS_NATS_CLUSTER_AUTH_TOKEN` | `nats_cluster_auth_token` | Shared token across peers |
