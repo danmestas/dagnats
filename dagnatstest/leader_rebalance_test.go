@@ -120,7 +120,7 @@ func tick(t *testing.T, r *natsutil.LeaderRebalancer, metaLeader bool) []natsuti
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), leaderSettleWait)
 	defer cancel()
-	moves, err := r.Tick(ctx, metaLeader)
+	moves, err := r.Tick(ctx, natsutil.MetaState{Leader: metaLeader})
 	if err != nil {
 		t.Fatalf("Tick: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestLeaderRebalancer_MovesLeadersOntoPreferredServers(t *testing.T) {
 	c.stream(t, "DRIFTED", 3)
 	c.stream(t, "SINGLE", 1)
 	singleLeader := c.leader(t, "SINGLE")
-	r := natsutil.NewLeaderRebalancer(c.nc, c.preferred)
+	r := natsutil.NewLeaderRebalancer(c.nc, nil, c.preferred)
 	moves := tick(t, r, true)
 	// Positive: the drifted leader is moved onto a preferred server.
 	if len(moves) != 1 || moves[0].Stream != "DRIFTED" || moves[0].From != c.other ||
@@ -156,10 +156,10 @@ func TestLeaderRebalancer_DoesNothingWhenOff(t *testing.T) {
 	c := startLeaderCluster(t)
 	c.stream(t, "DRIFTED", 3)
 	// Negative: no preference, or a node that is not the meta leader.
-	if moves := tick(t, natsutil.NewLeaderRebalancer(c.nc, nil), true); len(moves) != 0 {
+	if moves := tick(t, natsutil.NewLeaderRebalancer(c.nc, nil, nil), true); len(moves) != 0 {
 		t.Fatalf("no preference moved %+v", moves)
 	}
-	if moves := tick(t, natsutil.NewLeaderRebalancer(c.nc, c.preferred), false); len(moves) != 0 {
+	if moves := tick(t, natsutil.NewLeaderRebalancer(c.nc, nil, c.preferred), false); len(moves) != 0 {
 		t.Fatalf("a node that is not the meta leader moved %+v", moves)
 	}
 	time.Sleep(time.Second)
@@ -175,7 +175,7 @@ func TestLeaderRebalancer_BoundsMovesPerTickAndCoolsDown(t *testing.T) {
 	for i := 0; i < streams; i++ {
 		c.stream(t, fmt.Sprintf("DRIFT%d", i), 3)
 	}
-	r := natsutil.NewLeaderRebalancer(c.nc, c.preferred)
+	r := natsutil.NewLeaderRebalancer(c.nc, nil, c.preferred)
 	first := tick(t, r, true)
 	// Positive: one tick moves no more than its bound.
 	if len(first) != natsutil.LeaderMovesPerTickMax {

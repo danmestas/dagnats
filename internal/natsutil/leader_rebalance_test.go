@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -74,5 +75,48 @@ func TestForgetCooledDown(t *testing.T) {
 	// Negative: one moved a second ago is still held.
 	if _, held := r.moved["NEW"]; !held {
 		t.Fatal("NEW forgotten inside its cooldown")
+	}
+}
+
+func TestPlanMetaMove(t *testing.T) {
+	r := &LeaderRebalancer{preferred: []string{"a", "b"}, moved: map[string]time.Time{},
+		system: &nats.Conn{}}
+	now := time.Now()
+	farLeader := func(peers ...MetaPeer) MetaState {
+		return MetaState{Leader: true, Self: "far", Peers: peers}
+	}
+	healthy := []MetaPeer{{Name: "a", Current: true}, {Name: "b", Current: true}}
+	noSystem := &LeaderRebalancer{preferred: r.preferred, moved: r.moved}
+	for _, c := range []struct {
+		name  string
+		r     *LeaderRebalancer
+		state MetaState
+	}{
+		{"not the meta leader", r, MetaState{Self: "far", Peers: healthy}},
+		{"leader already preferred", r, MetaState{Leader: true, Self: "a", Peers: healthy}},
+		{"no preferred peer current", r, farLeader(
+			MetaPeer{Name: "a"}, MetaPeer{Name: "b", Current: true, Offline: true})},
+		{"preferred servers not peers", r, farLeader(MetaPeer{Name: "x", Current: true})},
+		{"no system connection", noSystem, farLeader(healthy...)},
+	} {
+		// Negative: each condition alone keeps the meta leader.
+		if move, ok := c.r.planMetaMove(c.state, now); ok {
+			t.Errorf("%s: planned %+v, want no move", c.name, move)
+		}
+	}
+	// Positive: a far meta leader moves to the next current preferred peer.
+	r.next = 1
+	move, ok := r.planMetaMove(farLeader(healthy...), now)
+	if !ok || move != (LeaderMove{Meta: true, From: "far", To: "b"}) {
+		t.Fatalf("planMetaMove = %+v, %v; want meta far -> b", move, ok)
+	}
+	// Negative: inside the cooldown after a meta move, it waits.
+	r.metaMovedAt = now.Add(-time.Second)
+	if move, ok := r.planMetaMove(farLeader(healthy...), now); ok {
+		t.Fatalf("planned %+v inside the meta cooldown", move)
+	}
+	r.metaMovedAt = now.Add(-leaderMoveCooldown)
+	if _, ok := r.planMetaMove(farLeader(healthy...), now); !ok {
+		t.Fatal("no move once the meta cooldown passed")
 	}
 }
