@@ -97,6 +97,9 @@ func PermissionsFor(m Manifest) Permissions {
 		pub = append(pub, ownStreamPublish("KV_"+b.Name)...)
 		pub = append(pub, "$KV."+b.Name+".>")
 	}
+	for _, service := range m.Discovers {
+		pub = append(pub, discoverPublish(service)...)
+	}
 	for _, b := range m.Reads {
 		pub = append(pub, readBucketPublish(b)...)
 	}
@@ -254,6 +257,26 @@ func microSubscribe(name string) []string {
 	}
 	if len(out) != 9 {
 		panic("program.microSubscribe: entry count drifted")
+	}
+	return out
+}
+
+// discoverPublish grants micro discovery of one named service: micro's
+// $SRV.<verb>.<name> and per-instance $SRV.<verb>.<name>.<id> subjects
+// for PING, INFO and STATS. Not the unnamed $SRV.<verb>, which would
+// reach every service; discovering by name never needs it. Replies come
+// back on the program's own inbox.
+func discoverPublish(service string) []string {
+	if service == "" || strings.ContainsAny(service, ".*>") {
+		panic("program.discoverPublish: service must be one literal token")
+	}
+	var out []string
+	for _, verb := range []string{"PING", "INFO", "STATS"} {
+		root := "$SRV." + verb + "." + service
+		out = append(out, root, root+".*")
+	}
+	if len(out) != 6 {
+		panic("program.discoverPublish: entry count drifted")
 	}
 	return out
 }

@@ -12,12 +12,14 @@ import (
 )
 
 // widening is what a changed manifest reaches beyond its own prefix that
-// the stored one did not: new protocols and new reads of another
-// program's buckets. Everything else a manifest declares sits under the
-// program's own name, which its NKey already owns.
+// the stored one did not: new protocols, new reads of another program's
+// buckets and new micro services to discover. Everything else a manifest
+// declares sits under the program's own name, which its NKey already
+// owns.
 type widening struct {
 	protocols []string
 	reads     []string
+	discovers []string
 }
 
 func widened(stored, changed program.Manifest) widening {
@@ -35,13 +37,20 @@ func widened(stored, changed program.Manifest) widening {
 			w.reads = append(w.reads, read)
 		}
 	}
+	for _, service := range changed.Discovers {
+		if !slices.Contains(stored.Discovers, service) {
+			w.discovers = append(w.discovers, service)
+		}
+	}
 	if len(w.protocols) > len(changed.Protocols) || len(w.reads) > len(changed.Reads) {
 		panic("programs.widened: more widening than the manifest declares")
 	}
 	return w
 }
 
-func (w widening) none() bool { return len(w.protocols) == 0 && len(w.reads) == 0 }
+func (w widening) none() bool {
+	return len(w.protocols) == 0 && len(w.reads) == 0 && len(w.discovers) == 0
+}
 
 func (w widening) String() string {
 	var parts []string
@@ -51,6 +60,9 @@ func (w widening) String() string {
 	if len(w.reads) > 0 {
 		parts = append(parts, "reads "+strings.Join(w.reads, ", "))
 	}
+	if len(w.discovers) > 0 {
+		parts = append(parts, "discovery of "+strings.Join(w.discovers, ", "))
+	}
 	return strings.Join(parts, " and ")
 }
 
@@ -59,7 +71,9 @@ func (w widening) String() string {
 // or "" when nothing widened or an open server takes a keyless request
 // (as it would a keyless first registration). The key must be usable
 // and its names must cover the program, every new protocol's root and
-// every new read's owner.
+// every new read's owner. A new Discovers entry needs no more than the
+// program: discovery reads only service metadata, and a micro service's
+// name is not a program's.
 func (r *Registrar) reserveWidening(
 	ctx context.Context, req program.RegisterRequest, w widening,
 ) (string, error) {

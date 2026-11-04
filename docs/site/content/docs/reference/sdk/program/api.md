@@ -149,7 +149,7 @@ func ConfirmSubject(publicKey string) string
 ConfirmSubject is the subject the program with publicKey confirms on.
 
 <a name="InboxPrefix"></a>
-## func [InboxPrefix](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L123>)
+## func [InboxPrefix](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L131>)
 
 ```go
 func InboxPrefix(name string) string
@@ -171,7 +171,7 @@ An existing stream or bucket keeps every field the manifest does not own \(Disca
 Those owned fields always come from the manifest and Grant, so a limit an operator tightened by hand \(MaxBytes, MaxAge, TTL, History, Replicas\) is undone by the next Provision. That stays within the Grant, so no data is lost. A bucket field KeyValueConfig cannot express, such as its stream's MaxMsgs, is reset to the KV default.
 
 <a name="Validate"></a>
-## func [Validate](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L48>)
+## func [Validate](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L50>)
 
 ```go
 func Validate(m Manifest) error
@@ -180,7 +180,7 @@ func Validate(m Manifest) error
 Validate checks names, prefixes, sizes, and that Protocols are not under the program's own prefix or an engine root. Pure; used by registration, by Use, and by a program's own tests. Whether a protocol falls under another registered program's prefix needs the registry and is checked at registration.
 
 <a name="ValidateName"></a>
-## func [ValidateName](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L72>)
+## func [ValidateName](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L75>)
 
 ```go
 func ValidateName(name string) error
@@ -189,7 +189,7 @@ func ValidateName(name string) error
 ValidateName checks only a manifest's Name, the first rule Validate applies. Registration uses it to tell name\_invalid apart from the other manifest errors.
 
 <a name="BucketSpec"></a>
-## type [BucketSpec](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L68-L73>)
+## type [BucketSpec](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L76-L81>)
 
 BucketSpec declares one of the program's own KV buckets. The host creates it \(Provision\); the program reads and writes keys.
 
@@ -224,7 +224,7 @@ func (e *ErrRefused) Error() string
 
 
 <a name="Grant"></a>
-## type [Grant](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L83-L91>)
+## type [Grant](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L91-L99>)
 
 Grant is what attach returns. Sizes are absolute: the program never does budget arithmetic.
 
@@ -241,7 +241,7 @@ type Grant struct {
 ```
 
 <a name="HTTPHandler"></a>
-## type [HTTPHandler](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L118>)
+## type [HTTPHandler](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L126>)
 
 HTTPHandler is optional. The host decides the listener and prefix.
 
@@ -250,7 +250,7 @@ type HTTPHandler interface{ Handler() http.Handler }
 ```
 
 <a name="Host"></a>
-## type [Host](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L96-L104>)
+## type [Host](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L104-L112>)
 
 Host is what Start receives. It is data: the connection the program was attached with, its Grant, a logger tagged with its name, and Handle, which registers a task handler on the worker Attach runs.
 
@@ -335,7 +335,7 @@ func (k Key) String() string
 String prints the public key, so logging a Key cannot leak the seed.
 
 <a name="Link"></a>
-## type [Link](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L76-L79>)
+## type [Link](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L84-L87>)
 
 Link is a console navigation entry.
 
@@ -347,7 +347,7 @@ type Link struct {
 ```
 
 <a name="Manifest"></a>
-## type [Manifest](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L16-L50>)
+## type [Manifest](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L16-L58>)
 
 Manifest is everything dagnats needs to admit a program. Name is the prefix root: task types and workflow names "name.\*", subjects "name.\>", streams "NAME\_\*", buckets "name\_\*".
 
@@ -383,6 +383,14 @@ type Manifest struct {
     // Protocols are shared subject roots the program speaks, e.g.
     // "tool.exec": publish and subscribe on the root and below it.
     Protocols []string
+    // Discovers are micro service names the program may discover: it may
+    // send $SRV.PING, $SRV.INFO and $SRV.STATS requests for each name
+    // and each of its instances, and read the replies on its own inbox.
+    // Discovery only: calling a service's endpoints still needs a
+    // Protocol or one of the program's own subjects. Like every grant
+    // here it is a guardrail for a trusted program, not isolation
+    // (dagnats#909).
+    Discovers []string
     // Console links the program from the dagnats console nav; nil for
     // none.
     Console *Link
@@ -456,7 +464,7 @@ These are guardrails against a trusted program's mistakes, not an isolation boun
 Residual: next, ack and create on a STICKY\_TASKS consumer are granted for any consumer name, so a program holding a sibling's name could pull, ack or reconfigure it. The names are unguessable and never disclosed \(stickyPublish\), and TestPermissions\_StickyConsumerNamesNotDisclosed pins the disclosure surfaces.
 
 <a name="Program"></a>
-## type [Program](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L107-L115>)
+## type [Program](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L115-L123>)
 
 Program is a separately released binary's view of dagnats.
 
@@ -541,7 +549,7 @@ func (r *Running) Stop(ctx context.Context) error
 Stop drains the worker, calls prog.Stop and closes the connection. It makes no control\-plane request, so it works while dagnats is down. Later calls return the first result.
 
 <a name="StreamSpec"></a>
-## type [StreamSpec](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L56-L64>)
+## type [StreamSpec](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L64-L72>)
 
 StreamSpec declares one of the program's own JetStream streams. The host creates it \(Provision\); the program only reads and consumes it. Its MaxBytes is resolved by dagnats from the fraction and floor and handed back in Grant.StreamMaxBytes.
 

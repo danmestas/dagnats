@@ -44,6 +44,14 @@ type Manifest struct {
 	// Protocols are shared subject roots the program speaks, e.g.
 	// "tool.exec": publish and subscribe on the root and below it.
 	Protocols []string
+	// Discovers are micro service names the program may discover: it may
+	// send $SRV.PING, $SRV.INFO and $SRV.STATS requests for each name
+	// and each of its instances, and read the replies on its own inbox.
+	// Discovery only: calling a service's endpoints still needs a
+	// Protocol or one of the program's own subjects. Like every grant
+	// here it is a guardrail for a trusted program, not isolation
+	// (dagnats#909).
+	Discovers []string
 	// Console links the program from the dagnats console nav; nil for
 	// none.
 	Console *Link

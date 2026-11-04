@@ -22,6 +22,8 @@ const (
 	bucketCountMax     = 32
 	readCountMax       = 32
 	protocolCountMax   = 16
+	discoverCountMax   = 16
+	discoverLenMax     = 64
 	dottedLenMax       = 128
 	versionLenMax      = 64
 	consoleLabelLenMax = 64
@@ -56,6 +58,7 @@ func Validate(m Manifest) error {
 	errs = append(errs, validateBuckets(m.Name, m.Buckets)...)
 	errs = append(errs, validateReads(m.Name, m.Reads)...)
 	errs = append(errs, validateProtocols(m.Name, m.Protocols)...)
+	errs = append(errs, validateDiscovers(m.Discovers)...)
 	errs = append(errs, validateLabels(m))
 	if len(errs) < 2 {
 		panic("program.Validate: every rule group must report")
@@ -130,6 +133,7 @@ func validateCounts(m Manifest) error {
 		{"buckets", len(m.Buckets), bucketCountMax},
 		{"reads", len(m.Reads), readCountMax},
 		{"protocols", len(m.Protocols), protocolCountMax},
+		{"discovers", len(m.Discovers), discoverCountMax},
 	}
 	var errs []error
 	for _, l := range limits {
@@ -266,6 +270,42 @@ func validateBuckets(name string, buckets []BucketSpec) []error {
 		seen[b.Name] = true
 	}
 	return errs
+}
+
+// validateDiscovers checks each name is a micro service name
+// ([A-Za-z0-9_-]+, the rule micro.AddService applies), so it is one
+// literal subject token, and appears once.
+func validateDiscovers(names []string) []error {
+	var errs []error
+	seen := map[string]bool{}
+	for _, name := range names {
+		if !microServiceName(name) {
+			errs = append(errs, fmt.Errorf(
+				"discovers %q must be a micro service name: 1 to %d of A-Z, a-z, 0-9, _ or -",
+				name, discoverLenMax))
+			continue
+		}
+		if seen[name] {
+			errs = append(errs, fmt.Errorf("discovers %q listed twice", name))
+		}
+		seen[name] = true
+	}
+	return errs
+}
+
+func microServiceName(name string) bool {
+	if len(name) == 0 || len(name) > discoverLenMax {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+			c == '_' || c == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // validateReads checks each read grant is "<owner>_<rest>" with a valid
