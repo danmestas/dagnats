@@ -37,6 +37,7 @@ Zero-config starts everything on defaults. Environment variables always win.
 | `nats_server_name` | string | `<cluster>-<hostname>-<cluster port>` | `<cluster>-<hostname>-<cluster port>` |
 | `nats_jetstream_replicas` | int | `0` (auto-derive) | `0` (auto-derive) |
 | `preferred_leaders` | []string | (none: off) | (none: off) |
+| `retire_peers` | []string | (none: off) | (none: off) |
 | `engine` | bool | `true` | `true` |
 | `jetstream_domain` | string | (none) | (none) |
 | `region` | string | (none) | (none) |
@@ -79,6 +80,8 @@ The JetStream meta leader drifts the same way, and every stream and consumer cre
 
 Each move is logged at INFO and each failure at WARN. Empty, the default, leaves leaders where JetStream elects them.
 
+`retire_peers` (string list, default none; env `DAGNATS_RETIRE_PEERS`) names servers (`nats_server_name`) leaving the cluster for good, for example a node moving to another region. Without it a switched-off node stays a member of the JetStream meta group: it still counts towards quorum, and every stream and consumer replica it held is lost redundancy. The node that is the JetStream meta leader checks 15 seconds after start and then every minute. A listed server that is still in the meta group and that this meta leader has seen offline at every check for at least 2 minutes is removed with `$JS.API.SERVER.REMOVE`, by peer ID, so a server the meta leader has not heard from since its own restart is found too. JetStream then re-places that server's replicas onto the remaining servers; if none fits, nats-server logs `could not replace peer` and the stream stays a replica short. One removal per check; an online server is never removed, and a change of meta leader restarts the 2 minutes. Each removal is logged at INFO and each failure at WARN, and a server already gone is logged once at INFO. Removal is through the same in-process system-account user as `preferred_leaders`. The list may hold at most 8 names, and may not name this node's `nats_server_name` or any `preferred_leaders` entry; either fails config load. Set it on every node, since any node can be the meta leader, and remove the entry once the server has left.
+
 ## Environment Variables
 
 ### Core
@@ -112,6 +115,7 @@ Each move is logged at INFO and each failure at WARN. Empty, the default, leaves
 | `DAGNATS_NATS_SERVER_NAME` | `nats_server_name` | Stable server name; default derived from host |
 | `DAGNATS_ENGINE` | `engine` | `false` makes the node replica-only (see below); default `true` |
 | `DAGNATS_PREFERRED_LEADERS` | `preferred_leaders` | Comma-separated server names that should lead replicated streams; default none (off) |
+| `DAGNATS_RETIRE_PEERS` | `retire_peers` | Comma-separated server names to remove from the JetStream meta group once offline 2 minutes; at most 8; default none (off) |
 | `DAGNATS_JETSTREAM_DOMAIN` | `jetstream_domain` | JetStream domain a leaf hub addresses this server by; default none |
 | `DAGNATS_REGION` | `region` | Region name; defaults `nats_cluster_name` and `jetstream_domain` |
 | `DAGNATS_NATS_JETSTREAM_REPLICAS` | `nats_jetstream_replicas` | One of `{0,1,3,5}`; `0` = auto |
@@ -222,7 +226,7 @@ dagnats' embedded NATS server always has these users:
 - **Anonymous.** A client that presents no credentials is root when `nats_user` is unset (open mode); one that presents credentials the server does not know (an unregistered NKey, a wrong login) is rejected in either mode. When `nats_user` is set (required mode), it is the join user, which may only publish `api.programs.register` and subscribe to `_JOIN.>`, so it can register a program and do nothing else.
 - **The operator login**, `nats_user`, when set. Unrestricted.
 - **One NKey user per registered program**, with the permissions its manifest derives (`program.PermissionsFor`). Every node builds them from the `programs` KV bucket at start and reloads them whenever the bucket changes. A program whose key is unchanged stays connected across a reload; a removed or replaced key is disconnected.
-- **A system-account user**, `_dagnats_system`, with a random password per start that is never handed out. Only dagnats dials it, in process, to move the JetStream meta leader when `preferred_leaders` is set. No client reaches the system account.
+- **A system-account user**, `_dagnats_system`, with a random password per start that is never handed out. Only dagnats dials it, in process, to move the JetStream meta leader when `preferred_leaders` is set and to remove a server listed in `retire_peers`. No client reaches the system account.
 
 > **Programs are trusted.** These permissions are guardrails against mistakes, not an isolation boundary. A program can still write arbitrary data into the account through JetStream reply reflection (nats-server does not check a JetStream reply subject against the requester's permissions), so run only trusted programs until per-program NATS accounts land ([#909](https://github.com/danmestas/dagnats/issues/909)).
 

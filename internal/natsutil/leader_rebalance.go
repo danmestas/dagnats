@@ -54,6 +54,7 @@ type MetaState struct {
 // MetaPeer is one other member of the meta group.
 type MetaPeer struct {
 	Name             string
+	ID               string // the peer's hash, PeerID(Name) once its name is known
 	Current, Offline bool
 }
 
@@ -103,6 +104,19 @@ func (r *LeaderRebalancer) Run(ctx context.Context, meta func() MetaState) {
 	if ctx == nil || meta == nil {
 		panic("LeaderRebalancer.Run: ctx and meta must be set")
 	}
+	runMetaTicks(ctx, meta, func(state MetaState) {
+		if _, err := r.Tick(ctx, state); err != nil && ctx.Err() == nil {
+			slog.Warn("natsutil: stream leader rebalance failed", "error", err)
+		}
+	})
+}
+
+// runMetaTicks calls tick with a fresh meta shortly after start and then
+// every LeaderRebalanceInterval until ctx ends.
+func runMetaTicks(ctx context.Context, meta func() MetaState, tick func(MetaState)) {
+	if ctx == nil || meta == nil || tick == nil {
+		panic("runMetaTicks: ctx, meta and tick must be set")
+	}
 	wait := leaderRebalanceStartDelay
 	for {
 		select {
@@ -111,9 +125,7 @@ func (r *LeaderRebalancer) Run(ctx context.Context, meta func() MetaState) {
 		case <-time.After(wait):
 		}
 		wait = LeaderRebalanceInterval
-		if _, err := r.Tick(ctx, meta()); err != nil && ctx.Err() == nil {
-			slog.Warn("natsutil: stream leader rebalance failed", "error", err)
-		}
+		tick(meta())
 	}
 }
 
@@ -274,6 +286,15 @@ func stepDownRequest(ctx context.Context, nc *nats.Conn, subject, server string)
 	if err != nil {
 		panic("stepDownRequest: a placement always encodes")
 	}
+	return jsAPIRequest(ctx, nc, subject, body)
+}
+
+// jsAPIRequest sends body to a JetStream API subject, waiting at most
+// leaderStepDownTimeout, and turns a reply without success into an error.
+func jsAPIRequest(ctx context.Context, nc *nats.Conn, subject string, body []byte) error {
+	if nc == nil || subject == "" || len(body) == 0 {
+		panic("jsAPIRequest: nc, subject and body must be set")
+	}
 	ctx, cancel := context.WithTimeout(ctx, leaderStepDownTimeout)
 	defer cancel()
 	reply, err := nc.RequestWithContext(ctx, subject, body)
@@ -287,13 +308,13 @@ func stepDownRequest(ctx context.Context, nc *nats.Conn, subject, server string)
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(reply.Data, &answer); err != nil {
-		return fmt.Errorf("step-down reply: %w", err)
+		return fmt.Errorf("%s reply: %w", subject, err)
 	}
 	if !answer.Success {
 		if answer.Error != nil {
 			return errors.New(answer.Error.Description)
 		}
-		return errors.New("step-down not acknowledged")
+		return fmt.Errorf("%s not acknowledged", subject)
 	}
 	return nil
 }

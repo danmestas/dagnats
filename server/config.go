@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -157,6 +158,13 @@ type Config struct {
 	// leader moves them back (natsutil.LeaderRebalancer). Empty, the
 	// default, leaves leaders where JetStream puts them.
 	PreferredLeaders []string `json:"preferred_leaders"`
+	// RetirePeers names servers (by server_name) leaving the cluster for
+	// good. The meta leader removes each from the JetStream meta group
+	// once it has been offline for natsutil.PeerRetireOfflineMin, and
+	// JetStream re-places its replicas (natsutil.PeerRetirer). It may not
+	// name this node or a preferred leader. Empty, the default, removes
+	// nothing.
+	RetirePeers []string `json:"retire_peers"`
 	// ReplicaOnly is set by `engine: false` (DAGNATS_ENGINE=false): the
 	// node runs NATS and JetStream as a voting replica, with what a
 	// replica needs (health, program users, the leader rebalancer, the
@@ -623,6 +631,9 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if val := os.Getenv("DAGNATS_PREFERRED_LEADERS"); val != "" {
 		cfg.PreferredLeaders = serverNameList(val)
+	}
+	if val := os.Getenv("DAGNATS_RETIRE_PEERS"); val != "" {
+		cfg.RetirePeers = splitServerNames(val)
 	}
 	if val := os.Getenv("DAGNATS_NATS_CLUSTER_PORT"); val != "" {
 		if port, err := strconv.Atoi(val); err == nil {
@@ -1159,6 +1170,8 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 		cfg.ReplicaOnly = !engine
 	case "preferred_leaders":
 		cfg.PreferredLeaders = serverNameList(val)
+	case "retire_peers":
+		cfg.RetirePeers = splitServerNames(val)
 	case "nats_cluster_port":
 		port, err := strconv.Atoi(val)
 		if err != nil {
@@ -1604,6 +1617,9 @@ func validateLoadedConfig(cfg Config) error {
 	if err := validateJetStreamDomain(cfg.JetStreamDomain); err != nil {
 		return err
 	}
+	if err := validateRetirePeers(cfg); err != nil {
+		return err
+	}
 	return validateLeafConfig(cfg)
 }
 
@@ -1650,19 +1666,54 @@ func validateSubjectToken(key, value string) error {
 // handful of servers.
 const preferredLeadersMax = 16
 
-// serverNameList splits a comma list of server names, trimming each and
-// dropping empty ones, up to preferredLeadersMax.
+// serverNameList splits a comma list of server names like
+// splitServerNames, keeping at most preferredLeadersMax.
 func serverNameList(val string) []string {
+	names := splitServerNames(val)
+	if len(names) > preferredLeadersMax {
+		names = names[:preferredLeadersMax]
+	}
+	return names
+}
+
+// splitServerNames splits a comma list of server names, trimming each
+// and dropping empty ones. The list is bounded by the value's length.
+func splitServerNames(val string) []string {
 	var names []string
 	for _, name := range strings.Split(val, ",") {
 		if name = strings.TrimSpace(name); name != "" {
 			names = append(names, name)
 		}
-		if len(names) == preferredLeadersMax {
-			break
-		}
 	}
 	return names
+}
+
+// retirePeersMax bounds retire_peers. A cluster retires a node or two at
+// a time; a longer list is more likely a pasted server list than a plan.
+const retirePeersMax = 8
+
+// validateRetirePeers refuses a retire_peers list that would remove this
+// node or a preferred leader, or that is longer than retirePeersMax.
+// This node is known by nats_server_name; with that unset its name is
+// derived later, and the meta leader never lists itself among the peers
+// it can remove.
+func validateRetirePeers(cfg Config) error {
+	if len(cfg.RetirePeers) > retirePeersMax {
+		return fmt.Errorf("retire_peers lists %d servers; at most %d",
+			len(cfg.RetirePeers), retirePeersMax)
+	}
+	for _, name := range cfg.RetirePeers {
+		if name == "" {
+			panic("validateRetirePeers: names are trimmed and non-empty")
+		}
+		if name == cfg.NATSServerName {
+			return fmt.Errorf("retire_peers names %q, this node's nats_server_name", name)
+		}
+		if slices.Contains(cfg.PreferredLeaders, name) {
+			return fmt.Errorf("retire_peers names %q, which is in preferred_leaders", name)
+		}
+	}
+	return nil
 }
 
 // applyEngineEnv reads DAGNATS_ENGINE: false makes the node

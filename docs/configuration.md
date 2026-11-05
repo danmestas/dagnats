@@ -31,6 +31,7 @@ DagNats uses a three-tier configuration system. Each tier overrides the previous
 | `nats_jetstream_replicas` | int      | `0` (auto-derive)                                  | `0` (auto-derive)                        |
 | `jetstream_domain`        | string   | (none)                                             | (none)                                   |
 | `region`                  | string   | (none)                                             | (none)                                   |
+| `retire_peers`            | []string | (none: off)                                        | (none: off)                              |
 | `monitor_port`            | int      | (none)                                             | (none)                                   |
 | `max_store_bytes`         | int64    | half of free disk, capped at 10 GiB                | half of free disk, capped at 10 GiB      |
 | `disk_free_min_bytes`     | int64    | `0` (10 GiB)                                       | `0` (10 GiB)                             |
@@ -58,6 +59,10 @@ These fields enable self-clustered topology (see [`production.md`](production.md
 - `nats_cluster_host` (string, default `0.0.0.0`) — IP address the route listener binds to. Set it to the node's private or tailnet IP so routes are not reachable on public interfaces.
 - `nats_server_name` (string, default `<cluster>-<hostname>-<cluster port>`) — The node's NATS server name. JetStream tracks cluster peers by this name, so it must stay the same across restarts; the default does. Override it if the hostname may change. Letters, digits, `_`, `-` and `.` only, max 64 bytes.
 - `nats_jetstream_replicas` (int, default `0`) — JetStream replication factor override. Valid: `{0, 1, 3, 5}`. `0` means auto-derive from cluster size.
+
+### Retiring a server
+
+`retire_peers` (string list, default none; env `DAGNATS_RETIRE_PEERS`) names servers (`nats_server_name`) leaving the cluster for good, for example a node moving to another region. Without it a switched-off node stays a member of the JetStream meta group: it still counts towards quorum, and every stream and consumer replica it held is lost redundancy. The node that is the JetStream meta leader checks 15 seconds after start and then every minute. A listed server that is still in the meta group and that this meta leader has seen offline at every check for at least 2 minutes is removed with `$JS.API.SERVER.REMOVE`, by peer ID, so a server the meta leader has not heard from since its own restart is found too. JetStream then re-places that server's replicas onto the remaining servers; if none fits, nats-server logs `could not replace peer` and the stream stays a replica short. One removal per check; an online server is never removed, and a change of meta leader restarts the 2 minutes. Each removal is logged at INFO and each failure at WARN, and a server already gone is logged once at INFO. Removal is through the same in-process system-account user as `preferred_leaders`. The list may hold at most 8 names, and may not name this node's `nats_server_name` or any `preferred_leaders` entry; either fails config load. Set it on every node, since any node can be the meta leader, and remove the entry once the server has left.
 
 ### Leaf listener and leaf logins
 
@@ -158,6 +163,7 @@ On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 | `DAGNATS_NATS_SERVER_NAME` | `nats_server_name` | Stable server name; default derived from host |
 | `DAGNATS_JETSTREAM_DOMAIN` | `jetstream_domain` | JetStream domain a leaf hub addresses this server by; default none |
 | `DAGNATS_REGION` | `region` | Region name; defaults `nats_cluster_name` and `jetstream_domain`, and conflicts with either set to another value |
+| `DAGNATS_RETIRE_PEERS` | `retire_peers` | Comma-separated server names to remove from the JetStream meta group once offline 2 minutes; at most 8, not this node or a preferred leader; default none (off) |
 | `DAGNATS_NATS_JETSTREAM_REPLICAS` | `nats_jetstream_replicas` | One of `{0,1,3,5}`; `0`=auto |
 | `DAGNATS_MONITOR_PORT`    | `monitor_port`    | NATS monitoring HTTP port        |
 | `DAGNATS_MAX_STORE_BYTES` | `max_store_bytes` | Must be a positive integer       |

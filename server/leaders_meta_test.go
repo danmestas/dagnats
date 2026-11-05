@@ -31,7 +31,14 @@ type metaNode struct {
 
 func startMetaCluster(t *testing.T) []metaNode {
 	t.Helper()
-	clusterPorts := freeTCPPorts(t, 3)
+	return startMetaClusterOf(t, 3)
+}
+
+// startMetaClusterOf starts size routed servers named n0, n1, ... and
+// waits for a meta leader.
+func startMetaClusterOf(t *testing.T, size int) []metaNode {
+	t.Helper()
+	clusterPorts := freeTCPPorts(t, size)
 	routes := make([]string, len(clusterPorts))
 	for i, port := range clusterPorts {
 		routes[i] = fmt.Sprintf("nats://127.0.0.1:%d", port)
