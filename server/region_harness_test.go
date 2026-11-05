@@ -33,6 +33,9 @@ type testRegion struct {
 	name      string
 	nodes     []*natsserver.Server
 	leafPorts []int // bound leaf listener ports; nil for a dialing region
+	// configs holds each node's config, DataDir included, so restartNode
+	// can bring a node back on the state it left.
+	configs []Config
 }
 
 // regionOptions shapes a region's leaf side: listen opens a leaf listener
@@ -66,7 +69,10 @@ func startTestRegion(t *testing.T, name string, opts regionOptions) *testRegion 
 		panic("startTestRegion: a test region either listens or dials")
 	}
 	routePorts := freeTCPPorts(t, testRegionNodes)
-	region := &testRegion{name: name, nodes: make([]*natsserver.Server, testRegionNodes)}
+	region := &testRegion{
+		name: name, nodes: make([]*natsserver.Server, testRegionNodes),
+		configs: make([]Config, testRegionNodes),
+	}
 	for i := range region.nodes {
 		cfg := regionNodeConfig(t, name, i, routePorts, opts)
 		node, err := startNATS(cfg)
@@ -74,7 +80,7 @@ func startTestRegion(t *testing.T, name string, opts regionOptions) *testRegion 
 			t.Fatalf("start %s node %d: %v", name, i, err)
 		}
 		t.Cleanup(node.Shutdown)
-		region.nodes[i] = node
+		region.nodes[i], region.configs[i] = node, cfg
 		if opts.listen {
 			varz, err := node.Varz(nil)
 			if err != nil || varz.LeafNode.Port <= 0 {
@@ -126,6 +132,35 @@ func regionNodeConfig(
 		t.Fatalf("%s node %d auth: %v", name, i, err)
 	}
 	return cfg
+}
+
+// restartNode stops node i, applies mutate to its config and starts it
+// again on the same DataDir and cluster port, as a rolling restart does.
+// It returns once the node is running; the caller waits for the region.
+func (r *testRegion) restartNode(t *testing.T, i int, mutate func(*Config)) {
+	t.Helper()
+	if i < 0 || i >= len(r.nodes) {
+		panic("restartNode: node index out of range")
+	}
+	if r.leafPorts != nil {
+		panic("restartNode: a restarted listener would bind a new leaf port")
+	}
+	r.nodes[i].Shutdown()
+	r.nodes[i].WaitForShutdown()
+	cfg := r.configs[i]
+	if mutate != nil {
+		mutate(&cfg)
+	}
+	validateClusterConfig(&cfg)
+	if err := validateLeafConfig(cfg); err != nil {
+		t.Fatalf("%s node %d restart config: %v", r.name, i, err)
+	}
+	node, err := startNATS(cfg)
+	if err != nil {
+		t.Fatalf("restart %s node %d: %v", r.name, i, err)
+	}
+	t.Cleanup(node.Shutdown)
+	r.nodes[i], r.configs[i] = node, cfg
 }
 
 // waitRegionFormed waits for a full route mesh and a JetStream API that
