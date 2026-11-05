@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.51] - 2026-11-05
+
 ### Added
 
 - **`engine: false` (`DAGNATS_ENGINE=false`) makes a node replica-only.** It stays a JetStream voter and replica. It still runs health (`/health/cluster` reports `replica_only`), its program users, the leader rebalancer and the disk monitor. It runs no orchestrator, control plane, program registration, bridge, triggers, embedded workers or `dagnats.yaml` watcher. Control-plane requests through it are answered by the engine nodes, and its other HTTP routes answer 503 `replica-only node: engine off`. This is for a node across a slow link: on the mesh, mesh-mini's engine pulled a third of the shared work and paid the transatlantic link on every KV round trip.
