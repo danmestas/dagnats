@@ -191,3 +191,54 @@ func TestLeafListener_RefusesProgramNkey(t *testing.T) {
 		t.Fatal("hub refused the leaf login")
 	}
 }
+
+// A replica-only node (engine: false) still runs NATS from natsOptions, so
+// its leaf listener keeps the leaf-only login and its allow-list: a leaf
+// with no login is refused, and the hub drops a disallowed subject.
+func TestLeafListener_ReplicaOnlyNodeKeepsLeafLogin(t *testing.T) {
+	servers := startReplicaCluster(t, func(i int, cfg *Config) {
+		if i != 2 {
+			return
+		}
+		cfg.LeafPort, cfg.LeafListenUser = -1, testLeafUser
+		cfg.LeafListenPasswordFile = writeSecret(t, testLeafPassword)
+		cfg.LeafListenAllow = regionLinkAllow
+	})
+	replica := servers[2]
+	if !replica.cfg.ReplicaOnly {
+		t.Fatal("node 2 is not replica-only")
+	}
+	varz, err := replica.ns.Varz(nil)
+	if err != nil || varz.LeafNode.Port <= 0 {
+		t.Fatalf("replica-only leaf listener not bound: %v", err)
+	}
+	if dialRawLeaf(t, varz.LeafNode.Port).login(t, map[string]any{"name": "anon-spoke"}) {
+		t.Fatal("replica-only node linked a leaf with no login")
+	}
+	nc := connectOrFail(t, replica.NATSURL())
+	denied, err := nc.SubscribeSync("task.x")
+	if err != nil {
+		t.Fatalf("subscribe task.x: %v", err)
+	}
+	allowed, err := nc.SubscribeSync("_INBOX.raw")
+	if err != nil {
+		t.Fatalf("subscribe _INBOX.raw: %v", err)
+	}
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	leaf := dialRawLeaf(t, varz.LeafNode.Port)
+	if !leaf.login(t, map[string]any{
+		"name": "raw-spoke", "user": testLeafUser, "pass": testLeafPassword,
+	}) {
+		t.Fatal("replica-only node refused the leaf login")
+	}
+	leaf.publish(t, "task.x", "leak")
+	leaf.publish(t, "_INBOX.raw", "ok")
+	if _, err := allowed.NextMsg(rawLeafWait); err != nil {
+		t.Fatalf("allowed subject did not reach the replica-only node: %v", err)
+	}
+	if msg, err := denied.NextMsg(10 * time.Millisecond); err == nil {
+		t.Fatalf("replica-only node delivered disallowed %s from the leaf", msg.Subject)
+	}
+}

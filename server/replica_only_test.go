@@ -30,8 +30,9 @@ import (
 const replicaClusterWait = 60 * time.Second
 
 // startReplicaCluster starts n0 and n1 with the engine on and n2
-// replica-only, and returns them once all three are ready.
-func startReplicaCluster(t *testing.T) []*Server {
+// replica-only, and returns them once all three are ready. mutate, when
+// given, adjusts node i's config before it starts.
+func startReplicaCluster(t *testing.T, mutate ...func(i int, cfg *Config)) []*Server {
 	t.Helper()
 	ports := freeTCPPorts(t, 3)
 	routes := make([]string, len(ports))
@@ -49,6 +50,9 @@ func startReplicaCluster(t *testing.T) []*Server {
 		cfg.NATSServerName = fmt.Sprintf("n%d", i)
 		cfg.MaxStoreBytes = 512 << 20
 		cfg.ReplicaOnly = i == 2
+		for _, adjust := range mutate {
+			adjust(i, &cfg)
+		}
 		servers[i] = New(cfg)
 		errChs[i] = make(chan error, 1)
 		go func(srv *Server, errCh chan error) { errCh <- srv.Run() }(servers[i], errChs[i])
