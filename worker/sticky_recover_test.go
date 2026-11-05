@@ -128,7 +128,22 @@ func TestStickyConsumer_RecreatedAfterDeletion(t *testing.T) {
 	}
 }
 
+// A task published in the gap, after the reap and before the recreate,
+// is delivered whether or not the consumer had delivered anything: with
+// nothing delivered the recreate keeps DeliverAll (the filter names this
+// Worker's random ID, so nothing older matches), and after a delivery
+// it starts just past that delivery, which is still before the gap.
 func TestStickyConsumer_RecreatedAfterDeletionWhileDisconnected(t *testing.T) {
+	t.Run("never delivered", func(t *testing.T) {
+		checkDisconnectedRecreate(t, false)
+	})
+	t.Run("delivered before", func(t *testing.T) {
+		checkDisconnectedRecreate(t, true)
+	})
+}
+
+func checkDisconnectedRecreate(t *testing.T, deliveredBefore bool) {
+	t.Helper()
 	srv, admin := natstest.StartServer(t)
 	if err := natsutil.SetupAll(admin); err != nil {
 		t.Fatalf("SetupAll: %v", err)
@@ -137,8 +152,9 @@ func TestStickyConsumer_RecreatedAfterDeletionWhileDisconnected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
 	}
-	// The reconnect wait leaves room to delete the consumer while the
-	// Worker holds no subscription, so no 409 reaches it.
+	// The reconnect wait leaves room to delete the consumer and publish
+	// while the Worker holds no subscription, so no 409 reaches it and
+	// the publish lands in the gap before any recreate.
 	nc, err := nats.Connect(srv.ClientURL(), nats.ReconnectWait(2*time.Second))
 	if err != nil {
 		t.Fatalf("connect worker: %v", err)
@@ -147,6 +163,10 @@ func TestStickyConsumer_RecreatedAfterDeletionWhileDisconnected(t *testing.T) {
 	const taskType = "probe.noresponders"
 	w, handled := startStickyWorker(t, nc, taskType, nil)
 	name := stickyConsumerName(t, js)
+	if deliveredBefore {
+		publishSticky(t, js, w, taskType, "run-before")
+		awaitHandled(t, handled, "run-before")
+	}
 
 	clientID, err := nc.GetClientID()
 	if err != nil {
@@ -156,14 +176,18 @@ func TestStickyConsumer_RecreatedAfterDeletionWhileDisconnected(t *testing.T) {
 		t.Fatalf("disconnect worker: %v", err)
 	}
 	deleteConsumer(t, js, name)
+	publishSticky(t, js, w, taskType, "run-gap")
 	if nc.IsConnected() {
-		t.Fatal("worker reconnected before the deletion; the test proves nothing")
+		t.Fatal("worker reconnected before the gap publish; the test proves nothing")
 	}
-	publishSticky(t, js, w, taskType, "run-after")
 
-	awaitHandled(t, handled, "run-after")
+	awaitHandled(t, handled, "run-gap")
 	if got := stickyConsumerName(t, js); got != name {
 		t.Fatalf("recreated consumer %q, want the same name %q", got, name)
+	}
+	// Exactly the gap task: nothing lost, and run-before not replayed.
+	if delivered := stickyDeliveredCount(t, js, name); delivered != 1 {
+		t.Fatalf("recreated consumer delivered %d messages, want 1", delivered)
 	}
 }
 
