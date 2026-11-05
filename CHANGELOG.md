@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.52] - 2026-11-05
+
 ### Added
 
 - **`retire_peers` (`DAGNATS_RETIRE_PEERS`) removes servers leaving the cluster from the JetStream meta group.** A node switched off for good, such as one moving to another region, stayed a meta-group member: it counted towards quorum and every replica it held was lost redundancy, and removing it needed `$JS.API.SERVER.REMOVE` from the system account on the meta leader. Now the meta leader removes each listed server, by peer ID, once it has seen it offline and not current at every check for 2 minutes (a meta leader that restarted after the server stopped still finds it by peer ID), one per check, and JetStream re-places its stream and consumer replicas onto the remaining servers. An online server is never removed. It shares the in-process system user and the per-minute check with `preferred_leaders`. The list holds at most 8 names and may not name this node's `nats_server_name` or a `preferred_leaders` entry; either fails config load.
