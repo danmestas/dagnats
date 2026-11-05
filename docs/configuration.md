@@ -71,7 +71,9 @@ leaf_listen_allow: $JS.eu.API.>, $JS.us.API.>, $JS.ACK.>, $JS.FC.>, _INBOX.>
 
 That lets each region reach the other's JetStream by domain, including fetching and acking a consumer there, and keeps every dagnats subject in its own region.
 
-The URLs in `leaf_remotes` are one hub cluster's leaf listeners: dagnats opens one leaf link to one of them and fails over to another when that node goes away. They are not parallel links; listing several hubs gives failover between them, not a link to each.
+> **Linked regions trust each other.** The allow-list restricts subjects, not trust. With `_INBOX.>` allowed, any client in one region can subscribe to the other region's inboxes and read its pull deliveries, which carry task and history payloads. With `$JS.<domain>.API.>` allowed, it can read, purge or delete the other region's streams. Link only regions you would let run each other's work, as with programs ([#909](https://github.com/danmestas/dagnats/issues/909)).
+
+The URLs in `leaf_remotes` are one hub cluster's leaf listeners: dagnats opens one leaf link to one of them and fails over to another when that node goes away. They are not parallel links; listing several hubs gives failover between them, not a link to each. Because they are one link with one TLS setting, they must all use one scheme (all `tls://` or all `nats-leaf://`, for example); a mix fails config load.
 
 On the dialing side, `leaf_user` and `leaf_password_file` log in to every leaf remote whose URL carries no login of its own, with a plain user and password instead of the NKey/JWT creds file `leaf_credentials` needs (which assumes operator mode). They are set together, need `leaf_remotes`, and exclude `leaf_credentials`.
 

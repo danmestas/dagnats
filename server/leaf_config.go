@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -75,7 +76,38 @@ func validateLeafConfig(cfg Config) error {
 	if err := validateLeafListener(cfg); err != nil {
 		return err
 	}
+	if err := validateLeafRemoteSchemes(cfg.LeafRemotes); err != nil {
+		return err
+	}
 	return validateLeafRemoteLogin(cfg)
+}
+
+// validateLeafRemoteSchemes requires one scheme across leaf_remotes. They
+// form one nats-server remote, which has one TLS and one transport setting:
+// a tls:// URL turns TLS on for every URL, so a plain one could never
+// connect.
+func validateLeafRemoteSchemes(remotes []string) error {
+	if len(remotes) > maxLeafRemotes {
+		panic("validateLeafRemoteSchemes: more remotes than the load caps")
+	}
+	first := ""
+	for i, remote := range remotes {
+		// The URL may carry a login, so the error names its position.
+		remoteURL, err := url.Parse(remote)
+		if err != nil {
+			return fmt.Errorf("leaf_remotes entry %d does not parse as a URL", i+1)
+		}
+		if first == "" {
+			first = remoteURL.Scheme
+			continue
+		}
+		if remoteURL.Scheme != first {
+			return fmt.Errorf("leaf_remotes must all use one scheme: got %q and %q; "+
+				"they are one link that fails over, with one TLS setting",
+				first, remoteURL.Scheme)
+		}
+	}
+	return nil
 }
 
 // validateLeafListener requires a login on any leaf listener: a linked leaf

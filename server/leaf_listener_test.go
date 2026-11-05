@@ -120,6 +120,15 @@ func TestValidateLeafConfig(t *testing.T) {
 			remote(c)
 			c.LeafCredentials = "/e.creds"
 		}, "leaf_user and leaf_credentials are mutually exclusive"},
+		{"remotes sharing a scheme", func(c *Config) {
+			c.LeafRemotes = []string{"tls://a:7422", "tls://b:7422"}
+		}, ""},
+		{"remotes mixing tls and plain", func(c *Config) {
+			c.LeafRemotes = []string{"tls://a:7422", "nats-leaf://b:7422"}
+		}, `leaf_remotes must all use one scheme: got "tls" and "nats-leaf"`},
+		{"remote that does not parse", func(c *Config) {
+			c.LeafRemotes = []string{"nats-leaf://a:7422", "://b"}
+		}, "leaf_remotes"},
 		{"remote login without remotes", func(c *Config) {
 			remote(c)
 			c.LeafRemotes = nil

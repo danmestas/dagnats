@@ -190,6 +190,15 @@ New configuration:
   `jetstream_domain` is set and differs from the remote's, which
   nats-server reports when the link comes up.
 
+  **The allow-list restricts subjects, not trust.** It keeps dagnats'
+  own traffic in its region; it does not protect one region from the
+  other. With `_INBOX.>` allowed, a client in one region can subscribe
+  to the other region's inboxes and see its pull deliveries, which carry
+  task and history payloads. With `$JS.<domain>.API.>` allowed, it can
+  read, purge or delete the other region's streams. Linked regions must
+  trust each other, as programs must today (#909); a link to a region
+  you do not trust needs a separate NATS account, which is out of scope.
+
 **EU leaders stay on the German pair.** `mesh-hel` is a voter and holds a
 replica of every R3 stream, but it is not in `preferred_leaders`, so the
 rebalancer keeps stream leaders and the meta leader on `mesh-vps` and
