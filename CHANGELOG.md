@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A worker recreates its sticky consumer when the server deletes it.** The sticky consumer on `STICKY_TASKS` is reaped after 5 minutes without a pull (`InactiveThreshold`), as happened when a JetStream leadership change kept a worker's pull down that long. nats.go never recreates a consumer, so from then on the worker logged `consumer error ... nats: no responders available for request` every 30 s and no step bound to that worker id reached it until it restarted. Now a "no responders", "consumer deleted" or "consumer not found" consume error starts a recovery: if the server no longer has the consumer, the worker recreates it under the same name and config, logs one `WARN` (`sticky consumer was deleted by the server; recreated it`), and consumes it again. The recreated consumer starts just after the newest task the worker was delivered, so tasks it already handled are not replayed. Attempts back off from 1 s to 30 s, at most one recovery pass runs per second, a pass gives up after 40 attempts until the next consume error, and `Stop` ends a recovery at once. A leadership change that leaves the consumer in place changes nothing. Shared `TASK_QUEUES` consumers have no `InactiveThreshold`, so the server never reaps them; one deleted by hand is still not recreated.
+
 ## [0.0.51] - 2026-11-05
 
 ### Added

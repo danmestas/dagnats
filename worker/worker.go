@@ -244,6 +244,9 @@ type Worker struct {
 	// autoHeartbeatOff is a test seam (withoutAutoHeartbeat) that models
 	// a frozen process: a handler that blocks then sends no heartbeat.
 	autoHeartbeatOff bool
+	// stickyRetryMin is the sticky lane's first recovery backoff
+	// (stickyRetryMinDefault); tests lengthen it.
+	stickyRetryMin time.Duration
 
 	// Pre-allocated metric instruments — created once in constructor.
 	stepDuration          metric.Float64Histogram
@@ -456,6 +459,7 @@ func NewWorker(
 		drainTimeout:          defaultDrainTimeout,
 		setupInFlight:         setupInFlightMax,
 		heartbeatMax:          DefaultHeartbeatMax,
+		stickyRetryMin:        stickyRetryMinDefault,
 		catchupKeysMax:        maxCatchupKeys,
 		stopping:              make(chan struct{}),
 		abandoned:             make(chan struct{}),
@@ -986,15 +990,14 @@ func (w *Worker) createStickyConsumer(
 		taskType: taskType, handler: handler, ackWait: info.Config.AckWait,
 		park: &lanePark{},
 	}
-	cc, err := cons.Consume(
-		w.messageHandler(l),
-		jetstream.ConsumeErrHandler(consumeErrHandler(subject)),
-	)
+	sticky, err := startStickyConsume(stream, cons, w.messageHandler(l), w.stickyRetryMin)
 	if err != nil {
+		slog.Warn("sticky consume failed; sticky routing off for this worker",
+			"consumer", subject, "error", err)
 		return nil
 	}
-	w.trackLane(cc, l.park)
-	return cc
+	w.trackLane(sticky, l.park)
+	return sticky
 }
 
 // stickyInactiveThreshold is how long the server keeps a sticky consumer
