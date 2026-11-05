@@ -46,8 +46,6 @@ const (
 	// ordered consumer, the watch hears nothing until nats.go's missed
 	// heartbeat check recreates the consumer: about 20s, measured.
 	watchFailoverWait = 45 * time.Second
-	// replyTokenHeader carries notify's reply token on an agents request.
-	replyTokenHeader = "Reply-Token"
 )
 
 // asLiveMesh shapes a node like the live eu cluster before the migration:
@@ -388,52 +386,132 @@ func waitRelinked(t *testing.T, eu, us *testRegion, stopped int) {
 	}
 }
 
-// notify's agents traffic crosses: a us request with a _INBOX.notify
-// inbox reaches an eu responder, which answers on the inbox and publishes
-// the card to a2a.reply.<token>. A plain _INBOX request is answered too.
-func TestRehearsal_AgentsRequestsCrossFromUS(t *testing.T) {
-	eu, us := startRehearsalPair(t)
+// The eu agents responder answers both of notify's dispatch shapes
+// (notify internal/agents/runtime/mesh/mesh.go and synadia.go): an A2A
+// request carrying reply_to, acked on the NATS reply then answered with
+// status frames and a final frame on reply_to; and a Synadia v0.3 prompt,
+// answered on the NATS reply alone.
+const (
+	a2aReplyToHeader = "reply_to"
+	agentsSubject    = "agents.prompt.cc.test"
+)
+
+// synadiaHeaders are the headers a Synadia v0.3 prompt carries.
+var synadiaHeaders = []string{
+	"Notify-Context-Id", "Notify-Message-Id", "Notify-Subscriber-Id",
+}
+
+// a2aFrames are what the responder publishes on reply_to, in order.
+var a2aFrames = []string{"status:working", "status:thinking", "final:hello"}
+
+// startAgentsResponder subscribes eu node 1 to agentsSubject.
+func startAgentsResponder(t *testing.T, eu *testRegion) {
+	t.Helper()
 	responder := eu.connect(t, 1)
-	if _, err := responder.Subscribe("agents.prompt.cc.test", func(msg *nats.Msg) {
-		if token := msg.Header.Get(replyTokenHeader); token != "" {
-			if err := responder.Publish("a2a.reply."+token, []byte("card:"+string(msg.Data))); err != nil {
-				t.Errorf("publish a2a reply: %v", err)
+	if _, err := responder.Subscribe(agentsSubject, func(msg *nats.Msg) {
+		replyTo := msg.Header.Get(a2aReplyToHeader)
+		if replyTo == "" {
+			answerSynadia(t, msg)
+			return
+		}
+		if err := msg.Respond([]byte("ack")); err != nil {
+			t.Errorf("ack a2a request: %v", err)
+		}
+		for _, frame := range a2aFrames {
+			if err := responder.Publish(replyTo, []byte(frame)); err != nil {
+				t.Errorf("publish %s on %s: %v", frame, replyTo, err)
 			}
 		}
-		if err := msg.Respond([]byte("ack:" + string(msg.Data))); err != nil {
-			t.Errorf("respond: %v", err)
-		}
 	}); err != nil {
-		t.Fatalf("subscribe agents in eu: %v", err)
+		t.Fatalf("subscribe %s in eu: %v", agentsSubject, err)
 	}
+	if err := responder.Flush(); err != nil {
+		t.Fatalf("flush responder: %v", err)
+	}
+}
+
+// answerSynadia replies to a Synadia prompt with its prompt echoed, or
+// with an error naming the first missing header.
+func answerSynadia(t *testing.T, msg *nats.Msg) {
+	reply := []byte(`{"error":"no prompt"}`)
+	var body struct {
+		Prompt string `json:"prompt"`
+	}
+	if err := json.Unmarshal(msg.Data, &body); err == nil && body.Prompt != "" {
+		reply = []byte(`{"answer":"` + body.Prompt + `"}`)
+	}
+	for _, header := range synadiaHeaders {
+		if msg.Header.Get(header) == "" {
+			reply = []byte(`{"error":"missing ` + header + `"}`)
+		}
+	}
+	if err := msg.Respond(reply); err != nil {
+		t.Errorf("answer synadia prompt: %v", err)
+	}
+}
+
+// A2A dispatch from us: the request carries reply_to=a2a.reply.<token>
+// and a _INBOX.notify NATS reply. The us client gets the ack on its inbox
+// and every frame on reply_to, subscribed before it sends.
+func TestRehearsal_A2ADispatchFromUS(t *testing.T) {
+	eu, us := startRehearsalPair(t)
+	startAgentsResponder(t, eu)
 	notify := connectOrFail(t, us.nodes[2].ClientURL(), nats.CustomInboxPrefix("_INBOX.notify"))
-	token := nuid.Next()
-	cards, err := notify.SubscribeSync("a2a.reply." + token)
+	replyTo := "a2a.reply." + nuid.Next()
+	frames, err := notify.SubscribeSync(replyTo)
 	if err != nil {
-		t.Fatalf("subscribe a2a.reply in us: %v", err)
+		t.Fatalf("subscribe %s in us: %v", replyTo, err)
 	}
 	if err := notify.Flush(); err != nil {
 		t.Fatalf("flush in us: %v", err)
 	}
-	waitInterest(t, eu.nodes[1], "a2a.reply."+token)
-	waitInterest(t, us.nodes[2], "agents.prompt.cc.test")
+	waitInterest(t, eu.nodes[1], replyTo)
+	waitInterest(t, us.nodes[2], agentsSubject)
 	request := &nats.Msg{
-		Subject: "agents.prompt.cc.test", Data: []byte("hello"),
-		Header: nats.Header{replyTokenHeader: []string{token}},
+		Subject: agentsSubject, Data: []byte(`{"prompt":"hello"}`),
+		Header: nats.Header{a2aReplyToHeader: []string{replyTo}},
 	}
-	reply, err := notify.RequestMsg(request, 5*time.Second)
-	if err != nil || string(reply.Data) != "ack:hello" ||
-		!strings.HasPrefix(reply.Subject, "_INBOX.notify.") {
-		t.Fatalf("notify request from us: reply %+v, err %v; want ack:hello on _INBOX.notify",
+	ack, err := notify.RequestMsg(request, 5*time.Second)
+	if err != nil || string(ack.Data) != "ack" ||
+		!strings.HasPrefix(ack.Subject, "_INBOX.notify.") {
+		t.Fatalf("a2a request from us: reply %+v, err %v; want ack on _INBOX.notify", ack, err)
+	}
+	for _, want := range a2aFrames {
+		frame, err := frames.NextMsg(5 * time.Second)
+		if err != nil || string(frame.Data) != want {
+			t.Fatalf("%s in us: %+v, err %v; want %s", replyTo, frame, err, want)
+		}
+	}
+	if extra, err := frames.NextMsg(crossWait); err == nil {
+		t.Fatalf("%s delivered an extra frame %q", replyTo, extra.Data)
+	}
+}
+
+// Synadia v0.3 from us: a plain request with notify's headers and a
+// {"prompt"} body is answered on the standard inbox. The same request
+// without the headers is refused by the responder, so the headers crossed.
+func TestRehearsal_SynadiaPromptFromUS(t *testing.T) {
+	eu, us := startRehearsalPair(t)
+	startAgentsResponder(t, eu)
+	nc := us.connect(t, 0)
+	waitInterest(t, us.nodes[0], agentsSubject)
+	request := &nats.Msg{
+		Subject: agentsSubject, Data: []byte(`{"prompt":"hello"}`), Header: nats.Header{},
+	}
+	for _, header := range synadiaHeaders {
+		request.Header.Set(header, "id-"+nuid.Next())
+	}
+	reply, err := nc.RequestMsg(request, 5*time.Second)
+	if err != nil || string(reply.Data) != `{"answer":"hello"}` ||
+		!strings.HasPrefix(reply.Subject, "_INBOX.") {
+		t.Fatalf("synadia prompt from us: reply %+v, err %v; want the answer on _INBOX",
 			reply, err)
 	}
-	card, err := cards.NextMsg(5 * time.Second)
-	if err != nil || string(card.Data) != "card:hello" {
-		t.Fatalf("a2a.reply.%s in us: %+v, err %v; want card:hello", token, card, err)
-	}
-	plain, err := us.connect(t, 0).Request("agents.prompt.cc.test", []byte("plain"), 5*time.Second)
-	if err != nil || string(plain.Data) != "ack:plain" {
-		t.Fatalf("plain request from us: %+v, err %v; want ack:plain", plain, err)
+	bare := &nats.Msg{Subject: agentsSubject, Data: request.Data}
+	reply, err = nc.RequestMsg(bare, 5*time.Second)
+	if err != nil || !strings.Contains(string(reply.Data), "missing Notify-") {
+		t.Fatalf("headerless prompt from us: reply %+v, err %v; want a missing-header error",
+			reply, err)
 	}
 }
 
@@ -450,8 +528,10 @@ func waitInterest(t *testing.T, node *natsserver.Server, subject string) {
 	}
 }
 
-// $SRV.INFO.agents from us reaches eu's agents service; another eu
-// service's $SRV subjects are not in the allow-list and stay in eu.
+// Discovery from us as notify sends it: $SRV.INFO.agents with the reply
+// subject a2a.reply.info.<token>, answered by eu's agents service. The
+// same probe for another eu service gets no answer: its $SRV subjects are
+// not in the allow-list.
 func TestRehearsal_AgentsServiceDiscoveryFromUS(t *testing.T) {
 	eu, us := startRehearsalPair(t)
 	for _, name := range []string{"agents", "billing"} {
@@ -463,22 +543,44 @@ func TestRehearsal_AgentsServiceDiscoveryFromUS(t *testing.T) {
 	}
 	nc := us.connect(t, 0)
 	waitInterest(t, us.nodes[0], "$SRV.INFO.agents")
-	for _, subject := range []string{"$SRV.INFO.agents", "$SRV.PING.agents"} {
-		msg, err := nc.Request(subject, nil, 5*time.Second)
-		if err != nil {
-			t.Fatalf("%s from us: %v", subject, err)
-		}
-		var info micro.Info
-		if err := json.Unmarshal(msg.Data, &info); err != nil || info.Name != "agents" {
-			t.Fatalf("%s from us = %s (err %v), want the agents service", subject, msg.Data, err)
-		}
+	msg, err := discover(t, eu, nc, "$SRV.INFO.agents", 5*time.Second)
+	if err != nil {
+		t.Fatalf("$SRV.INFO.agents from us: %v", err)
+	}
+	var info micro.Info
+	if err := json.Unmarshal(msg.Data, &info); err != nil || info.Name != "agents" {
+		t.Fatalf("$SRV.INFO.agents from us = %s (err %v), want the agents service",
+			msg.Data, err)
 	}
 	if _, err := eu.connect(t, 2).Request("$SRV.INFO.billing", nil, 5*time.Second); err != nil {
 		t.Fatalf("$SRV.INFO.billing in eu: %v", err)
 	}
-	if msg, err := nc.Request("$SRV.INFO.billing", nil, crossWait); err == nil {
+	if msg, err := discover(t, eu, nc, "$SRV.INFO.billing", crossWait); err == nil {
 		t.Fatalf("$SRV.INFO.billing crossed to us: %s", msg.Data)
 	}
+}
+
+// discover publishes subject from nc with the reply subject
+// a2a.reply.info.<token>, subscribed first and its interest seen in eu,
+// and waits up to wait for the answer.
+func discover(
+	t *testing.T, eu *testRegion, nc *nats.Conn, subject string, wait time.Duration,
+) (*nats.Msg, error) {
+	t.Helper()
+	reply := "a2a.reply.info." + nuid.Next()
+	answers, err := nc.SubscribeSync(reply)
+	if err != nil {
+		t.Fatalf("subscribe %s in us: %v", reply, err)
+	}
+	t.Cleanup(func() { _ = answers.Unsubscribe() })
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("flush in us: %v", err)
+	}
+	waitInterest(t, eu.nodes[1], reply)
+	if err := nc.PublishRequest(subject, reply, nil); err != nil {
+		t.Fatalf("publish %s from us: %v", subject, err)
+	}
+	return answers.NextMsg(wait)
 }
 
 // task.x and history.x published in one region are stored only there:
