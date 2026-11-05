@@ -92,7 +92,13 @@ func TestJoinKeysCreateListRevoke(t *testing.T) {
 	if _, err := store.Verify(plaintext, "artifactstore"); err != nil {
 		t.Fatalf("created key does not verify: %v", err)
 	}
-	secretPart := plaintext[strings.LastIndex(plaintext, "_")+1:]
+	// The secret is base64url, which may itself hold "_"; take it by the
+	// "djk_{id}_" shape, not the last "_" (a short tail could occur in the
+	// list body by chance).
+	secretPart := strings.TrimPrefix(plaintext, "djk_"+id+"_")
+	if len(secretPart) < 16 {
+		t.Fatalf("plaintext %q is not djk_%s_<secret>", plaintext, id)
+	}
 
 	listBody := readBody(t, doJSON(t, http.MethodGet, url, "admin-secret", ""))
 	if !strings.Contains(listBody, `"id":"`+id+`"`) {

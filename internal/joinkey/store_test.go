@@ -91,7 +91,7 @@ func TestVerifyWrongSecret(t *testing.T) {
 	store := newTestStore(t)
 	created, plaintext := mustCreate(t, store, Spec{Label: "deploys"})
 	other, _ := mustCreate(t, store, Spec{Label: "other"})
-	secretPart := plaintext[strings.LastIndex(plaintext, "_")+1:]
+	secretPart := secretOf(t, plaintext, created.ID)
 	cases := map[string]string{
 		"empty":           "",
 		"garbage":         "not-a-join-key",
@@ -291,7 +291,7 @@ func TestPlaintextNeverListedOrLogged(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(previous) })
 	store := newTestStore(t)
 	created, plaintext := mustCreate(t, store, Spec{Label: "secretive", UsesMax: 3})
-	secretPart := plaintext[strings.LastIndex(plaintext, "_")+1:]
+	secretPart := secretOf(t, plaintext, created.ID)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if _, err := store.Verify(plaintext, "notify"); err != nil {
@@ -470,4 +470,16 @@ func TestMutateContentionIsTypedAndBounded(t *testing.T) {
 	if err != nil || stored.UsesLeft != 3 {
 		t.Fatalf("contended ConsumeUse wrote: %+v, %v", stored, err)
 	}
+}
+
+// secretOf takes a key's secret by the plaintext's "djk_{id}_{secret}" shape.
+// The secret is base64url, which may itself hold "_", so splitting on the
+// last "_" can yield a short tail that matches unrelated text by chance.
+func secretOf(t *testing.T, plaintext, id string) string {
+	t.Helper()
+	secret := strings.TrimPrefix(plaintext, keyPrefix+"_"+id+"_")
+	if secret == plaintext || len(secret) < 16 {
+		t.Fatalf("plaintext %q is not %s_%s_<secret>", plaintext, keyPrefix, id)
+	}
+	return secret
 }

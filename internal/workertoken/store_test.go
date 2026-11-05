@@ -53,7 +53,9 @@ func TestAuthorizeParseStrictness(t *testing.T) {
 	}{
 		{"missing prefix", strings.TrimPrefix(bearer, "dgn_")},
 		{"wrong segment count", "dgn_onlyoneseg"},
-		{"empty secret", bearer[:strings.LastIndex(bearer, "_")+1]},
+		// The secret is base64url and may hold "_", so cut after the second
+		// "_" (prefix and id), not the last one.
+		{"empty secret", strings.Join(strings.SplitN(bearer, "_", 3)[:2], "_") + "_"},
 		{"garbage", "not-a-bearer-at-all"},
 	}
 	for _, tc := range cases {
