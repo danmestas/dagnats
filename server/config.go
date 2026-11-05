@@ -104,6 +104,10 @@ type Config struct {
 	LeafHost               string `json:"leaf_host"`
 	LeafListenUser         string `json:"leaf_listen_user"`
 	LeafListenPasswordFile string `json:"leaf_listen_password_file"`
+	// LeafListenAllow, when set, is the only subjects a leaf linked with
+	// the listener's login may publish or subscribe to (ADR-031: a region
+	// link). Unset, the link carries every subject.
+	LeafListenAllow []string `json:"leaf_listen_allow"`
 	// leafPassword and leafListenPassword are the files' contents, read at
 	// start.
 	leafPassword       string
@@ -1134,6 +1138,8 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 		cfg.LeafListenUser = val
 	case "leaf_listen_password_file":
 		cfg.LeafListenPasswordFile = val
+	case "leaf_listen_allow":
+		cfg.LeafListenAllow = subjectList(val)
 	case "nats_cluster_name":
 		cfg.NATSClusterName = val
 	case "nats_cluster_routes":

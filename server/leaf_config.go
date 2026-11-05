@@ -9,8 +9,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
+	"unicode"
 )
 
 // applyLeafEnv applies the DAGNATS_LEAF_* overrides for the listener and
@@ -42,7 +45,29 @@ func applyLeafEnv(cfg *Config) error {
 			*field = val
 		}
 	}
+	if val := os.Getenv("DAGNATS_LEAF_LISTEN_ALLOW"); val != "" {
+		cfg.LeafListenAllow = subjectList(val)
+	}
 	return nil
+}
+
+// leafListenAllowMax bounds leaf_listen_allow; a region link needs five.
+const leafListenAllowMax = 32
+
+// subjectList splits a comma list of subjects, trimming each and dropping
+// empty ones. It keeps one entry past leafListenAllowMax so validation
+// can report the overflow instead of truncating silently.
+func subjectList(val string) []string {
+	var subjects []string
+	for _, subject := range strings.Split(val, ",") {
+		if subject = strings.TrimSpace(subject); subject != "" {
+			subjects = append(subjects, subject)
+		}
+		if len(subjects) > leafListenAllowMax {
+			break
+		}
+	}
+	return subjects
 }
 
 // validateLeafConfig checks the leaf listener and the remote login. It
@@ -51,7 +76,38 @@ func validateLeafConfig(cfg Config) error {
 	if err := validateLeafListener(cfg); err != nil {
 		return err
 	}
+	if err := validateLeafRemoteSchemes(cfg.LeafRemotes); err != nil {
+		return err
+	}
 	return validateLeafRemoteLogin(cfg)
+}
+
+// validateLeafRemoteSchemes requires one scheme across leaf_remotes. They
+// form one nats-server remote, which has one TLS and one transport setting:
+// a tls:// URL turns TLS on for every URL, so a plain one could never
+// connect.
+func validateLeafRemoteSchemes(remotes []string) error {
+	if len(remotes) > maxLeafRemotes {
+		panic("validateLeafRemoteSchemes: more remotes than the load caps")
+	}
+	first := ""
+	for i, remote := range remotes {
+		// The URL may carry a login, so the error names its position.
+		remoteURL, err := url.Parse(remote)
+		if err != nil {
+			return fmt.Errorf("leaf_remotes entry %d does not parse as a URL", i+1)
+		}
+		if first == "" {
+			first = remoteURL.Scheme
+			continue
+		}
+		if remoteURL.Scheme != first {
+			return fmt.Errorf("leaf_remotes must all use one scheme: got %q and %q; "+
+				"they are one link that fails over, with one TLS setting",
+				first, remoteURL.Scheme)
+		}
+	}
+	return nil
 }
 
 // validateLeafListener requires a login on any leaf listener: a linked leaf
@@ -59,6 +115,9 @@ func validateLeafConfig(cfg Config) error {
 // subject and stream to whoever can reach the port, loopback included.
 func validateLeafListener(cfg Config) error {
 	if cfg.LeafPort == 0 {
+		if len(cfg.LeafListenAllow) > 0 {
+			return errors.New("leaf_listen_allow is set but leaf_port is not")
+		}
 		if cfg.LeafHost != "" {
 			return errors.New("leaf_host is set but leaf_port is not")
 		}
@@ -83,7 +142,55 @@ func validateLeafListener(cfg Config) error {
 			return fmt.Errorf("leaf_port %d collides with %s", cfg.LeafPort, name)
 		}
 	}
+	if err := validateLeafLoginName(cfg); err != nil {
+		return err
+	}
+	return validateLeafListenAllow(cfg.LeafListenAllow)
+}
+
+// validateLeafLoginName keeps the leaf login distinct in the users table
+// it shares with the client logins: one name cannot be two users.
+func validateLeafLoginName(cfg Config) error {
+	if cfg.LeafListenUser == "" {
+		panic("validateLeafLoginName: no leaf login")
+	}
+	if cfg.LeafListenUser == cfg.NATSUser {
+		return errors.New("leaf_listen_user must differ from nats_user: " +
+			"they are separate logins in one users table")
+	}
+	if strings.HasPrefix(cfg.LeafListenUser, "_dagnats_") {
+		return fmt.Errorf("leaf_listen_user %q is reserved for dagnats' "+
+			"built-in users", cfg.LeafListenUser)
+	}
 	return nil
+}
+
+// validateLeafListenAllow checks each entry is a NATS subject: non-empty
+// tokens, no whitespace, '>' only as the last token.
+func validateLeafListenAllow(allow []string) error {
+	if len(allow) > leafListenAllowMax {
+		return fmt.Errorf("leaf_listen_allow holds at most %d subjects; got %d",
+			leafListenAllowMax, len(allow))
+	}
+	for _, subject := range allow {
+		if !validSubject(subject) {
+			return fmt.Errorf("leaf_listen_allow: %q is not a valid subject", subject)
+		}
+	}
+	return nil
+}
+
+func validSubject(subject string) bool {
+	if subject == "" || strings.IndexFunc(subject, unicode.IsSpace) >= 0 {
+		return false
+	}
+	tokens := strings.Split(subject, ".")
+	for i, token := range tokens {
+		if token == "" || (token == ">" && i != len(tokens)-1) {
+			return false
+		}
+	}
+	return true
 }
 
 // validateLeafRemoteLogin checks leaf_user: it pairs with its password

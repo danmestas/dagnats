@@ -89,7 +89,7 @@ When leaf remotes are configured:
 - All internal components still connect to `localhost:{port}`
 - Workers can connect to either the leaf or the hub -- same code path
 
-Leaf node mode enables geographic distribution, multi-team isolation, or connecting edge deployments to a central cluster. A maximum of 10 leaf remotes can be configured.
+Leaf node mode enables geographic distribution, multi-team isolation, or connecting edge deployments to a central cluster. A maximum of 10 leaf remotes can be configured. They are one hub cluster's leaf listeners: the leaf holds one link and fails over between them, rather than linking to each.
 
 A far site belongs on a leaf node, not in a cluster: keep cluster nodes within about 100 ms of each other. See [Regional clusters, far sites](/docs/operations/clustering#regional-clusters-far-sites).
 
