@@ -27,11 +27,19 @@ const metaSettleWait = 30 * time.Second
 type metaNode struct {
 	ns       *natsserver.Server
 	password string
+	opts     *natsserver.Options // to restart it on the same store
 }
 
 func startMetaCluster(t *testing.T) []metaNode {
 	t.Helper()
-	clusterPorts := freeTCPPorts(t, 3)
+	return startMetaClusterOf(t, 3)
+}
+
+// startMetaClusterOf starts size routed servers named n0, n1, ... and
+// waits for a meta leader.
+func startMetaClusterOf(t *testing.T, size int) []metaNode {
+	t.Helper()
+	clusterPorts := freeTCPPorts(t, size)
 	routes := make([]string, len(clusterPorts))
 	for i, port := range clusterPorts {
 		routes[i] = fmt.Sprintf("nats://127.0.0.1:%d", port)
@@ -55,7 +63,7 @@ func startMetaCluster(t *testing.T) []metaNode {
 		}
 		ns.Start()
 		t.Cleanup(ns.Shutdown)
-		nodes = append(nodes, metaNode{ns: ns, password: systemPassword(opts)})
+		nodes = append(nodes, metaNode{ns: ns, password: systemPassword(opts), opts: opts})
 	}
 	for _, node := range nodes {
 		if !node.ns.ReadyForConnections(10 * time.Second) {

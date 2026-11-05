@@ -65,8 +65,8 @@ type Server struct {
 	programUsersStop context.CancelFunc
 	// programsExpiryStop ends the pending-registration expiry sweep.
 	programsExpiryStop context.CancelFunc
-	// leaderRebalanceStop ends the preferred-leader rebalancer, if on.
-	leaderRebalanceStop context.CancelFunc
+	// metaReconcileStop ends the leader rebalancer and peer retirer, if on.
+	metaReconcileStop context.CancelFunc
 	// diskMonitorStop ends the low-disk monitor.
 	diskMonitorStop    context.CancelFunc
 	programUsersDone   chan struct{}
@@ -147,7 +147,7 @@ func (s *Server) Run() error {
 	}
 
 	// Started once nothing can fail startup, so shutdown always stops it.
-	s.startLeaderRebalancer()
+	s.startMetaReconcilers()
 	s.startDiskMonitor()
 	s.ready.Store(true)
 	printBanner(os.Stderr, s.cfg.HTTPAddr, s.ns.ClientURL())
@@ -851,8 +851,8 @@ func (s *Server) shutdown() error {
 		if s.diskMonitorStop != nil {
 			s.diskMonitorStop()
 		}
-		if s.leaderRebalanceStop != nil {
-			s.leaderRebalanceStop()
+		if s.metaReconcileStop != nil {
+			s.metaReconcileStop()
 		}
 		s.stopProgramUsers()
 		if s.joinKeyStore != nil {

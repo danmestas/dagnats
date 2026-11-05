@@ -12,47 +12,77 @@ import (
 	"github.com/danmestas/dagnats/internal/natsutil"
 )
 
-// startLeaderRebalancer runs the preferred-leader rebalancer when
-// preferred_leaders is set. Every node runs the loop, and each tick acts
-// only while this node is the JetStream meta leader, so the cluster has
-// one actor however leadership moves. The meta leader itself is moved
-// through the system user, dialed in process; without that connection
-// the rebalancer still moves streams.
-func (s *Server) startLeaderRebalancer() {
+// startMetaReconcilers runs the preferred-leader rebalancer when
+// preferred_leaders is set and the peer retirer when retire_peers is
+// set. Every node runs them, and each tick acts only while this node is
+// the JetStream meta leader, so the cluster has one actor however
+// leadership moves. Both share one connection as the system user, dialed
+// in process, which alone may move the meta leader or remove a peer;
+// without it the rebalancer still moves streams and nothing is retired.
+func (s *Server) startMetaReconcilers() {
 	if s.nc == nil || s.ns == nil {
-		panic("startLeaderRebalancer: server not connected")
+		panic("startMetaReconcilers: server not connected")
 	}
-	if len(s.cfg.PreferredLeaders) == 0 {
+	if len(s.cfg.PreferredLeaders) == 0 && len(s.cfg.RetirePeers) == 0 {
 		return
 	}
 	ctx, stop := context.WithCancel(context.Background())
 	system := s.dialSystem()
-	s.leaderRebalanceStop = func() {
+	s.metaReconcileStop = func() {
 		stop()
 		if system != nil {
 			system.Close()
 		}
 	}
-	rebalancer := natsutil.NewLeaderRebalancer(s.nc, system, s.cfg.PreferredLeaders)
-	go rebalancer.Run(ctx, func() natsutil.MetaState { return metaStateOf(s.ns) })
-	slog.Info("stream leader rebalancer on", "preferred_leaders", s.cfg.PreferredLeaders)
-	printStep(os.Stderr, "preferring stream leaders on "+
-		strings.Join(s.cfg.PreferredLeaders, ", "))
+	meta := func() natsutil.MetaState { return metaStateOf(s.ns) }
+	if len(s.cfg.PreferredLeaders) > 0 {
+		rebalancer := natsutil.NewLeaderRebalancer(s.nc, system, s.cfg.PreferredLeaders)
+		go rebalancer.Run(ctx, meta)
+		slog.Info("stream leader rebalancer on", "preferred_leaders", s.cfg.PreferredLeaders)
+		printStep(os.Stderr, "preferring stream leaders on "+
+			strings.Join(s.cfg.PreferredLeaders, ", "))
+	}
+	s.startPeerRetirer(ctx, system, meta)
+}
+
+// startPeerRetirer runs the peer retirer when retire_peers is set and the
+// system user connected.
+func (s *Server) startPeerRetirer(
+	ctx context.Context, system *nats.Conn, meta func() natsutil.MetaState,
+) {
+	if ctx == nil || meta == nil {
+		panic("startPeerRetirer: ctx and meta must be set")
+	}
+	if len(s.cfg.RetirePeers) == 0 {
+		return
+	}
+	if system == nil {
+		slog.Warn("retire_peers off: no system user connection",
+			"retire_peers", s.cfg.RetirePeers)
+		return
+	}
+	retirer := natsutil.NewPeerRetirer(system, s.cfg.RetirePeers, natsutil.PeerRetireOfflineMin)
+	go retirer.Run(ctx, meta)
+	slog.Info("peer retirer on", "retire_peers", s.cfg.RetirePeers,
+		"offline_min", natsutil.PeerRetireOfflineMin)
+	printStep(os.Stderr, "retiring peers "+strings.Join(s.cfg.RetirePeers, ", "))
 }
 
 // dialSystem connects in process as systemUser, or returns nil with a
-// warning: the rebalancer then leaves the meta leader alone.
+// warning: the meta leader is then neither moved nor asked to retire a
+// peer.
 func (s *Server) dialSystem() *nats.Conn {
 	value, ok := liveOptions.Load(s.ns)
 	if !ok {
-		slog.Warn("meta leader rebalance off: server options unknown")
+		slog.Warn("system user off: server options unknown")
 		return nil
 	}
 	system, err := nats.Connect("", nats.InProcessServer(s.ns),
 		nats.UserInfo(systemUser, systemPassword(value.(*natsserver.Options))),
-		nats.Name("dagnats leader rebalancer"))
+		nats.Name("dagnats meta reconcilers"))
 	if err != nil {
-		slog.Warn("meta leader rebalance off: system user did not connect", "error", err)
+		slog.Warn("system user did not connect: meta leader moves and peer retirement off",
+			"error", err)
 		return nil
 	}
 	return system
@@ -71,12 +101,13 @@ func metaStateOf(ns *natsserver.Server) natsutil.MetaState {
 	state := natsutil.MetaState{Leader: true, Self: ns.Name()}
 	info, err := ns.Jsz(&natsserver.JSzOptions{})
 	if err != nil || info == nil || info.Meta == nil {
+		state.PeersUnread = true
 		return state
 	}
 	for _, peer := range info.Meta.Replicas {
 		if peer != nil {
 			state.Peers = append(state.Peers, natsutil.MetaPeer{
-				Name: peer.Name, Current: peer.Current, Offline: peer.Offline,
+				Name: peer.Name, ID: peer.Peer, Current: peer.Current, Offline: peer.Offline,
 			})
 		}
 	}

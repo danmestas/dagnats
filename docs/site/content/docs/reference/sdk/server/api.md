@@ -96,7 +96,7 @@ func PrintDryRun(w io.Writer, rc ResolvedConfig) bool
 PrintDryRun writes the dry\-run report to w. Returns true if all validations passed.
 
 <a name="Config"></a>
-## type [Config](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L88-L287>)
+## type [Config](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L89-L295>)
 
 Config holds all server configuration.
 
@@ -167,6 +167,13 @@ type Config struct {
     // leader moves them back (natsutil.LeaderRebalancer). Empty, the
     // default, leaves leaders where JetStream puts them.
     PreferredLeaders []string `json:"preferred_leaders"`
+    // RetirePeers names servers (by server_name) leaving the cluster for
+    // good. The meta leader removes each from the JetStream meta group
+    // once it has been offline for natsutil.PeerRetireOfflineMin, and
+    // JetStream re-places its replicas (natsutil.PeerRetirer). It may not
+    // name this node or a preferred leader. Empty, the default, removes
+    // nothing.
+    RetirePeers []string `json:"retire_peers"`
     // ReplicaOnly is set by `engine: false` (DAGNATS_ENGINE=false): the
     // node runs NATS and JetStream as a voting replica, with what a
     // replica needs (health, program users, the leader rebalancer, the
@@ -299,7 +306,7 @@ type Config struct {
 ```
 
 <a name="ConfigFromEnv"></a>
-### func [ConfigFromEnv](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L363>)
+### func [ConfigFromEnv](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L371>)
 
 ```go
 func ConfigFromEnv() Config
@@ -308,7 +315,7 @@ func ConfigFromEnv() Config
 ConfigFromEnv loads config from defaults, config file, then env vars. Config file is dagnats.yaml in CWD. Missing file is not an error. Panics if DataDir is empty after resolution. Exits \(via log.Fatalf\) if MaxStoreBytes still resolves to \<= 0 \(e.g. the disk backing DataDir has no space left\) \-\- see ConfigWithPath.
 
 <a name="ConfigWithPath"></a>
-### func [ConfigWithPath](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L380-L382>)
+### func [ConfigWithPath](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L388-L390>)
 
 ```go
 func ConfigWithPath(configPath string) (Config, string, error)
@@ -317,7 +324,7 @@ func ConfigWithPath(configPath string) (Config, string, error)
 ConfigWithPath loads config using an explicit path or standard search. Returns the resolved config and the path of the file that was loaded \(empty string if no file was found\). When configPath is non\-empty, the file must exist or an error is returned. Panics if DataDir is empty after resolution. Returns an error if MaxStoreBytes still resolves to \<= 0 after the disk\-derived default is applied \(e.g. the disk backing DataDir has no space left\) \-\- that is operator/host state, not a programmer error, so it is reported rather than panicked on. See deriveMaxStoreBytes \(\#687\).
 
 <a name="DefaultConfig"></a>
-### func [DefaultConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L297>)
+### func [DefaultConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L305>)
 
 ```go
 func DefaultConfig() Config
@@ -484,7 +491,7 @@ func DryRunValidate(cfg Config) ([]ValidationResult, bool)
 DryRunValidate checks prerequisites without starting components. Returns validation results and true if all passed.
 
 <a name="WorkerConfig"></a>
-## type [WorkerConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L80-L85>)
+## type [WorkerConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L81-L86>)
 
 WorkerConfig defines a config\-driven embedded worker handler.
 

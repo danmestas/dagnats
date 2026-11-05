@@ -912,6 +912,65 @@ func TestPreferredLeaders(t *testing.T) {
 	}
 }
 
+// TestRetirePeers: the env var and the config key read a comma list of
+// server names like preferred_leaders. A list naming this node, naming a
+// preferred leader, or longer than retirePeersMax fails config load.
+func TestRetirePeers(t *testing.T) {
+	// Negative: off by default.
+	if got := DefaultConfig().RetirePeers; len(got) != 0 {
+		t.Fatalf("default RetirePeers = %v, want none", got)
+	}
+	t.Setenv("DAGNATS_RETIRE_PEERS", " mini, ,old ")
+	cfg := DefaultConfig()
+	applyEnvOverrides(&cfg)
+	// Positive: the env list, cleaned.
+	if got := cfg.RetirePeers; len(got) != 2 || got[0] != "mini" || got[1] != "old" {
+		t.Fatalf("env RetirePeers = %q, want [mini old]", got)
+	}
+	fromFile := DefaultConfig()
+	if err := applyConfigValue("retire_peers", "mini", 1, &fromFile); err != nil {
+		t.Fatalf("applyConfigValue: %v", err)
+	}
+	if got := fromFile.RetirePeers; len(got) != 1 || got[0] != "mini" {
+		t.Fatalf("file RetirePeers = %q, want [mini]", got)
+	}
+}
+
+func TestRetirePeers_Validation(t *testing.T) {
+	valid := Config{NATSServerName: "n1", PreferredLeaders: []string{"n2"},
+		RetirePeers: []string{"mini"}}
+	// Positive: another server, not preferred, is accepted.
+	if err := validateRetirePeers(valid); err != nil {
+		t.Fatalf("validateRetirePeers(%v): %v", valid.RetirePeers, err)
+	}
+	tooMany := make([]string, retirePeersMax+1)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprintf("old-%d", i)
+	}
+	for _, c := range []struct {
+		name, want string
+		peers      []string
+	}{
+		{"self", "this node", []string{"mini", "n1"}},
+		{"preferred leader", "preferred_leaders", []string{"n2"}},
+		{"over the cap", "at most", tooMany},
+	} {
+		cfg := valid
+		cfg.RetirePeers = c.peers
+		// Negative: each is a load error naming the reason.
+		err := validateRetirePeers(cfg)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err = %v, want one mentioning %q", c.name, err, c.want)
+		}
+	}
+	// Negative: the env path fails config load too.
+	t.Setenv("DAGNATS_NATS_SERVER_NAME", "n1")
+	t.Setenv("DAGNATS_RETIRE_PEERS", "n1")
+	if _, _, err := ConfigWithPath(""); err == nil {
+		t.Fatal("ConfigWithPath accepted retire_peers naming this node")
+	}
+}
+
 // TestEngineSetting: engine: false (or DAGNATS_ENGINE=false) makes the
 // node replica-only; the default, and true, keep the engine.
 func TestEngineSetting(t *testing.T) {
