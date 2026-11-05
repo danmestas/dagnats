@@ -46,9 +46,10 @@ type LeaderMove struct {
 // MetaState is this node's view of the JetStream meta group, read before
 // each Tick.
 type MetaState struct {
-	Leader bool       // this node leads the meta group
-	Self   string     // this node's server name
-	Peers  []MetaPeer // the other members, as the leader sees them
+	Leader      bool       // this node leads the meta group
+	Self        string     // this node's server name
+	Peers       []MetaPeer // the other members, as the leader sees them
+	PeersUnread bool       // Leader, but Peers could not be read this time
 }
 
 // MetaPeer is one other member of the meta group.
@@ -286,16 +287,21 @@ func stepDownRequest(ctx context.Context, nc *nats.Conn, subject, server string)
 	if err != nil {
 		panic("stepDownRequest: a placement always encodes")
 	}
-	return jsAPIRequest(ctx, nc, subject, body)
+	return jsAPIRequest(ctx, nc, subject, body, leaderStepDownTimeout)
 }
 
 // jsAPIRequest sends body to a JetStream API subject, waiting at most
-// leaderStepDownTimeout, and turns a reply without success into an error.
-func jsAPIRequest(ctx context.Context, nc *nats.Conn, subject string, body []byte) error {
+// timeout, and turns a reply without success into an error.
+func jsAPIRequest(
+	ctx context.Context, nc *nats.Conn, subject string, body []byte, timeout time.Duration,
+) error {
 	if nc == nil || subject == "" || len(body) == 0 {
 		panic("jsAPIRequest: nc, subject and body must be set")
 	}
-	ctx, cancel := context.WithTimeout(ctx, leaderStepDownTimeout)
+	if timeout <= 0 {
+		panic("jsAPIRequest: timeout must be positive")
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	reply, err := nc.RequestWithContext(ctx, subject, body)
 	if err != nil {

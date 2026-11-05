@@ -144,3 +144,43 @@ func TestPeerRetirerPlan_OneRemovalPerTick(t *testing.T) {
 		t.Fatalf("plan = %q, %v; want y next", second, ok)
 	}
 }
+
+func TestPeerRetirerPlan_OfflineAndNotCurrent(t *testing.T) {
+	start := time.Now()
+	for _, c := range []struct {
+		name string
+		peer MetaPeer
+	}{
+		{"offline but current", MetaPeer{Name: "mini", Offline: true, Current: true}},
+		{"online but behind", MetaPeer{Name: "mini"}},
+	} {
+		// Negative: either half alone is not enough, even with no window.
+		if name, ok := retiring(0, "mini").plan(leading(c.peer), start); ok {
+			t.Errorf("%s: planned %s", c.name, name)
+		}
+	}
+	// Positive: offline and not current is removed.
+	gone := leading(MetaPeer{Name: "mini", Offline: true})
+	if name, ok := retiring(0, "mini").plan(gone, start); !ok || name != "mini" {
+		t.Fatalf("plan = %q, %v; want mini", name, ok)
+	}
+}
+
+func TestPeerRetirerPlan_SkipsWhenPeersUnread(t *testing.T) {
+	r := retiring(time.Minute, "mini")
+	start := time.Now()
+	offline := leading(MetaPeer{Name: "mini", Offline: true})
+	unread := MetaState{Leader: true, Self: "a", PeersUnread: true}
+	r.plan(offline, start)
+	// Negative: an unread view neither plans nor marks the peer gone.
+	if name, ok := r.plan(unread, start.Add(30*time.Second)); ok {
+		t.Fatalf("planned %s from an unread view", name)
+	}
+	if r.gone["mini"] {
+		t.Fatal("an unread view marked mini gone")
+	}
+	// Positive: the window kept running across it.
+	if name, ok := r.plan(offline, start.Add(time.Minute)); !ok || name != "mini" {
+		t.Fatalf("plan = %q, %v; want mini, the window not reset", name, ok)
+	}
+}

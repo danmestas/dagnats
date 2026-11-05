@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"slices"
 	"sync"
@@ -18,6 +19,12 @@ import (
 // membership; short enough that a node switched off for good is gone,
 // and its replicas re-placed, within minutes.
 const PeerRetireOfflineMin = 2 * time.Minute
+
+// peerRemoveTimeout bounds one removal. nats-server answers only once
+// the meta group has applied it, which across a slow link can take
+// seconds; a timeout is not a failure, and the next tick checks
+// membership.
+const peerRemoveTimeout = 15 * time.Second
 
 // peerRemoveSubject removes a server from the JetStream meta group. Only
 // the system account may send it and only the meta leader answers.
@@ -63,6 +70,7 @@ type PeerRetirer struct {
 	mu           sync.Mutex
 	offlineSince map[string]time.Time // peer -> first seen offline, this leadership
 	gone         map[string]bool      // peer -> already out of the meta group, logged
+	unread       bool                 // the last tick's peers were unread, warned
 }
 
 // NewPeerRetirer returns a retirer for the named servers. system must be
@@ -91,8 +99,9 @@ func (r *PeerRetirer) Run(ctx context.Context, meta func() MetaState) {
 }
 
 // Tick sends at most one removal and returns the server it was sent
-// for, or "". A removal's answer is logged: INFO when accepted, WARN
-// when refused or unanswered; a refused one is retried a window later.
+// for, or "". A removal's answer is logged: INFO when accepted or not
+// yet answered (the next tick sees whether it left the meta group),
+// WARN when refused; a refused one is retried a window later.
 func (r *PeerRetirer) Tick(ctx context.Context, meta MetaState) string {
 	if ctx == nil {
 		panic("PeerRetirer.Tick: ctx must not be nil")
@@ -106,7 +115,13 @@ func (r *PeerRetirer) Tick(ctx context.Context, meta MetaState) string {
 	if err != nil {
 		panic("PeerRetirer.Tick: a peer ID always encodes")
 	}
-	if err := jsAPIRequest(ctx, r.system, peerRemoveSubject, body); err != nil {
+	err = jsAPIRequest(ctx, r.system, peerRemoveSubject, body, peerRemoveTimeout)
+	if errors.Is(err, nats.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		slog.Info("natsutil: retired peer removal sent, no reply yet; will verify",
+			"peer", name, "peer_id", id)
+		return name
+	}
+	if err != nil {
 		slog.Warn("natsutil: retired peer not removed from the meta group",
 			"peer", name, "peer_id", id, "error", err)
 		return name
@@ -130,6 +145,16 @@ func (r *PeerRetirer) plan(meta MetaState, now time.Time) (string, bool) {
 		clear(r.offlineSince)
 		return "", false
 	}
+	if meta.PeersUnread {
+		// An empty view is not an empty meta group: changing nothing keeps
+		// listed peers from being logged gone and their windows reset.
+		if !r.unread {
+			slog.Warn("natsutil: meta group peers unread; peer retirement skips this tick")
+		}
+		r.unread = true
+		return "", false
+	}
+	r.unread = false
 	chosen := ""
 	for _, name := range r.peers {
 		peer, present := findMetaPeer(meta.Peers, name)
@@ -138,7 +163,9 @@ func (r *PeerRetirer) plan(meta MetaState, now time.Time) (string, bool) {
 			continue
 		}
 		delete(r.gone, name)
-		if !peer.Offline {
+		// Offline alone can be a running server cut off for a moment;
+		// Current must also have lapsed.
+		if !peer.Offline || peer.Current {
 			delete(r.offlineSince, name)
 			continue
 		}
@@ -172,8 +199,10 @@ func (r *PeerRetirer) markGone(name string) {
 		"peer", name, "peer_id", PeerID(name))
 }
 
-// findMetaPeer finds name among peers by name or, for a server the
-// leader has not heard from since its own restart, by peer ID.
+// findMetaPeer finds name among peers by name or by peer ID. The meta
+// group's peers are its persisted raft peers, so a leader that restarted
+// after a server went offline still lists it, under an "unknown" name
+// and its peer ID alone.
 func findMetaPeer(peers []MetaPeer, name string) (MetaPeer, bool) {
 	if name == "" {
 		panic("findMetaPeer: name must not be empty")

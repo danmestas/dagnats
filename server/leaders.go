@@ -101,6 +101,7 @@ func metaStateOf(ns *natsserver.Server) natsutil.MetaState {
 	state := natsutil.MetaState{Leader: true, Self: ns.Name()}
 	info, err := ns.Jsz(&natsserver.JSzOptions{})
 	if err != nil || info == nil || info.Meta == nil {
+		state.PeersUnread = true
 		return state
 	}
 	for _, peer := range info.Meta.Replicas {

@@ -6,8 +6,9 @@
 // runs on, as serve's loop does, with a short offline window. A stopped
 // listed node must be removed only after the window and only by the meta
 // leader, and every R3 stream must end with three in-sync replicas
-// without it; an online listed node is never removed. Every wait is
-// bounded.
+// without it; a meta leader restarted after the node stopped, which
+// knows it only by peer ID, removes it too; an online listed node is
+// never removed. Every wait is bounded.
 package server
 
 import (
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/danmestas/dagnats/internal/natsutil"
@@ -134,8 +136,8 @@ func TestPeerRetirer_RemovesAStoppedPeerAndReplacesItsReplicas(t *testing.T) {
 	if got := retireTick(t, r, leader); got != "" {
 		t.Fatalf("removed %s on first sight", got)
 	}
-	awaitRemoval(t, r, leader, victim, firstSeen)
-	awaitMetaGone(t, nodes, victim)
+	awaitRemoval(t, r, leader, victim, firstSeen, retireOfflineWindow)
+	awaitMetaGone(t, nodes, victim, 2)
 	awaitStreamsWithout(t, js, victim)
 	// Negative: gone, nothing more is sent.
 	if got := retireTick(t, r, leader); got != "" {
@@ -181,7 +183,8 @@ func stopAndAwaitOffline(t *testing.T, nodes []metaNode, victim string) {
 // awaitRemoval ticks until the removal is sent, which must not be before
 // the offline window has passed since firstSeen.
 func awaitRemoval(
-	t *testing.T, r *natsutil.PeerRetirer, leader metaNode, victim string, firstSeen time.Time,
+	t *testing.T, r *natsutil.PeerRetirer, leader metaNode, victim string,
+	firstSeen time.Time, window time.Duration,
 ) {
 	t.Helper()
 	deadline := time.Now().Add(retireSettleWait)
@@ -194,20 +197,20 @@ func awaitRemoval(
 		if got != victim {
 			t.Fatalf("removed %s, want %s", got, victim)
 		}
-		if waited := time.Since(firstSeen); waited < retireOfflineWindow {
-			t.Fatalf("removed after %v, inside the %v window", waited, retireOfflineWindow)
+		if waited := time.Since(firstSeen); waited < window {
+			t.Fatalf("removed after %v, inside the %v window", waited, window)
 		}
 		return
 	}
 	t.Fatalf("%s never removed", victim)
 }
 
-func awaitMetaGone(t *testing.T, nodes []metaNode, victim string) {
+func awaitMetaGone(t *testing.T, nodes []metaNode, victim string, peersLeft int) {
 	t.Helper()
 	deadline := time.Now().Add(retireSettleWait)
 	for time.Now().Before(deadline) {
 		_, meta := leaderMeta(t, nodes)
-		if _, ok := metaPeerOf(meta, victim); !ok && len(meta.Peers) == 2 {
+		if _, ok := metaPeerOf(meta, victim); !ok && len(meta.Peers) == peersLeft {
 			return
 		}
 		time.Sleep(250 * time.Millisecond)
@@ -252,4 +255,52 @@ func TestPeerRetirer_NeverRemovesAnOnlinePeer(t *testing.T) {
 	if peer, ok := metaPeerOf(meta, online); !ok || peer.Offline {
 		t.Fatalf("%s: present %v, %+v; want an online member", online, ok, peer)
 	}
+}
+
+// restartNode stops node and starts it again on the same options and
+// store, waiting until it takes connections.
+func restartNode(t *testing.T, node metaNode) metaNode {
+	t.Helper()
+	node.ns.Shutdown()
+	node.ns.WaitForShutdown()
+	ns, err := natsserver.NewServer(node.opts)
+	if err != nil {
+		t.Fatalf("restart %s: %v", node.ns.Name(), err)
+	}
+	ns.Start()
+	t.Cleanup(ns.Shutdown)
+	if !ns.ReadyForConnections(10 * time.Second) {
+		t.Fatalf("%s not ready after restart", ns.Name())
+	}
+	return metaNode{ns: ns, password: systemPassword(node.opts), opts: node.opts}
+}
+
+func TestPeerRetirer_RemovesAPeerARestartedLeaderNeverSaw(t *testing.T) {
+	nodes := startMetaCluster(t)
+	leader, _ := leaderMeta(t, nodes)
+	victim := ""
+	for _, node := range nodes {
+		if node.ns.Name() != leader.ns.Name() && victim == "" {
+			victim = node.ns.Name()
+		}
+	}
+	stopAndAwaitOffline(t, nodes, victim)
+	// Every survivor restarts, so whichever leads has never seen victim.
+	for i, node := range nodes {
+		if node.ns.Name() != victim {
+			nodes[i] = restartNode(t, node)
+			leaderMeta(t, nodes)
+		}
+	}
+	leader, meta := leaderMeta(t, nodes)
+	peer, ok := metaPeerOf(meta, victim)
+	// The restarted leader still lists it, by peer ID alone.
+	if !ok || peer.Name == victim || peer.ID != natsutil.PeerID(victim) || !peer.Offline {
+		t.Fatalf("victim %s as the restarted leader sees it: %v %+v; want offline, by ID only",
+			victim, ok, peer)
+	}
+	r := natsutil.NewPeerRetirer(dialSystem(t, leader), []string{victim}, 0)
+	awaitRemoval(t, r, leader, victim, time.Now(), 0)
+	// Positive: removed by ID; negative: no other member went with it.
+	awaitMetaGone(t, nodes, victim, 1)
 }
