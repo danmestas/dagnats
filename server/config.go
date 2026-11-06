@@ -13,10 +13,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
 )
 
@@ -1625,7 +1625,7 @@ func validateLoadedConfig(cfg Config) error {
 
 // jetStreamDomainMaxLength bounds jetstream_domain; the domain is a token
 // in every cross-domain API subject.
-const jetStreamDomainMaxLength = 64
+const jetStreamDomainMaxLength = natsutil.SubjectTokenLenMax
 
 // validateJetStreamDomain accepts "" or a single NATS subject token. A dot
 // would split $JS.<domain>.API into extra tokens and a wildcard would match
@@ -1634,32 +1634,11 @@ func validateJetStreamDomain(domain string) error {
 	return validateSubjectToken("jetstream_domain", domain)
 }
 
-// validateSubjectToken accepts "" or a single NATS subject token of at most
-// jetStreamDomainMaxLength bytes; key names the setting in the error.
+// validateSubjectToken accepts "" or a single NATS subject token; key
+// names the setting in the error. Program reads validate their domain
+// with the same rule.
 func validateSubjectToken(key, value string) error {
-	if key == "" {
-		panic("validateSubjectToken: key is empty")
-	}
-	if len(value) > jetStreamDomainMaxLength {
-		return fmt.Errorf("%s is %d bytes; max %d",
-			key, len(value), jetStreamDomainMaxLength)
-	}
-	for _, r := range value {
-		reason := ""
-		switch {
-		case r == '.':
-			reason = "contains a dot"
-		case r == '*' || r == '>':
-			reason = "contains a wildcard"
-		case unicode.IsSpace(r) || unicode.IsControl(r):
-			reason = "contains whitespace or a control character"
-		}
-		if reason != "" {
-			return fmt.Errorf("%s must be one NATS token; %q %s",
-				key, value, reason)
-		}
-	}
-	return nil
+	return natsutil.ValidateSubjectToken(key, value)
 }
 
 // preferredLeadersMax bounds the preferred_leaders list; a cluster has a

@@ -308,29 +308,68 @@ func microServiceName(name string) bool {
 	return true
 }
 
-// validateReads checks each read grant is "<owner>_<rest>" with a valid
-// owner name other than the program itself, and not an engine bucket.
+// validateReads checks each read grant: "<owner>_<rest>" with a valid
+// owner name, optionally after "<domain>:", never an engine bucket, and
+// listed once.
 func validateReads(name string, reads []string) []error {
 	var errs []error
 	seen := map[string]bool{}
-	engine := natsutil.ProvisionedKVBucketNames()
 	for _, r := range reads {
-		owner, _, found := strings.Cut(r, "_")
-		switch {
-		case slices.Contains(engine, r):
-			errs = append(errs, fmt.Errorf("read %q is an engine bucket", r))
-		case !found || validateName(owner) != nil || !suffixMatches(r, owner+"_", 'a', 'z'):
-			errs = append(errs, fmt.Errorf(
-				"read %q must be another program's bucket, \"<program>_<rest>\"", r))
-		case owner == name:
-			errs = append(errs, fmt.Errorf(
-				"read %q is under the program's own prefix %s_ (already full access)", r, name))
-		case seen[r]:
+		if err := validateRead(name, r); err != nil {
+			errs = append(errs, err)
+		} else if seen[r] {
 			errs = append(errs, fmt.Errorf("read %q listed twice", r))
 		}
 		seen[r] = true
 	}
+	if len(seen) > len(reads) {
+		panic("program.validateReads: more reads seen than listed")
+	}
 	return errs
+}
+
+// validateRead checks one read. A bare read may not name the program's
+// own prefix, which already has full access; a domain-qualified one may,
+// since that access is local. Engine buckets are refused in any domain:
+// every region's engine buckets hold its other programs' state.
+func validateRead(name, read string) error {
+	domain, bucket := SplitRead(read)
+	if bucket != read {
+		if domain == "" {
+			return fmt.Errorf("read %q names an empty domain", read)
+		}
+		if err := natsutil.ValidateSubjectToken(
+			fmt.Sprintf("read %q domain", read), domain); err != nil {
+			return err
+		}
+	}
+	owner, _, found := strings.Cut(bucket, "_")
+	switch {
+	case slices.Contains(natsutil.ProvisionedKVBucketNames(), bucket):
+		return fmt.Errorf("read %q is an engine bucket", read)
+	case !found || validateName(owner) != nil || !suffixMatches(bucket, owner+"_", 'a', 'z'):
+		return fmt.Errorf(
+			"read %q must be another program's bucket, \"[<domain>:]<program>_<rest>\"", read)
+	case owner == name && domain == "":
+		return fmt.Errorf(
+			"read %q is under the program's own prefix %s_ (already full access)", read, name)
+	}
+	return nil
+}
+
+// SplitRead splits a Reads entry into its JetStream domain and bucket:
+// "eu:chat_cards" is ("eu", "chat_cards") and a bare "chat_cards" is
+// ("", "chat_cards"), the server's own domain. A bucket name cannot hold
+// ':', so the first one splits. Pure; it does not validate.
+func SplitRead(read string) (domain, bucket string) {
+	domain, bucket, found := strings.Cut(read, ":")
+	if !found {
+		return "", read
+	}
+	if len(domain)+len(bucket)+1 != len(read) {
+		panic("program.SplitRead: split lost bytes")
+	}
+	return domain, bucket
 }
 
 func validateProtocols(name string, protocols []string) []error {

@@ -409,6 +409,36 @@ func TestUpdate_WideningNeedsACoveringJoinKey(t *testing.T) {
 	}
 }
 
+// TestUpdate_DomainReadWidensByItsBucketOwner: a read naming a JetStream
+// domain (#949) is a new read even when the bare bucket is granted, and
+// the join key must cover the bucket's owner, not the domain.
+func TestUpdate_DomainReadWidensByItsBucketOwner(t *testing.T) {
+	f := newFixture(t, Config{})
+	_, plaintext := f.createKey(t, joinkey.Spec{Label: "k", NameGlob: "?o*", UsesMax: 3})
+	req := request(t, "notify", plaintext)
+	req.Manifest.Reads = []string{"tool_registry"}
+	f.mustRegister(t, req)
+	changed := req
+	changed.JoinKey = ""
+	changed.Manifest = cloneManifest(req.Manifest)
+	changed.Manifest.Reads = []string{"tool_registry", "eu:tool_registry"}
+	// Negative: the domain-qualified read widens, so a keyless update fails.
+	_, err := f.register(t, changed)
+	wantRefusedNaming(t, err, "eu:tool_registry")
+	other := changed
+	other.JoinKey = plaintext
+	other.Manifest = cloneManifest(changed.Manifest)
+	other.Manifest.Reads = []string{"tool_registry", "eu:chat_cards"}
+	_, err = f.register(t, other)
+	wantRefusedNaming(t, err, "chat")
+	// Positive: a key covering the owner "tool" admits it in any domain.
+	changed.JoinKey = plaintext
+	f.mustRegister(t, changed)
+	if got := f.record(t, "notify").Manifest.Reads; !slices.Contains(got, "eu:tool_registry") {
+		t.Fatalf("stored reads = %v, want eu:tool_registry", got)
+	}
+}
+
 // TestUpdate_OpenModeWidensWithoutAKey: an open server admits a keyless
 // program with protocols, so it admits a keyless widening too.
 func TestUpdate_OpenModeWidensWithoutAKey(t *testing.T) {

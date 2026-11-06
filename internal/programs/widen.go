@@ -71,7 +71,8 @@ func (w widening) String() string {
 // or "" when nothing widened or an open server takes a keyless request
 // (as it would a keyless first registration). The key must be usable
 // and its names must cover the program, every new protocol's root and
-// every new read's owner. A new Discovers entry needs no more than the
+// every new read's owner (the bucket's "<program>_" prefix, in whatever
+// domain the read names). A new Discovers entry needs no more than the
 // program: discovery reads only service metadata, and a micro service's
 // name is not a program's.
 func (r *Registrar) reserveWidening(
@@ -113,7 +114,10 @@ func covers(key joinkey.JoinKey, w widening) error {
 			joinkey.ErrProtocolNotAllowed, protocol, key.NameGlob)
 	}
 	for _, read := range w.reads {
-		owner, _, found := strings.Cut(read, "_")
+		// The key scopes names, not domains: it must cover the bucket's
+		// owner, so a key for "chat" admits chat_* in any domain.
+		_, bucket := program.SplitRead(read)
+		owner, _, found := strings.Cut(bucket, "_")
 		if !found {
 			panic("programs.covers: reads were validated as <program>_<rest>")
 		}

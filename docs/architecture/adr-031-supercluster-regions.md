@@ -263,6 +263,15 @@ loaded only by that region's nodes. The scoped control plane
 group and do not cross the link. A program that runs in both regions
 registers in both, with the same seed and separate grants.
 
+A program reads a bucket in the other region by naming its domain in
+`Reads`, `"<domain>:<bucket>"` such as `"eu:chat_cards"` (#949). Its
+NKey user then gets the read-only API subjects as `$JS.<domain>.API.*`,
+the form `jetstream.NewWithDomain` sends and the link's allow-list
+carries, instead of `$JS.API.*`. Flow control (`$JS.FC.KV_<bucket>.>`)
+and deliveries on the program's own inbox need no domain form. Nothing
+writable crosses: a program in one region writes only its own region's
+buckets.
+
 Global programs or join keys are rejected: they need a single writer
 across regions, which is the meta problem again.
 

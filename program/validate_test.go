@@ -109,6 +109,30 @@ func TestValidate_RejectsUnprefixedAndProtocolUnderPrefix(t *testing.T) {
 				m.Reads = append(m.Reads, "tools_b"+strings.Repeat("x", i))
 			}
 		}, "reads"},
+		{"domain read empty domain", func(m *program.Manifest) {
+			m.Reads = []string{":tools_registry"}
+		}, "domain"},
+		{"domain read wildcard domain", func(m *program.Manifest) {
+			m.Reads = []string{"*:tools_registry"}
+		}, "domain"},
+		{"domain read dotted domain", func(m *program.Manifest) {
+			m.Reads = []string{"e.u:tools_registry"}
+		}, "domain"},
+		{"domain read long domain", func(m *program.Manifest) {
+			m.Reads = []string{strings.Repeat("d", 65) + ":tools_registry"}
+		}, "domain"},
+		{"domain read engine bucket", func(m *program.Manifest) {
+			m.Reads = []string{"eu:workflow_runs"}
+		}, "engine bucket"},
+		{"domain read no owner prefix", func(m *program.Manifest) {
+			m.Reads = []string{"eu:registry"}
+		}, "read"},
+		{"domain read second colon", func(m *program.Manifest) {
+			m.Reads = []string{"eu:us:tools_registry"}
+		}, "read"},
+		{"domain read duplicate", func(m *program.Manifest) {
+			m.Reads = []string{"eu:tools_registry", "eu:tools_registry"}
+		}, "twice"},
 		{"protocol under own prefix", func(m *program.Manifest) {
 			m.Protocols = []string{"toy.tool"}
 		}, "prefix"},
@@ -151,5 +175,38 @@ func TestValidate_AcceptsReadsOfOtherProgramsBuckets(t *testing.T) {
 	m.Reads = append(m.Reads, "toy_state")
 	if err := program.Validate(m); err == nil {
 		t.Fatal("Validate(reads with own bucket) = nil, want error")
+	}
+}
+
+// TestValidate_AcceptsDomainQualifiedReads: a read may name the JetStream
+// domain its bucket lives in (#949). Bare and qualified entries for one
+// bucket are distinct grants, and the program's own prefix is allowed in
+// another domain, where its local full access does not reach.
+func TestValidate_AcceptsDomainQualifiedReads(t *testing.T) {
+	m := validManifest()
+	m.Reads = []string{"eu:chat_cards", "chat_cards", "us-west_2:tools_registry", "eu:toy_state"}
+	// Positive: domain-qualified foreign buckets pass.
+	if err := program.Validate(m); err != nil {
+		t.Fatalf("Validate(domain reads) = %v, want nil", err)
+	}
+	// Negative: the program's own bucket unqualified is still refused.
+	m.Reads = append(m.Reads, "toy_state")
+	if err := program.Validate(m); err == nil {
+		t.Fatal("Validate(reads with own bucket) = nil, want error")
+	}
+}
+
+func TestSplitRead(t *testing.T) {
+	cases := []struct{ read, domain, bucket string }{
+		{"chat_cards", "", "chat_cards"},
+		{"eu:chat_cards", "eu", "chat_cards"},
+	}
+	for _, tc := range cases {
+		domain, bucket := program.SplitRead(tc.read)
+		// Positive and negative: domain is "" exactly for a bare read.
+		if domain != tc.domain || bucket != tc.bucket {
+			t.Errorf("SplitRead(%q) = %q, %q; want %q, %q",
+				tc.read, domain, bucket, tc.domain, tc.bucket)
+		}
 	}
 }
