@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.54] - 2026-11-06
+
+### Added
+
+- **A connection traffic monitor flags client connections stuck in a loop (#955).** Every minute each node samples its embedded server's client connections, in-process ones included. A connection whose inbound rate stays at or above `conn_msgs_warn_per_sec` (`DAGNATS_CONN_MSGS_WARN_PER_SEC`, default 100 msgs/s) for 5 consecutive samples is hot:
+  - it is logged at `ERROR` with its cid, name, address, account and rate, again at most every 10 minutes while it stays hot, and at `INFO` on recovery;
+  - `/health/cluster` lists it under `traffic` and adds `traffic` to the degraded list, still answering 200, as low disk does.
+
+  A client that retried a failing request with no backoff previously held cores and route bandwidth for hours with a quiet log and a green health report (#952).
+
+### Fixed
+
+- **The console metrics pump no longer spins when its TELEMETRY consumer vanishes (#954).** `Fetch` reports most faults, such as the 503 for a consumer that no longer exists, on the batch rather than in its own return value. The pump read only the latter, so once its ephemeral consumer was gone, here because the server holding it was retired from the cluster, it re-fetched about 300 times a second with nothing logged. Now every fetch fault is logged and backed off for 1 s. A gone consumer is recreated, resuming just after the last ingested record.
+
 ## [0.0.53] - 2026-11-06
 
 ### Fixed
