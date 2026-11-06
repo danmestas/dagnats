@@ -77,6 +77,9 @@ type clusterHealthResponse struct {
 	// Disk is the answering node's data-dir free space; omitted when no
 	// monitor is attached (library embedders).
 	Disk *DiskStatus `json:"disk,omitempty"`
+	// Traffic lists client connections sustaining a runaway message rate;
+	// omitted when no monitor is attached.
+	Traffic *TrafficStatus `json:"traffic,omitempty"`
 	// ReplicaOnly marks a node that runs no dagnats work (engine: false):
 	// a JetStream replica only.
 	ReplicaOnly bool `json:"replica_only,omitempty"`
@@ -93,6 +96,26 @@ type DiskStatus struct {
 
 // DiskStatusFunc reads the latest disk reading.
 type DiskStatusFunc func() DiskStatus
+
+// HotConnection is one client connection whose inbound message rate has
+// stayed at or above the warn threshold for the sustained window.
+type HotConnection struct {
+	CID        uint64  `json:"cid"`
+	Name       string  `json:"name,omitempty"`
+	MsgsPerSec float64 `json:"msgs_per_sec"`
+}
+
+// TrafficStatus is the connection traffic monitor's latest verdict.
+type TrafficStatus struct {
+	ThresholdMsgsPerSec int             `json:"threshold_msgs_per_sec"`
+	Hot                 []HotConnection `json:"hot,omitempty"`
+}
+
+// TrafficStatusFunc reads the latest traffic verdict.
+type TrafficStatusFunc func() TrafficStatus
+
+// trafficDegraded is the name a hot connection takes in JetStream.Degraded.
+const trafficDegraded = "traffic"
 
 // diskDegraded is the name low disk takes in JetStream.Degraded.
 const diskDegraded = "disk"
@@ -132,6 +155,7 @@ type ClusterReporter struct {
 	routes      []string
 	members     ClusterMembershipFunc
 	disk        DiskStatusFunc
+	traffic     TrafficStatusFunc
 	region      string
 	replicaOnly bool
 }
@@ -155,6 +179,15 @@ func (r *ClusterReporter) SetDiskStatus(fn DiskStatusFunc) {
 		panic("ClusterReporter.SetDiskStatus: r and fn must not be nil")
 	}
 	r.disk = fn
+}
+
+// SetTrafficStatus attaches the connection traffic verdict to the report.
+// Call it before the reporter serves requests.
+func (r *ClusterReporter) SetTrafficStatus(fn TrafficStatusFunc) {
+	if r == nil || fn == nil {
+		panic("ClusterReporter.SetTrafficStatus: r and fn must not be nil")
+	}
+	r.traffic = fn
 }
 
 // SetRegion attaches the node's region to the report. Call it before the
@@ -211,6 +244,7 @@ func (r *ClusterReporter) report(
 	if len(r.routes) == 0 {
 		resp := clusterHealthResponse{Mode: "standalone", Region: r.region, OK: true}
 		r.applyDisk(&resp)
+		r.applyTraffic(&resp)
 		return resp, http.StatusOK
 	}
 	resp := clusterHealthResponse{
@@ -227,6 +261,7 @@ func (r *ClusterReporter) report(
 	if r.members != nil && !applyMembership(&resp, r.members) {
 		// A full disk is the likely cause of a lost meta group; keep it visible.
 		r.applyDisk(&resp)
+		r.applyTraffic(&resp)
 		return resp, http.StatusServiceUnavailable
 	}
 	ctx, cancel := context.WithTimeout(parent, clusterHealthTimeout)
@@ -234,6 +269,7 @@ func (r *ClusterReporter) report(
 	err := r.collectJetStream(ctx, &resp)
 	// After collection: classifyUnavailable rewrites Degraded.
 	r.applyDisk(&resp)
+	r.applyTraffic(&resp)
 	if err != nil {
 		if !errors.Is(err, errUnavailableAssets) {
 			slog.Warn("cluster health: jetstream lookup failed", "error", err)
@@ -260,6 +296,22 @@ func (r *ClusterReporter) applyDisk(resp *clusterHealthResponse) {
 	resp.Disk = &status
 	if status.Low && resp.JetStream != nil {
 		resp.JetStream.Degraded = append(resp.JetStream.Degraded, diskDegraded)
+	}
+}
+
+// applyTraffic adds the connection traffic verdict. A hot connection is a
+// warning like low disk: reported, but 200.
+func (r *ClusterReporter) applyTraffic(resp *clusterHealthResponse) {
+	if resp == nil {
+		panic("applyTraffic: resp must not be nil")
+	}
+	if r.traffic == nil {
+		return
+	}
+	status := r.traffic()
+	resp.Traffic = &status
+	if len(status.Hot) > 0 && resp.JetStream != nil {
+		resp.JetStream.Degraded = append(resp.JetStream.Degraded, trafficDegraded)
 	}
 }
 

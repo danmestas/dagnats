@@ -35,6 +35,7 @@ DagNats uses a three-tier configuration system. Each tier overrides the previous
 | `monitor_port`            | int      | (none)                                             | (none)                                   |
 | `max_store_bytes`         | int64    | half of free disk, capped at 10 GiB                | half of free disk, capped at 10 GiB      |
 | `disk_free_min_bytes`     | int64    | `0` (10 GiB)                                       | `0` (10 GiB)                             |
+| `conn_msgs_warn_per_sec`  | int      | `0` (100)                                          | `0` (100)                                |
 | `max_memory_bytes`        | int64    | `1073741824` (1 GiB)                               | `1073741824` (1 GiB)                     |
 | `max_payload`             | int32    | unset (NATS default, 1 MiB)                        | unset (NATS default, 1 MiB)              |
 | `max_active_runs_per_root` | int     | `100`                                              | `100`                                    |
@@ -168,6 +169,7 @@ On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 | `DAGNATS_MONITOR_PORT`    | `monitor_port`    | NATS monitoring HTTP port        |
 | `DAGNATS_MAX_STORE_BYTES` | `max_store_bytes` | Must be a positive integer       |
 | `DAGNATS_DISK_FREE_MIN_BYTES` | `disk_free_min_bytes` | Floor of the low-disk warning on the filesystem holding `data_dir`; the warning fires below `max(this, 2 x max_store_bytes)`. `0` or unset means 10 GiB; negatives rejected. See [Watching free disk](production.md#watching-free-disk) |
+| `DAGNATS_CONN_MSGS_WARN_PER_SEC` | `conn_msgs_warn_per_sec` | Per-client-connection inbound message rate (msgs/s) that, sustained for 5 consecutive 60 s samples, logs an `ERROR` naming the connection and adds `traffic` to `/health/cluster` `jetstream.degraded` (still HTTP 200). `0` or unset means 100; negatives rejected. See [Watching connection traffic](production.md#watching-connection-traffic) |
 | `DAGNATS_MAX_MEMORY_BYTES` | `max_memory_bytes` | Bytes; `0` or negative disables the cap |
 | `DAGNATS_NATS_WS_PORT`    | `nats_ws_port`    | `0` disables the WebSocket listener |
 | `DAGNATS_NATS_WS_NO_TLS`  | `nats_ws_no_tls`  | `1`/`true`/`yes`/`on` enables    |

@@ -68,7 +68,9 @@ type Server struct {
 	// metaReconcileStop ends the leader rebalancer and peer retirer, if on.
 	metaReconcileStop context.CancelFunc
 	// diskMonitorStop ends the low-disk monitor.
-	diskMonitorStop    context.CancelFunc
+	diskMonitorStop context.CancelFunc
+	// trafficMonitorStop ends the connection traffic monitor.
+	trafficMonitorStop context.CancelFunc
 	programUsersDone   chan struct{}
 	httpSrv            *http.Server
 	telShutdown        func(context.Context)
@@ -149,6 +151,7 @@ func (s *Server) Run() error {
 	// Started once nothing can fail startup, so shutdown always stops it.
 	s.startMetaReconcilers()
 	s.startDiskMonitor()
+	s.startTrafficMonitor()
 	s.ready.Store(true)
 	printBanner(os.Stderr, s.cfg.HTTPAddr, s.ns.ClientURL())
 
@@ -850,6 +853,9 @@ func (s *Server) shutdown() error {
 		}
 		if s.diskMonitorStop != nil {
 			s.diskMonitorStop()
+		}
+		if s.trafficMonitorStop != nil {
+			s.trafficMonitorStop()
 		}
 		if s.metaReconcileStop != nil {
 			s.metaReconcileStop()

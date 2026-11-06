@@ -379,6 +379,61 @@ func TestHealthCluster_DiskStatusStandalone(t *testing.T) {
 	}
 }
 
+// TestHealthCluster_TrafficStatus pins the wire shape of the traffic block
+// with literal keys and checks a hot connection is degraded-but-200 in
+// cluster mode, like low disk, while a quiet reading adds no degradation.
+func TestHealthCluster_TrafficStatus(t *testing.T) {
+	_, nc := natstest.StartServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	routes := []string{"nats://peer-a:6222", "nats://peer-b:6222"}
+	reporter := NewClusterReporter(nc, routes, nil)
+	body, _ := reporter.report(context.Background())
+	if body.Traffic != nil {
+		t.Errorf("traffic = %+v without a monitor, want nil", body.Traffic)
+	}
+	reporter.SetTrafficStatus(func() TrafficStatus {
+		return TrafficStatus{
+			ThresholdMsgsPerSec: 100,
+			Hot:                 []HotConnection{{CID: 7, Name: "pump", MsgsPerSec: 312.5}},
+		}
+	})
+	body, status := reporter.report(context.Background())
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (hot connection is a warning)", status)
+	}
+	if !slices.Contains(body.JetStream.Degraded, "traffic") {
+		t.Errorf("degraded = %v, want it to name traffic", body.JetStream.Degraded)
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	traffic, _ := wire["traffic"].(map[string]any)
+	hot, _ := traffic["hot"].([]any)
+	if traffic["threshold_msgs_per_sec"] != float64(100) || len(hot) != 1 {
+		t.Fatalf("traffic wire = %v", traffic)
+	}
+	conn, _ := hot[0].(map[string]any)
+	if conn["cid"] != float64(7) || conn["name"] != "pump" ||
+		conn["msgs_per_sec"] != 312.5 {
+		t.Errorf("hot wire = %v", conn)
+	}
+
+	reporter.SetTrafficStatus(func() TrafficStatus {
+		return TrafficStatus{ThresholdMsgsPerSec: 100}
+	})
+	body, _ = reporter.report(context.Background())
+	if slices.Contains(body.JetStream.Degraded, "traffic") || body.Traffic == nil {
+		t.Errorf("quiet traffic reported degraded: %+v", body)
+	}
+}
+
 // TestHealthCluster_Region checks a node reports the region it was
 // configured with, in standalone and cluster mode, and that the key is
 // absent when no region is set (literal JSON key, not the decoded field).

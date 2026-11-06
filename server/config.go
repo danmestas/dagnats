@@ -180,6 +180,10 @@ type Config struct {
 	// data dir's filesystem; the threshold is max(floor, 2 x MaxStoreBytes).
 	// 0 means defaultDiskFreeMinBytes.
 	DiskFreeMinBytes int64 `json:"disk_free_min_bytes"`
+	// ConnMsgsWarnPerSec is the per-client-connection inbound message rate
+	// that, sustained for ~5 minutes, logs an ERROR and marks
+	// /health/cluster degraded. 0 means defaultConnMsgsWarnPerSec.
+	ConnMsgsWarnPerSec int `json:"conn_msgs_warn_per_sec"`
 	// MaxMemoryBytes caps the JetStream in-memory store
 	// (JetStreamMaxMemory) and is applied as the soft Go memory limit at
 	// startup (#441). Defaults to defaultMaxMemoryBytes; <= 0 disables the
@@ -408,6 +412,10 @@ func ConfigWithPath(
 	}
 
 	if err := applyDiskFreeMinBytesEnv(&cfg); err != nil {
+		return Config{}, "", err
+	}
+
+	if err := applyConnMsgsWarnEnv(&cfg); err != nil {
 		return Config{}, "", err
 	}
 
@@ -799,6 +807,30 @@ func applyDiskFreeMinBytesEnv(cfg *Config) error {
 		)
 	}
 	cfg.DiskFreeMinBytes = minBytes
+	return nil
+}
+
+// applyConnMsgsWarnEnv resolves DAGNATS_CONN_MSGS_WARN_PER_SEC into
+// cfg.ConnMsgsWarnPerSec. Unset leaves the file/default value; 0 means the
+// built-in default; negatives are rejected.
+func applyConnMsgsWarnEnv(cfg *Config) error {
+	if cfg == nil {
+		panic("applyConnMsgsWarnEnv: cfg is nil")
+	}
+	val := os.Getenv("DAGNATS_CONN_MSGS_WARN_PER_SEC")
+	if val == "" {
+		return nil
+	}
+	rate, err := strconv.Atoi(val)
+	if err != nil {
+		return fmt.Errorf("invalid DAGNATS_CONN_MSGS_WARN_PER_SEC %q: %w", val, err)
+	}
+	if rate < 0 {
+		return fmt.Errorf(
+			"invalid DAGNATS_CONN_MSGS_WARN_PER_SEC %q: must not be negative", val,
+		)
+	}
+	cfg.ConnMsgsWarnPerSec = rate
 	return nil
 }
 
@@ -1230,6 +1262,17 @@ func applyConfigValue(key, val string, lineNum int, cfg *Config) error {
 			)
 		}
 		cfg.DiskFreeMinBytes = minBytes
+	case "conn_msgs_warn_per_sec":
+		rate, err := strconv.Atoi(val)
+		if err != nil {
+			return fmt.Errorf("invalid conn_msgs_warn_per_sec: %w", err)
+		}
+		if rate < 0 {
+			return fmt.Errorf(
+				"invalid conn_msgs_warn_per_sec: must not be negative, got %d", rate,
+			)
+		}
+		cfg.ConnMsgsWarnPerSec = rate
 	case "max_memory_bytes":
 		maxBytes, err := strconv.ParseInt(val, 10, 64)
 		if err != nil {
