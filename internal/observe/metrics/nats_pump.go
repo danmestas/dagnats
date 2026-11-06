@@ -8,6 +8,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -80,7 +81,7 @@ func (a *Aggregator) StartPump(
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		a.pumpLoop(pumpCtx, cons)
+		a.pumpLoop(pumpCtx, js, cons)
 	}()
 	return func() { cancel(); <-done }, nil
 }
@@ -114,12 +115,25 @@ func pumpInstallConsumer(
 	); err != nil && !errors.Is(err, jetstream.ErrConsumerNotFound) {
 		return nil, fmt.Errorf("metrics pump: delete legacy durable: %w", err)
 	}
-	startTime := time.Now().Add(-PumpReplayWindow)
+	return pumpCreateConsumer(ctx, js, time.Now().Add(-PumpReplayWindow))
+}
+
+// pumpCreateConsumer creates an ephemeral pull consumer on TELEMETRY
+// delivering metric records stamped at or after start.
+func pumpCreateConsumer(
+	ctx context.Context, js jetstream.JetStream, start time.Time,
+) (jetstream.Consumer, error) {
+	if js == nil {
+		panic("pumpCreateConsumer: js is nil")
+	}
+	if start.IsZero() {
+		panic("pumpCreateConsumer: start is zero")
+	}
 	cfg := jetstream.ConsumerConfig{
 		AckPolicy:         jetstream.AckNonePolicy,
 		FilterSubject:     PumpSubject,
 		DeliverPolicy:     jetstream.DeliverByStartTimePolicy,
-		OptStartTime:      &startTime,
+		OptStartTime:      &start,
 		MaxAckPending:     -1,
 		MaxRequestBatch:   PumpBatchMax,
 		InactiveThreshold: PumpInactiveThreshold,
@@ -135,8 +149,13 @@ func pumpInstallConsumer(
 // goroutine from infinite-looping on a broken consumer; in practice
 // the maxIterations branch is unreachable since ctx cancellation
 // breaks first.
+//
+// Every fetch fault backs off before the next fetch. Fetch reports most
+// faults on the batch rather than its own return value, so a loop that
+// reads only Fetch's error spins at full speed when the consumer is
+// gone (#952).
 func (a *Aggregator) pumpLoop(
-	ctx context.Context, cons jetstream.Consumer,
+	ctx context.Context, js jetstream.JetStream, cons jetstream.Consumer,
 ) {
 	if a == nil {
 		panic("pumpLoop: a is nil")
@@ -145,34 +164,95 @@ func (a *Aggregator) pumpLoop(
 		panic("pumpLoop: cons is nil")
 	}
 	const maxIterations = 1_000_000_000
+	var last time.Time
 	for i := 0; i < maxIterations; i++ {
 		if ctx.Err() != nil {
 			return
 		}
-		batch, err := cons.Fetch(
-			PumpBatchMax, jetstream.FetchMaxWait(time.Second),
-		)
-		if err != nil {
-			a.pumpHandleFetchError(ctx, err)
+		err := a.pumpFetchOnce(ctx, cons, &last)
+		if err == nil {
 			continue
 		}
-		a.pumpDrainBatch(ctx, batch)
+		if !a.pumpBackoff(ctx, err) {
+			return
+		}
+		if pumpConsumerGone(err) {
+			cons = a.pumpRecreate(ctx, js, cons, last)
+		}
 	}
 }
 
-// pumpHandleFetchError logs the transport error and sleeps before the
-// next iteration. Context-aware so shutdown still drains promptly.
-func (a *Aggregator) pumpHandleFetchError(
-	ctx context.Context, err error,
-) {
-	if errors.Is(err, context.Canceled) {
-		return
+// pumpFetchOnce fetches and ingests one batch, advancing last to the
+// stream timestamp of the newest message ingested. Returns the fetch
+// fault, from Fetch itself or surfaced on the batch, if any.
+func (a *Aggregator) pumpFetchOnce(
+	ctx context.Context, cons jetstream.Consumer, last *time.Time,
+) error {
+	if cons == nil {
+		panic("pumpFetchOnce: cons is nil")
 	}
-	a.logger.Warn("metrics pump: fetch failed",
-		"err", err)
+	if last == nil {
+		panic("pumpFetchOnce: last is nil")
+	}
+	batch, err := cons.Fetch(
+		PumpBatchMax, jetstream.FetchMaxWait(time.Second),
+	)
+	if err != nil {
+		return err
+	}
+	a.pumpDrainBatch(ctx, batch, last)
+	return batch.Error()
+}
+
+// pumpConsumerGone reports whether err means the pump's consumer no
+// longer exists. With no consumer listening, a fetch request gets the
+// server's 503 no-responders status.
+func pumpConsumerGone(err error) bool {
+	return errors.Is(err, nats.ErrNoResponders) ||
+		errors.Is(err, jetstream.ErrConsumerDeleted) ||
+		errors.Is(err, jetstream.ErrConsumerNotFound)
+}
+
+// pumpRecreate replaces a vanished consumer with one resuming just
+// after the last ingested message, or replaying the usual window when
+// nothing was ingested yet. On failure it keeps the old handle; the
+// next fetch fails, backs off, and lands here again.
+func (a *Aggregator) pumpRecreate(
+	ctx context.Context, js jetstream.JetStream,
+	old jetstream.Consumer, last time.Time,
+) jetstream.Consumer {
+	if old == nil {
+		panic("pumpRecreate: old is nil")
+	}
+	start := time.Now().Add(-PumpReplayWindow)
+	if !last.IsZero() {
+		start = last.Add(time.Nanosecond)
+	}
+	cons, err := pumpCreateConsumer(ctx, js, start)
+	if err != nil {
+		a.logger.Warn("metrics pump: recreate consumer failed", "err", err)
+		return old
+	}
+	a.logger.Info("metrics pump: recreated vanished consumer",
+		"resume_from", start)
+	return cons
+}
+
+// pumpBackoff logs the fetch fault and waits before the next fetch.
+// Returns false when ctx ended, so the loop exits promptly.
+func (a *Aggregator) pumpBackoff(ctx context.Context, err error) bool {
+	if err == nil {
+		panic("pumpBackoff: err is nil")
+	}
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	a.logger.Warn("metrics pump: fetch failed", "err", err)
 	select {
 	case <-ctx.Done():
+		return false
 	case <-time.After(time.Second):
+		return true
 	}
 }
 
@@ -180,10 +260,13 @@ func (a *Aggregator) pumpHandleFetchError(
 // JetStream MessageBatch yields a channel; we range it with a bounded
 // counter so a malformed batch can't pin the pump goroutine.
 func (a *Aggregator) pumpDrainBatch(
-	ctx context.Context, batch jetstream.MessageBatch,
+	ctx context.Context, batch jetstream.MessageBatch, last *time.Time,
 ) {
 	if batch == nil {
 		return
+	}
+	if last == nil {
+		panic("pumpDrainBatch: last is nil")
 	}
 	const maxPerBatch = PumpBatchMax
 	count := 0
@@ -196,6 +279,9 @@ func (a *Aggregator) pumpDrainBatch(
 			return
 		}
 		a.pumpHandleMessage(msg)
+		if meta, err := msg.Metadata(); err == nil && meta.Timestamp.After(*last) {
+			*last = meta.Timestamp
+		}
 	}
 }
 
