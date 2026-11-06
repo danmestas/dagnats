@@ -216,6 +216,88 @@ func TestPump_RestartAgainstSameStream(t *testing.T) {
 	}
 }
 
+// TestPump_RecoversWhenConsumerVanishes is the #952 regression. The
+// server can drop the pump's ephemeral consumer out from under it (the
+// peer holding it was removed from the cluster). Every Fetch then gets
+// a 503 that surfaces only on the batch, never from Fetch itself. The
+// old loop ignored it and re-fetched immediately, forever: hundreds of
+// requests a second against a consumer that no longer exists. The pump
+// must recreate its consumer, keep ingesting, and stop asking for the
+// dead one.
+func TestPump_RecoversWhenConsumerVanishes(t *testing.T) {
+	ns, nc := startEmbeddedNATS(t)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	setupTelemetryStream(t, js)
+
+	agg := NewAggregator(silentLogger())
+	defer agg.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	stop, err := agg.StartPump(ctx, js)
+	if err != nil {
+		t.Fatalf("StartPump: %v", err)
+	}
+	defer stop()
+
+	dead := onlyConsumerName(t, js)
+	if err := js.DeleteConsumer(ctx, "TELEMETRY", dead); err != nil {
+		t.Fatalf("delete pump consumer: %v", err)
+	}
+	// A subscriber on the dead consumer's subject would count as a
+	// responder and hide the 503, so measure at the server instead. A
+	// healthy pump sends about one fetch a second; the spin sent
+	// thousands.
+	before := serverInMsgs(t, ns)
+	time.Sleep(2 * time.Second)
+	if sent := serverInMsgs(t, ns) - before; sent > 50 {
+		t.Fatalf("server received %d messages in 2s after the delete, want a handful", sent)
+	}
+
+	publishMetricRecord(t, js, "after_vanish_counter", 5)
+	if !waitForSeries(agg, "after_vanish_counter", 5*time.Second) {
+		t.Fatal("pump did not resume ingesting after its consumer vanished")
+	}
+	if name := onlyConsumerName(t, js); name == dead {
+		t.Fatalf("pump consumer is still the deleted one, %q", name)
+	}
+}
+
+// onlyConsumerName returns the name of the single consumer on
+// TELEMETRY, failing the test if there is not exactly one.
+func onlyConsumerName(t *testing.T, js jetstream.JetStream) string {
+	t.Helper()
+	stream, err := js.Stream(context.Background(), "TELEMETRY")
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	names := stream.ConsumerNames(context.Background())
+	var all []string
+	for name := range names.Name() {
+		all = append(all, name)
+	}
+	if names.Err() != nil {
+		t.Fatalf("consumer names: %v", names.Err())
+	}
+	if len(all) != 1 {
+		t.Fatalf("TELEMETRY consumers = %v, want exactly one", all)
+	}
+	return all[0]
+}
+
+// serverInMsgs returns how many client messages the server has
+// received since it started.
+func serverInMsgs(t *testing.T, ns *server.Server) int64 {
+	t.Helper()
+	varz, err := ns.Varz(nil)
+	if err != nil {
+		t.Fatalf("varz: %v", err)
+	}
+	return varz.InMsgs
+}
+
 // waitForSeries polls Snapshot until the named series exists or the
 // deadline expires. Returns true on success. Bounded loop count.
 func waitForSeries(
