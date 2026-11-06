@@ -318,6 +318,19 @@ dagnats logs an `ERROR` when free space under `data_dir` falls below
 `/health/cluster`. See the Low-Disk Warning section of the production
 checklist for the details.
 
+### Watching connection traffic
+
+A client stuck in a request loop can burn cores for days while every other
+check stays green. Every 60 seconds dagnats samples each client connection's
+inbound message count (in-process connections included, at most 1024
+examined). A connection at or above `conn_msgs_warn_per_sec`
+(`DAGNATS_CONN_MSGS_WARN_PER_SEC`, default 100 msgs/s) for 5 consecutive
+samples (about 5 minutes) is logged at `ERROR` with its cid, name, address,
+account, rate and the threshold, repeated at most every 10 minutes, with an
+`INFO` on recovery. `/health/cluster` reports `traffic` (`threshold_msgs_per_sec`,
+`hot[]` with `cid`, `name`, `msgs_per_sec`) and adds `traffic` to
+`jetstream.degraded`; the status stays 200.
+
 ### Backup and Restore
 
 DagNats stores all state in the `data_dir` directory. To back up:
