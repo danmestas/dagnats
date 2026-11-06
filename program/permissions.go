@@ -84,10 +84,10 @@ func PermissionsFor(m Manifest) Permissions {
 	}
 	pub = append(pub, "api.p."+m.Name+".>")
 	for _, b := range readOnlyBuckets {
-		pub = append(pub, readBucketPublish(b)...)
+		pub = append(pub, readBucketPublish("", b)...)
 	}
 	for _, b := range scopedBuckets {
-		pub = append(pub, readBucketPublish(b)...)
+		pub = append(pub, readBucketPublish("", b)...)
 		pub = append(pub, "$KV."+b+"."+m.Name+".>")
 	}
 	for _, s := range m.Streams {
@@ -100,8 +100,8 @@ func PermissionsFor(m Manifest) Permissions {
 	for _, service := range m.Discovers {
 		pub = append(pub, discoverPublish(service)...)
 	}
-	for _, b := range m.Reads {
-		pub = append(pub, readBucketPublish(b)...)
+	for _, read := range m.Reads {
+		pub = append(pub, readBucketPublish(SplitRead(read))...)
 	}
 	own := append([]string{m.Name + ".>"}, protocolSubjects(m.Protocols)...)
 	pub = append(pub, own...)
@@ -175,6 +175,12 @@ func stickyPublish(taskTypes []string) []string {
 // control) and nothing under "$KV.<bucket>.>", so no put, delete or
 // purge. Deliveries arrive on the program's own inbox.
 //
+// A non-empty domain grants the API calls as "$JS.<domain>.API.*"
+// instead, the form nats.go sends for jetstream.NewWithDomain, which a
+// leaf link carries to the region that holds the bucket (ADR-031).
+// Flow control replies are not domain-prefixed: the bucket's server
+// names them "$JS.FC.<stream>.>", so that grant is the same either way.
+//
 // Residual risk, accepted for a trusted reader (package threat model):
 // consumer delete is granted because nats.go's watcher Stop deletes its
 // consumer, and a denial makes every Stop block ~5s and error. Watcher
@@ -184,20 +190,24 @@ func stickyPublish(taskTypes []string) []string {
 // Consumer create cannot tell ephemeral from durable (durability is in
 // the request body), so a reader could also pin a durable consumer on
 // the owner's stream, bounded by the stream's consumer limit.
-func readBucketPublish(bucket string) []string {
+func readBucketPublish(domain, bucket string) []string {
 	if bucket == "" {
 		panic("program.readBucketPublish: bucket must not be empty")
 	}
-	if strings.ContainsAny(bucket, ".*>") {
-		panic("program.readBucketPublish: bucket must be one literal token")
+	if strings.ContainsAny(bucket, ".*>:") || strings.ContainsAny(domain, ".*>") {
+		panic("program.readBucketPublish: domain and bucket must be literal tokens")
+	}
+	api := "$JS.API."
+	if domain != "" {
+		api = "$JS." + domain + ".API."
 	}
 	stream := "KV_" + bucket
 	return []string{
-		"$JS.API.STREAM.INFO." + stream,
-		"$JS.API.DIRECT.GET." + stream + ".>",
-		"$JS.API.CONSUMER.CREATE." + stream + ".>",
-		"$JS.API.CONSUMER.INFO." + stream + ".*",
-		"$JS.API.CONSUMER.DELETE." + stream + ".*",
+		api + "STREAM.INFO." + stream,
+		api + "DIRECT.GET." + stream + ".>",
+		api + "CONSUMER.CREATE." + stream + ".>",
+		api + "CONSUMER.INFO." + stream + ".*",
+		api + "CONSUMER.DELETE." + stream + ".*",
 		"$JS.FC." + stream + ".>",
 	}
 }

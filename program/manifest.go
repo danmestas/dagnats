@@ -38,8 +38,17 @@ type Manifest struct {
 	// program's own buckets (those already get full access) and not an
 	// engine bucket. Whether the owner program exists is not checkable
 	// by Validate: an entry for a bucket nobody owns grants nothing
-	// usable. A reader's watcher.Stop returns a timeout error after ~5s
-	// (consumer delete is denied); the server reaps the consumer itself.
+	// usable.
+	//
+	// An entry may name the JetStream domain the bucket lives in,
+	// "<domain>:<bucket>" such as "eu:chat_cards", for a bucket in
+	// another region (ADR-031). It grants the same reads as
+	// "$JS.<domain>.API.*", which jetstream.NewWithDomain sends, instead
+	// of "$JS.API.*"; a bare entry means this server's own domain. The
+	// bucket follows the same rules, except that it may be under the
+	// program's own prefix, since its full access is local. Adding one
+	// widens like any new read, and the join key must cover the bucket's
+	// owner: a key scopes names, not domains.
 	Reads []string
 	// Protocols are shared subject roots the program speaks, e.g.
 	// "tool.exec": publish and subscribe on the root and below it.

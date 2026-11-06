@@ -558,6 +558,43 @@ func TestPermissions_ReadsGrantReadSubjectsOnly(t *testing.T) {
 	}
 }
 
+// TestPermissions_DomainReadGrantsDomainSubjects: a read naming a
+// JetStream domain grants the same read crossings under that domain's
+// API prefix (#949), and nothing local, writable or in another domain.
+func TestPermissions_DomainReadGrantsDomainSubjects(t *testing.T) {
+	m := validManifest()
+	m.Reads = []string{"eu:chat_cards"}
+	perms := program.PermissionsFor(m)
+	for _, subject := range []string{
+		"$JS.eu.API.STREAM.INFO.KV_chat_cards",
+		"$JS.eu.API.DIRECT.GET.KV_chat_cards.$KV.chat_cards.k",
+		"$JS.eu.API.CONSUMER.CREATE.KV_chat_cards.c.$KV.chat_cards.>",
+		"$JS.eu.API.CONSUMER.INFO.KV_chat_cards.c",
+		"$JS.eu.API.CONSUMER.DELETE.KV_chat_cards.c",
+		"$JS.FC.KV_chat_cards.c.x",
+	} {
+		// Positive: each read crossing is granted in the named domain.
+		if !allowedBy(perms.Publish, subject) {
+			t.Errorf("publish %q not granted", subject)
+		}
+	}
+	for _, subject := range []string{
+		"$JS.API.STREAM.INFO.KV_chat_cards",
+		"$JS.API.DIRECT.GET.KV_chat_cards.$KV.chat_cards.k",
+		"$JS.us.API.STREAM.INFO.KV_chat_cards",
+		"$JS.eu.API.STREAM.PURGE.KV_chat_cards",
+		"$JS.eu.API.STREAM.DELETE.KV_chat_cards",
+		"$JS.eu.API.STREAM.INFO.KV_chat_roles",
+		"$JS.eu.API.INFO",
+		"$KV.chat_cards.k",
+	} {
+		// Negative: no local or other-domain grant, no write, no other bucket.
+		if allowedBy(perms.Publish, subject) {
+			t.Errorf("publish %q granted, want denied", subject)
+		}
+	}
+}
+
 func consumerCount(ctx context.Context, t *testing.T, js jetstream.JetStream, stream string) int {
 	t.Helper()
 	s, err := js.Stream(ctx, stream)
