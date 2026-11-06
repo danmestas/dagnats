@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.53] - 2026-11-06
+
 ### Fixed
 
 - **A program can read a KV bucket in another JetStream domain (#949).** A program's NATS user got only `$JS.API.*` subjects for its `Reads`, so a program in one region opening a bucket in the other with `jetstream.NewWithDomain`, which sends `$JS.<domain>.API.*`, was denied and saw `context deadline exceeded`. A `Reads` entry may now name the bucket's domain, `<domain>:<bucket>` such as `eu:chat_cards`, and the program gets the same read-only grants (stream info, direct get, and consumer create, info and delete for a watch) under `$JS.<domain>.API.` instead; the flow-control grant and deliveries on its own inbox are unchanged. A bare entry still means the server's own domain. The domain must be one NATS token of at most 64 bytes, checked by the same rule as `jetstream_domain`. The bucket follows the bare rules (another program's `<program>_<rest>`, never an engine bucket), except that a domain-qualified read may name the program's own prefix, whose full access is local. Adding one is a widening like any new read: the join key must cover the bucket's owner, whatever the domain.
