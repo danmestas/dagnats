@@ -15,12 +15,12 @@ The stream is provisioned by `natsutil.SetupAll()`:
 | **Subjects** | `telemetry.>` |
 | **Retention** | Limits policy |
 | **Storage** | File |
-| **MaxAge** | 7 days |
+| **MaxAge** | None (size-bounded ring buffer) |
 | **MaxBytes** | 10% of `max_store_bytes` |
 | **Dedup Window** | 5 seconds |
 | **Replicas** | The cluster's replication factor (1 standalone) |
 
-Whichever limit is hit first prunes the oldest messages. Before 0.0.27 the stream was single-replica in a cluster; an existing deployment is upgraded in place on restart.
+When the stream reaches MaxBytes the oldest messages are dropped. Before 0.0.27 the stream was single-replica in a cluster; an existing deployment is upgraded in place on restart.
 
 ## Subject Hierarchy
 

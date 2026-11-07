@@ -92,13 +92,16 @@ type Orchestrator struct {
 	// in Start, called in Stop. nil before Start / after Stop.
 	reconcileCancel context.CancelFunc
 
-	// runsMaxAge is the run-retention window (#453, #521). Zero disables the
-	// sweeper entirely: the prune ticker is not even started. The server
-	// defaults this to 30d (server.DefaultRunsMaxAge); an operator can still
-	// disable it with an explicit 0/off. When > 0, terminal runs whose
+	// runsMaxAge is the optional run age limit (#453, #521). Zero (the
+	// default) means no age pruning. When > 0, terminal runs whose
 	// CompletedAt is older than this are dropped (delete-only) by the
 	// background prune pass. In-flight runs are never touched.
 	runsMaxAge time.Duration
+
+	// storeBudget is the JetStream store budget workflow_runs' size share
+	// is taken from (natsutil.RunsShareBytes). Zero resolves the connected
+	// server's budget on each prune pass.
+	storeBudget int64
 
 	// defReaperGrace is the opt-in ephemeral-def garbage-collection
 	// window (#377). Zero (the default) disables the reaper entirely:
@@ -215,16 +218,26 @@ func WithGrantPolicyHolder(holder *GrantPolicyHolder) OrchestratorOption {
 	}
 }
 
-// WithRunsMaxAge sets the run-retention sweeper window (#453, #521). A zero
-// or negative window leaves the sweeper disabled, so the prune ticker is
-// never started and no runs are deleted; the server passes 30d by default
-// (server.DefaultRunsMaxAge) but honors an explicit 0/off to disable it.
-// When positive, terminal runs whose CompletedAt is older than maxAge are
-// dropped by the background prune pass.
+// WithRunsMaxAge adds an age limit to the run pruner (#453, #521). A zero
+// or negative window means no age pruning (the default). When positive,
+// terminal runs whose CompletedAt is older than maxAge are dropped by the
+// background prune pass. Size pruning runs either way.
 func WithRunsMaxAge(maxAge time.Duration) OrchestratorOption {
 	return func(o *Orchestrator) {
 		if maxAge > 0 {
 			o.runsMaxAge = maxAge
+		}
+	}
+}
+
+// WithStoreBudget sets the store budget the run pruner sizes workflow_runs
+// against: past natsutil.RunsShareBytes of it, the oldest terminal runs
+// are deleted. Without it the pruner asks the connected server for its
+// budget. A zero or negative budget is ignored.
+func WithStoreBudget(maxStoreBytes int64) OrchestratorOption {
+	return func(o *Orchestrator) {
+		if maxStoreBytes > 0 {
+			o.storeBudget = maxStoreBytes
 		}
 	}
 }
@@ -477,12 +490,9 @@ func (o *Orchestrator) Start() error {
 	o.reconcileCancel = cancel
 	o.startReconciler(reconcileCtx)
 
-	// Opt-in run-retention sweeper (#453). Started ONLY when a
-	// retention window is configured — when runsMaxAge is zero the
-	// ticker never runs, the headline OFF-by-default safety property.
-	if o.runsMaxAge > 0 {
-		o.startRunPruner(reconcileCtx)
-	}
+	// Run pruner (#453): always on, because size pruning is what keeps
+	// workflow_runs bounded. Age pruning runs only when runsMaxAge > 0.
+	o.startRunPruner(reconcileCtx)
 
 	// Opt-in ephemeral-def reaper (#377). Started ONLY when a grace is
 	// configured — when defReaperGrace is zero the ticker never runs.
@@ -494,8 +504,10 @@ func (o *Orchestrator) Start() error {
 	// a false orphan and reap a def whose tree had not yet aged out. With
 	// runsMaxAge >= defReaperGrace the run always survives at least as
 	// long as the def-grace, so a missing root genuinely means both
-	// windows elapsed. runsMaxAge == 0 (pruner off) trivially satisfies
-	// this — the run never disappears under the reaper.
+	// windows elapsed. runsMaxAge == 0 (no age pruning) satisfies it
+	// too. Size pruning does not: under storage pressure it may delete a
+	// terminal root before the grace elapses, and its defs are then
+	// reaped early. No shipped binary enables the reaper today.
 	if o.defReaperGrace > 0 {
 		if o.runsMaxAge != 0 && o.runsMaxAge < o.defReaperGrace {
 			panic("Start: runsMaxAge must be 0 or >= defReaperGrace " +

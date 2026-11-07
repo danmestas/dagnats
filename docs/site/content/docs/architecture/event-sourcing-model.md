@@ -85,7 +85,7 @@ The `workflow_runs` KV bucket stores a **snapshot** of each run: status, step st
 
 For every event the engine loads the run's snapshot, runs `Advance()`, executes the resulting side effects, and saves the snapshot back. The save is a compare-and-swap on the KV revision: if another engine (a cluster has one per node) changed the run since it was loaded, the write is rejected and the engine reloads and redoes the transition. Snapshots also serve `GET /runs/{id}` directly, without touching the stream.
 
-Because the engine reads the snapshot for every event, the snapshot is authoritative for a run's current state. The event log is not replayed to rebuild it. Terminal runs are pruned from the bucket after `runs_max_age` (default 30 days).
+Because the engine reads the snapshot for every event, the snapshot is authoritative for a run's current state. The event log is not replayed to rebuild it. Once the bucket passes its share of `max_store_bytes` (8%), the oldest terminal runs are pruned; `runs_max_age`, unset by default, adds an age limit.
 
 ## Consumption and Recovery
 

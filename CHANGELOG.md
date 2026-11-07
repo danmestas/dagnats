@@ -11,6 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`lake/s3store` is the lake writer's S3 store.** It is the pure-Go S3-compatible store moved from lode (`snapshot/s3store`, lode commit 41401ab): a SigV4 client over net/http with no SDK, for R2, Garage, Tigris, MinIO and S3. It satisfies `writer.Store` and keeps `Has`, `List` and `Delete`. `Put` is a conditional create-only PUT, with a HEAD-first fallback (`NoConditionalPut`) for Garage v2.1. Errors are `s3store.ErrExists` and `s3store.ErrNotFound`, matching `fs.ErrExist` and `fs.ErrNotExist`. `List` follows continuation pages and errors past its limit. `Config.ObjectSizeMax` (default 128 MiB) replaces lode's snapshot constant. Lode can drop its copy and import this one.
 
+- **A warning before the agent journal fills.** Every 60 seconds the server reads AGENT_JOURNAL's size. At 80% of its byte ceiling it logs an `ERROR` (repeated at most every 10 minutes) saying new records will be refused at 100%, reports `agent_journal` (`bytes`, `max_bytes`, `warn_bytes`, `filling`) in `/health/cluster`, and adds `agent_journal` to `jetstream.degraded`; the status stays 200. It logs `INFO` once the journal drops back below.
+
+### Changed
+
+- **History is kept by size, not by age.** How long to keep history is the consumer's call, so dagnats no longer deletes it on a timer. WORKFLOW_HISTORY (was 30 days), EVENTS (14 days), DEAD_LETTERS (30 days), TELEMETRY (7 days) and TRIGGER_HISTORY (30 days) have no age limit: each is a ring buffer that keeps as much as its share of `max_store_bytes` holds and drops the oldest message only when full. Their byte ceilings are unchanged. Limits whose expiry is behaviour stay as they were: dedup windows, idempotency keys, worker liveness, sticky routing, approval tokens, debounce state, checkpoints, the console audit log and `DAGNATS_BUILD_LOGS_TTL`.
+
+- **AGENT_JOURNAL never drops a record.** It had a 30-day age limit and dropped its oldest records when full. It now has no age limit and refuses new appends when it reaches its ceiling (discard new), so an agent step fails loudly instead of losing the records it recovers from. See the journal warning under Added.
+
+- **`runs_max_age` is unset by default, and `workflow_runs` is pruned by size.** The default was `720h`. Now the engine's run pruner always holds the `workflow_runs` bucket to 8% of `max_store_bytes`: when the bucket is over, it deletes the oldest terminal runs by completion time until it is under 90% of that share, at most 10,000 per 10-minute pass. In-flight runs are never touched, and the run indexes are removed with each run. The bucket gets no byte ceiling, because a full KV bucket refuses writes. `runs_max_age` (and `DAGNATS_RUNS_MAX_AGE`) still work: a duration adds age pruning on top of size pruning; unset, `0`, `off` and `disabled` mean no age pruning. `server.DefaultRunsMaxAge` is removed. A split `dagnats-engine` reads the store budget from the server it connects to.
+
+  **Upgrade note.** On upgrade, existing streams are updated in place: the history streams stop aging out, and the journal switches to refusing appends when full. No stream data is deleted at upgrade, but if `workflow_runs` already holds more than 8% of `max_store_bytes`, the first passes after upgrade delete its oldest terminal runs, 10,000 per pass, until it fits. Storage now fills to each store's ceiling over time rather than staying at what the age limits kept, so give the disk headroom for the whole of `max_store_bytes`. Set `runs_max_age: 720h` to keep the old run retention.
+
 ## [0.0.56] - 2026-11-07
 
 ### Fixed

@@ -434,6 +434,53 @@ func TestHealthCluster_TrafficStatus(t *testing.T) {
 	}
 }
 
+// TestHealthCluster_JournalStatus pins the wire shape of the agent journal
+// block with literal keys and checks a filling journal is degraded-but-200
+// in cluster mode, like low disk, while a roomy one adds no degradation.
+func TestHealthCluster_JournalStatus(t *testing.T) {
+	_, nc := natstest.StartServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	routes := []string{"nats://peer-a:6222", "nats://peer-b:6222"}
+	reporter := NewClusterReporter(nc, routes, nil)
+	body, _ := reporter.report(context.Background())
+	if body.Journal != nil {
+		t.Errorf("journal = %+v without a monitor, want nil", body.Journal)
+	}
+	reporter.SetJournalStatus(func() JournalStatus {
+		return JournalStatus{Bytes: 85, MaxBytes: 100, WarnBytes: 80, Filling: true}
+	})
+	body, status := reporter.report(context.Background())
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (a filling journal is a warning)", status)
+	}
+	if !slices.Contains(body.JetStream.Degraded, "agent_journal") {
+		t.Errorf("degraded = %v, want it to name agent_journal", body.JetStream.Degraded)
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	journal, _ := wire["agent_journal"].(map[string]any)
+	if journal["bytes"] != float64(85) || journal["max_bytes"] != float64(100) ||
+		journal["warn_bytes"] != float64(80) || journal["filling"] != true {
+		t.Errorf("agent_journal wire = %v", journal)
+	}
+
+	reporter.SetJournalStatus(func() JournalStatus {
+		return JournalStatus{Bytes: 10, MaxBytes: 100, WarnBytes: 80}
+	})
+	body, _ = reporter.report(context.Background())
+	if slices.Contains(body.JetStream.Degraded, "agent_journal") || body.Journal == nil {
+		t.Errorf("roomy journal reported degraded: %+v", body)
+	}
+}
+
 // TestHealthCluster_Region checks a node reports the region it was
 // configured with, in standalone and cluster mode, and that the key is
 // absent when no region is set (literal JSON key, not the decoded field).

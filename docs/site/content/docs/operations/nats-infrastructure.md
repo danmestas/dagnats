@@ -11,18 +11,18 @@ Ten streams handle all durable messaging. `dagnats serve` creates these on first
 
 | Stream | Subjects | Retention | Storage | Limits | Purpose |
 |--------|----------|-----------|---------|--------|---------|
-| `WORKFLOW_HISTORY` | `history.>` | Limits | File | 30-day max age, 5s dedup window | Immutable event log (source of truth) |
+| `WORKFLOW_HISTORY` | `history.>` | Limits | File | No max age (ring buffer), 5s dedup window | Immutable event log (source of truth) |
 | `TASK_QUEUES` | `task.>` | WorkQueue | File | No max age, atomic publish, direct get | Work distribution to workers |
-| `EVENTS` | `event.>` | Limits | File | 14-day max age | External event ingestion |
-| `DEAD_LETTERS` | `dead.>` | Limits | File | 30-day max age, 24h dedup window | Permanent failures for inspection |
-| `TELEMETRY` | `telemetry.>` | Limits | File | 7-day max age, 5s dedup window | Spans, metrics, logs |
+| `EVENTS` | `event.>` | Limits | File | No max age (ring buffer) | External event ingestion |
+| `DEAD_LETTERS` | `dead.>` | Limits | File | No max age (ring buffer), 24h dedup window | Permanent failures for inspection |
+| `TELEMETRY` | `telemetry.>` | Limits | File | No max age (ring buffer), 5s dedup window | Spans, metrics, logs |
 | `SLEEP_TIMERS` | `sleep.>`, `scheduled.>` | Limits | File | No max age | Durable timers (sleep, timeout, rate-retry, scheduled runs) |
 | `STICKY_TASKS` | `sticky.>` | Limits | Memory | 30-minute max age | Worker-affinity task routing |
-| `TRIGGER_HISTORY` | `trigger.fire.>` | Limits | File | 30-day max age | Trigger fire records (`dagnats trigger history`) |
+| `TRIGGER_HISTORY` | `trigger.fire.>` | Limits | File | No max age (ring buffer) | Trigger fire records (`dagnats trigger history`) |
 | `BUILD_LOGS` | `logs.>` | Limits | File | `DAGNATS_BUILD_LOGS_TTL`, default 7 days (1h to 8760h); 2-minute dedup window | Task log lines (`logs.{run}.{step}.{attempt}.{iteration}`, or `logs.p.{program}.{run}...` from a program's worker) |
-| `AGENT_JOURNAL` | `journal.>` | Limits | File | 30-day max age, 2-minute dedup window, direct get off | Agent journal records (`journal.{run}.{step}`), one fenced subject per step |
+| `AGENT_JOURNAL` | `journal.>` | Limits | File | No max age, refuses appends when full (discard new), 2-minute dedup window, direct get off | Agent journal records (`journal.{run}.{step}`), one fenced subject per step |
 
-`TASK_QUEUES` and `SLEEP_TIMERS` have no max age because their messages are live work: an age limit would silently delete pending tasks and unfired timers. Every file-backed stream also gets a byte ceiling that is a share of the JetStream store budget (`max_store_bytes`): `WORKFLOW_HISTORY` 25%, `EVENTS` 15%, `TASK_QUEUES` 12%, `TELEMETRY` 10%, `BUILD_LOGS` 5%, `DEAD_LETTERS` 5%, `AGENT_JOURNAL` 4%, `TRIGGER_HISTORY` 4% and `SLEEP_TIMERS` 4%, plus 0.5% for the `submissions` KV bucket, 84.5% in all, with the rest left as headroom for the other KV buckets and JetStream's own index. `AGENT_JOURNAL` is sized small on purpose: one record per claim, pause, entry and commit per step, aged out at 30 days like history. `STICKY_TASKS` is in memory and bounded by its age.
+`TASK_QUEUES` and `SLEEP_TIMERS` have no max age because their messages are live work: an age limit would silently delete pending tasks and unfired timers. Every file-backed stream also gets a byte ceiling that is a share of the JetStream store budget (`max_store_bytes`): `WORKFLOW_HISTORY` 25%, `EVENTS` 15%, `TASK_QUEUES` 12%, `TELEMETRY` 10%, `BUILD_LOGS` 5%, `DEAD_LETTERS` 5%, `AGENT_JOURNAL` 4%, `TRIGGER_HISTORY` 4% and `SLEEP_TIMERS` 4%, plus 0.5% for the `submissions` KV bucket, 84.5% in all, with the rest left as headroom for the other KV buckets and JetStream's own index. The `workflow_runs` bucket is held to 8% of the budget by the engine's run pruner rather than a ceiling, because a full KV bucket rejects writes. The history streams (`WORKFLOW_HISTORY`, `EVENTS`, `DEAD_LETTERS`, `TELEMETRY`, `TRIGGER_HISTORY`) have no max age: each is a ring buffer that keeps what its ceiling holds and drops the oldest message only when full. How long to keep history is the consumer's call. `AGENT_JOURNAL` is sized small on purpose (one record per claim, pause, entry and commit per step) and never drops a record: it has no max age and, when full, refuses new appends (discard new), so agent steps fail loudly instead. The server warns when it reaches 80% of its ceiling. `STICKY_TASKS` is in memory and bounded by its age.
 
 ### WORKFLOW_HISTORY
 

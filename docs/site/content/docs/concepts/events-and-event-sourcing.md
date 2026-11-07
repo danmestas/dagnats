@@ -7,7 +7,7 @@ DagNats is **event-driven**: every state change is an immutable event on a JetSt
 
 ## The WORKFLOW_HISTORY Stream
 
-Every state change in a workflow run is recorded as an event on the `WORKFLOW_HISTORY` JetStream stream. Events are published to subjects matching `history.{run_id}`, with a 5-second deduplication window (via `Nats-Msg-Id` headers). The stream keeps events for 30 days, then ages them out.
+Every state change in a workflow run is recorded as an event on the `WORKFLOW_HISTORY` JetStream stream. Events are published to subjects matching `history.{run_id}`, with a 5-second deduplication window (via `Nats-Msg-Id` headers). The stream has no age limit: it keeps as many events as its share of `max_store_bytes` holds and drops the oldest only when full.
 
 This stream is **append-only**. Events are never modified. Within the retention window, you can read any run's full history with `dagnats run events <run-id>`.
 
@@ -111,7 +111,7 @@ DagNats maintains both an event stream and KV snapshots. They serve different pu
 |---------|-------------|-------------|
 | **Role** | Ordered record that drives the engine | Current state of each run |
 | **Mutability** | Append-only, immutable | Overwritten on each update |
-| **Retention** | 30 days | Terminal runs pruned after `runs_max_age` (default 30 days) |
+| **Retention** | Until its share of the store budget is full | Oldest terminal runs pruned once the bucket passes its share; optionally after `runs_max_age` |
 | **Use case** | Audit, debugging, reconstructing a run's timeline | The engine's working state and fast reads (`GET /runs/{id}`) |
 | **Concurrency control** | `Nats-Msg-Id` dedup | KV revision (compare-and-swap) |
 

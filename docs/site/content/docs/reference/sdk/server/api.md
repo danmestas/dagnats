@@ -27,7 +27,6 @@ server/region\_config.go The region key: one name for a regional cluster that be
 
 ## Index
 
-- [Constants](<#constants>)
 - [func LogMetricsAuthStartup\(logger \*slog.Logger, cfg MetricsAuthConfig, httpAddr string\)](<#LogMetricsAuthStartup>)
 - [func PrintDryRun\(w io.Writer, rc ResolvedConfig\) bool](<#PrintDryRun>)
 - [type Config](<#Config>)
@@ -59,24 +58,6 @@ server/region\_config.go The region key: one name for a regional cluster that be
   - [func \(s \*WorkerShim\) WithGroups\(groups ...string\)](<#WorkerShim.WithGroups>)
 
 
-## Constants
-
-<a name="DefaultRunsMaxAge"></a>
-
-```go
-const (
-
-    // DefaultRunsMaxAge is the run-retention window applied when the operator
-    // configures nothing (#521). It matches WORKFLOW_HISTORY's 30d so a run's
-    // authoritative snapshot never outlives the history it summarizes, and it
-    // bounds the otherwise-unbounded workflow_runs KV (the prod disk-growth
-    // symptom). The pruner is terminal-only (deletes by CompletedAt), so
-    // in-flight runs are never touched and recovery is preserved. An explicit
-    // 0/off/disabled still turns pruning off — see parseRetentionDuration.
-    DefaultRunsMaxAge = 30 * 24 * time.Hour
-)
-```
-
 <a name="LogMetricsAuthStartup"></a>
 ## func [LogMetricsAuthStartup](<https://github.com/danmestas/dagnats/blob/main/server/metrics_auth.go#L92-L94>)
 
@@ -96,7 +77,7 @@ func PrintDryRun(w io.Writer, rc ResolvedConfig) bool
 PrintDryRun writes the dry\-run report to w. Returns true if all validations passed.
 
 <a name="Config"></a>
-## type [Config](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L89-L299>)
+## type [Config](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L80-L291>)
 
 Config holds all server configuration.
 
@@ -208,15 +189,16 @@ type Config struct {
     Workers      []WorkerConfig `json:"workers"`
     OTLPEndpoint string         `json:"otlp_endpoint"`
 
-    // RunsMaxAge is the run-retention window for the workflow_runs KV
-    // (#453, #521). It DEFAULTS to DefaultRunsMaxAge (30d): an unconfigured
-    // serve prunes terminal runs older than 30d, bounding the previously
-    // unbounded bucket. When > 0, terminal runs whose CompletedAt is older
-    // than this are dropped (delete-only) by the orchestrator's background
-    // sweeper; in-flight runs are never touched. Set via DAGNATS_RUNS_MAX_AGE
-    // or the runs_max_age config key, which accept a Go duration ("720h") or
-    // a d/w suffix ("30d", "2w"). An explicit 0/off/disabled turns pruning
-    // off entirely — the escape hatch for operators who want it off.
+    // RunsMaxAge is an optional age limit for terminal runs in the
+    // workflow_runs KV (#453, #521). Unset (0, the default) means no age
+    // pruning: how long to keep runs is the consumer's call. When > 0,
+    // terminal runs whose CompletedAt is older than this are dropped
+    // (delete-only) by the orchestrator's background sweeper; in-flight runs
+    // are never touched. Size pruning runs regardless and is what bounds the
+    // bucket: past its share of MaxStoreBytes the oldest terminal runs go.
+    // Set via DAGNATS_RUNS_MAX_AGE or the runs_max_age config key, which
+    // accept a Go duration ("168h") or a d/w suffix ("30d", "2w");
+    // 0/off/disabled mean the same as unset.
     RunsMaxAge time.Duration `json:"runs_max_age"`
 
     // QueueSnapshotInterval is the periodic event.queue.snapshot
@@ -310,7 +292,7 @@ type Config struct {
 ```
 
 <a name="ConfigFromEnv"></a>
-### func [ConfigFromEnv](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L375>)
+### func [ConfigFromEnv](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L366>)
 
 ```go
 func ConfigFromEnv() Config
@@ -319,7 +301,7 @@ func ConfigFromEnv() Config
 ConfigFromEnv loads config from defaults, config file, then env vars. Config file is dagnats.yaml in CWD. Missing file is not an error. Panics if DataDir is empty after resolution. Exits \(via log.Fatalf\) if MaxStoreBytes still resolves to \<= 0 \(e.g. the disk backing DataDir has no space left\) \-\- see ConfigWithPath.
 
 <a name="ConfigWithPath"></a>
-### func [ConfigWithPath](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L392-L394>)
+### func [ConfigWithPath](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L383-L385>)
 
 ```go
 func ConfigWithPath(configPath string) (Config, string, error)
@@ -328,7 +310,7 @@ func ConfigWithPath(configPath string) (Config, string, error)
 ConfigWithPath loads config using an explicit path or standard search. Returns the resolved config and the path of the file that was loaded \(empty string if no file was found\). When configPath is non\-empty, the file must exist or an error is returned. Panics if DataDir is empty after resolution. Returns an error if MaxStoreBytes still resolves to \<= 0 after the disk\-derived default is applied \(e.g. the disk backing DataDir has no space left\) \-\- that is operator/host state, not a programmer error, so it is reported rather than panicked on. See deriveMaxStoreBytes \(\#687\).
 
 <a name="DefaultConfig"></a>
-### func [DefaultConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L309>)
+### func [DefaultConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L301>)
 
 ```go
 func DefaultConfig() Config
@@ -415,7 +397,7 @@ func ResolveConfig() ResolvedConfig
 ResolveConfig loads config and tracks the source of each value. Returns resolved config with provenance for every key.
 
 <a name="Server"></a>
-## type [Server](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L42-L95>)
+## type [Server](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L42-L97>)
 
 Server is the all\-in\-one DagNats server lifecycle manager.
 
@@ -426,7 +408,7 @@ type Server struct {
 ```
 
 <a name="New"></a>
-### func [New](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L103>)
+### func [New](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L105>)
 
 ```go
 func New(cfg Config) *Server
@@ -437,7 +419,7 @@ New creates a Server with the given config. Panics if DataDir is empty.
 A caller that built cfg via DefaultConfig\(\) directly \(rather than through ConfigWithPath/ConfigFromEnv\) still has MaxStoreBytes at the 0 "derive from disk" sentinel \(\#687\); resolve it here too so every construction path enters Run/startNATS with a usable, non\-zero budget.
 
 <a name="Server.HTTPAddr"></a>
-### func \(\*Server\) [HTTPAddr](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L168>)
+### func \(\*Server\) [HTTPAddr](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L171>)
 
 ```go
 func (s *Server) HTTPAddr() string
@@ -446,7 +428,7 @@ func (s *Server) HTTPAddr() string
 HTTPAddr returns the actual bound "host:port" the server is serving HTTP on, or "" if Run has not finished starting yet. Safe to call concurrently with Run: startHTTP writes the resolved s.cfg.HTTPAddr before Run stores s.ready, and sync/atomic gives that store/load pair release/acquire ordering, so a caller observing ready==true is guaranteed to see the final address. Callers that need to wait for the address \(e.g. tests\) should poll this instead of pre\-reserving a port.
 
 <a name="Server.NATSURL"></a>
-### func \(\*Server\) [NATSURL](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L186>)
+### func \(\*Server\) [NATSURL](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L189>)
 
 ```go
 func (s *Server) NATSURL() string
@@ -455,7 +437,7 @@ func (s *Server) NATSURL() string
 NATSURL returns the client URL of the embedded NATS server, or "" if Run has not finished starting yet. An embedder that set NATSPort \-1 reads the real port here instead of probing for a free one. The same ready release/acquire pair as HTTPAddr publishes s.ns.
 
 <a name="Server.Run"></a>
-### func \(\*Server\) [Run](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L118>)
+### func \(\*Server\) [Run](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L120>)
 
 ```go
 func (s *Server) Run() error
@@ -464,7 +446,7 @@ func (s *Server) Run() error
 Run starts all server components, serves HTTP, and blocks until shutdown. Returns nil on clean shutdown, error otherwise.
 
 <a name="Server.Stop"></a>
-### func \(\*Server\) [Stop](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L781>)
+### func \(\*Server\) [Stop](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L785>)
 
 ```go
 func (s *Server) Stop()
@@ -495,7 +477,7 @@ func DryRunValidate(cfg Config) ([]ValidationResult, bool)
 DryRunValidate checks prerequisites without starting components. Returns validation results and true if all passed.
 
 <a name="WorkerConfig"></a>
-## type [WorkerConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L81-L86>)
+## type [WorkerConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L72-L77>)
 
 WorkerConfig defines a config\-driven embedded worker handler.
 

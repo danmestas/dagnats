@@ -3,8 +3,10 @@
 // Methodology: real embedded NATS server, one per test. The prune interval
 // is lowered via the test-injection var so the background pass fires quickly
 // without sleeping for the production 10m default. Asserts BOTH that an
-// enabled sweeper deletes an old terminal run AND that a live run survives;
-// and (invariant 3) that the disabled default never starts the ticker.
+// age window deletes an old terminal run AND that a live run survives; that
+// with no age window an old run that fits its share survives; and that size
+// pruning, always on, trims an over-share bucket to its oldest-first
+// low-water mark under a tiny store budget.
 package engine
 
 import (
@@ -56,8 +58,9 @@ func TestPruneTicker_EnabledDropsOldTerminalKeepsLive(t *testing.T) {
 	}
 }
 
-// Invariant 3: disabled by default — the ticker never runs, nothing is pruned.
-func TestPruneTicker_DisabledByDefaultPrunesNothing(t *testing.T) {
+// With runs_max_age unset there is no age pruning: a run far older than 30
+// days survives while the bucket fits its share of the store budget.
+func TestPruneTicker_AgeUnsetKeepsOldRunThatFits(t *testing.T) {
 	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll failed: %v", err)
@@ -73,7 +76,7 @@ func TestPruneTicker_DisabledByDefaultPrunesNothing(t *testing.T) {
 	prunePassInterval = 50 * time.Millisecond
 	defer func() { prunePassInterval = prev }()
 
-	// No WithRunsMaxAge → RunsMaxAge stays zero → disabled.
+	// No WithRunsMaxAge: size pruning only, against the server budget.
 	orch := NewOrchestrator(nc)
 	orch.Start()
 	defer orch.Stop()
@@ -85,9 +88,50 @@ func TestPruneTicker_DisabledByDefaultPrunesNothing(t *testing.T) {
 		t.Fatalf("CountAll failed: %v", err)
 	}
 	if count != 1 {
-		t.Fatalf("count = %d, want 1 (disabled sweeper must not prune)", count)
+		t.Fatalf("count = %d, want 1 (no age pruning when unset)", count)
 	}
 	if !exists(t, store, "old-terminal") {
-		t.Fatal("disabled sweeper deleted a run — safety invariant 3 violated")
+		t.Fatal("a run that fits its share was pruned with runs_max_age unset")
+	}
+}
+
+// Size pruning is always on: under a tiny store budget the ticker deletes
+// the oldest terminal runs until workflow_runs fits its share, with no age
+// window configured, and never touches a live run.
+func TestPruneTicker_SizePruningWithTinyBudget(t *testing.T) {
+	_, nc := natstest.StartServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll failed: %v", err)
+	}
+	jsNew, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	store := NewSnapshotStore(jsNew)
+	ids := seedSizedRuns(t, store, 5)
+	saveAll(t, store, runningRun("live-running", 200*time.Hour))
+
+	prev := prunePassInterval
+	prunePassInterval = 50 * time.Millisecond
+	defer func() { prunePassInterval = prev }()
+
+	const budget = 100 << 10 // share = 8% of 100 KiB, about one run
+	orch := NewOrchestrator(nc, WithStoreBudget(budget))
+	orch.Start()
+	defer orch.Stop()
+
+	newest := ids[len(ids)-1]
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && exists(t, store, ids[0]) {
+		time.Sleep(25 * time.Millisecond)
+	}
+	if exists(t, store, ids[0]) {
+		t.Fatal("size pruning should have dropped the oldest terminal run")
+	}
+	if !exists(t, store, newest) {
+		t.Fatal("size pruning must keep the newest terminal run")
+	}
+	if !exists(t, store, "live-running") {
+		t.Fatal("size pruning must NOT delete a live run")
 	}
 }

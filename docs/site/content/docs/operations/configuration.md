@@ -266,9 +266,9 @@ Agent runtimes (runtime-generated workflows) are bounded per generation tree (ro
 | `max_defs_per_root` | `DAGNATS_MAX_DEFS_PER_ROOT` | `500` | Maximum ephemeral workflow definitions per root |
 | `max_generation_depth` | `DAGNATS_MAX_GENERATION_DEPTH` | `3` | Maximum spawn nesting depth (clamped to engine ceiling) |
 | `max_registers_per_minute_per_root` | `DAGNATS_MAX_REGISTERS_PER_MINUTE_PER_ROOT` | `60` | Registration rate-limit per root tree |
-| `runs_max_age` | `DAGNATS_RUNS_MAX_AGE` | unset (disabled) | Optional run-retention window; Go duration format (e.g. `"720h"`); when set, terminal runs older than the window are pruned |
+| `runs_max_age` | `DAGNATS_RUNS_MAX_AGE` | unset (no age pruning) | Optional age limit for terminal runs; Go duration (e.g. `"168h"`) or `30d`/`2w`; when set, terminal runs older than the window are pruned |
 
-`runs_max_age` is opt-in — when unset, run retention is unlimited. Negative values are rejected at load time. The `max_generation_depth` limit is clamped to the engine ceiling and any value exceeding it is rejected at config load.
+`runs_max_age` is opt-in. Whether or not it is set, the engine prunes the oldest terminal runs once `workflow_runs` passes 8% of `max_store_bytes`, so the bucket stays bounded. Negative values are rejected at load time. The `max_generation_depth` limit is clamped to the engine ceiling and any value exceeding it is rejected at config load.
 
 ## Viewing Effective Config
 

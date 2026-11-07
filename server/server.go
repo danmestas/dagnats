@@ -71,6 +71,8 @@ type Server struct {
 	diskMonitorStop context.CancelFunc
 	// trafficMonitorStop ends the connection traffic monitor.
 	trafficMonitorStop context.CancelFunc
+	// journalMonitorStop ends the agent journal fill monitor.
+	journalMonitorStop context.CancelFunc
 	programUsersDone   chan struct{}
 	httpSrv            *http.Server
 	telShutdown        func(context.Context)
@@ -152,6 +154,7 @@ func (s *Server) Run() error {
 	s.startMetaReconcilers()
 	s.startDiskMonitor()
 	s.startTrafficMonitor()
+	s.startJournalMonitor()
 	s.ready.Store(true)
 	printBanner(os.Stderr, s.cfg.HTTPAddr, s.ns.ClientURL())
 
@@ -303,6 +306,7 @@ func (s *Server) startComponents() error {
 	}
 	s.orch = engine.NewOrchestrator(
 		s.nc, engine.WithRunsMaxAge(s.cfg.RunsMaxAge),
+		engine.WithStoreBudget(s.cfg.MaxStoreBytes),
 		engine.WithGrantPolicyHolder(s.grantHolder),
 		engine.WithDebounceHandler(debounceFire),
 		engine.WithLegacyStepEvents(s.cfg.LegacyStepEvents),
@@ -856,6 +860,9 @@ func (s *Server) shutdown() error {
 		}
 		if s.trafficMonitorStop != nil {
 			s.trafficMonitorStop()
+		}
+		if s.journalMonitorStop != nil {
+			s.journalMonitorStop()
 		}
 		if s.metaReconcileStop != nil {
 			s.metaReconcileStop()

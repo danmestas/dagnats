@@ -80,6 +80,9 @@ type clusterHealthResponse struct {
 	// Traffic lists client connections sustaining a runaway message rate;
 	// omitted when no monitor is attached.
 	Traffic *TrafficStatus `json:"traffic,omitempty"`
+	// Journal is how full the AGENT_JOURNAL stream is; omitted when no
+	// monitor is attached.
+	Journal *JournalStatus `json:"agent_journal,omitempty"`
 	// ReplicaOnly marks a node that runs no dagnats work (engine: false):
 	// a JetStream replica only.
 	ReplicaOnly bool `json:"replica_only,omitempty"`
@@ -113,6 +116,22 @@ type TrafficStatus struct {
 
 // TrafficStatusFunc reads the latest traffic verdict.
 type TrafficStatusFunc func() TrafficStatus
+
+// JournalStatus is the AGENT_JOURNAL stream's stored bytes against its
+// ceiling. Filling means it has reached WarnBytes: the journal never
+// drops a record, so once full it refuses appends and agent steps fail.
+type JournalStatus struct {
+	Bytes     int64 `json:"bytes"`
+	MaxBytes  int64 `json:"max_bytes"`
+	WarnBytes int64 `json:"warn_bytes"`
+	Filling   bool  `json:"filling"`
+}
+
+// JournalStatusFunc reads the latest journal reading.
+type JournalStatusFunc func() JournalStatus
+
+// journalDegraded is the name a filling journal takes in JetStream.Degraded.
+const journalDegraded = "agent_journal"
 
 // trafficDegraded is the name a hot connection takes in JetStream.Degraded.
 const trafficDegraded = "traffic"
@@ -156,6 +175,7 @@ type ClusterReporter struct {
 	members     ClusterMembershipFunc
 	disk        DiskStatusFunc
 	traffic     TrafficStatusFunc
+	journal     JournalStatusFunc
 	region      string
 	replicaOnly bool
 }
@@ -188,6 +208,15 @@ func (r *ClusterReporter) SetTrafficStatus(fn TrafficStatusFunc) {
 		panic("ClusterReporter.SetTrafficStatus: r and fn must not be nil")
 	}
 	r.traffic = fn
+}
+
+// SetJournalStatus attaches the agent journal reading to the report. Call
+// it before the reporter serves requests.
+func (r *ClusterReporter) SetJournalStatus(fn JournalStatusFunc) {
+	if r == nil || fn == nil {
+		panic("ClusterReporter.SetJournalStatus: r and fn must not be nil")
+	}
+	r.journal = fn
 }
 
 // SetRegion attaches the node's region to the report. Call it before the
@@ -245,6 +274,7 @@ func (r *ClusterReporter) report(
 		resp := clusterHealthResponse{Mode: "standalone", Region: r.region, OK: true}
 		r.applyDisk(&resp)
 		r.applyTraffic(&resp)
+		r.applyJournal(&resp)
 		return resp, http.StatusOK
 	}
 	resp := clusterHealthResponse{
@@ -262,6 +292,7 @@ func (r *ClusterReporter) report(
 		// A full disk is the likely cause of a lost meta group; keep it visible.
 		r.applyDisk(&resp)
 		r.applyTraffic(&resp)
+		r.applyJournal(&resp)
 		return resp, http.StatusServiceUnavailable
 	}
 	ctx, cancel := context.WithTimeout(parent, clusterHealthTimeout)
@@ -270,6 +301,7 @@ func (r *ClusterReporter) report(
 	// After collection: classifyUnavailable rewrites Degraded.
 	r.applyDisk(&resp)
 	r.applyTraffic(&resp)
+	r.applyJournal(&resp)
 	if err != nil {
 		if !errors.Is(err, errUnavailableAssets) {
 			slog.Warn("cluster health: jetstream lookup failed", "error", err)
@@ -312,6 +344,25 @@ func (r *ClusterReporter) applyTraffic(resp *clusterHealthResponse) {
 	resp.Traffic = &status
 	if len(status.Hot) > 0 && resp.JetStream != nil {
 		resp.JetStream.Degraded = append(resp.JetStream.Degraded, trafficDegraded)
+	}
+}
+
+// applyJournal adds the agent journal reading. A filling journal is a
+// warning like low disk: reported, but 200.
+func (r *ClusterReporter) applyJournal(resp *clusterHealthResponse) {
+	if resp == nil {
+		panic("applyJournal: resp must not be nil")
+	}
+	if r.journal == nil {
+		return
+	}
+	status := r.journal()
+	if status.Filling && status.Bytes < status.WarnBytes {
+		panic("applyJournal: filling below the warn level")
+	}
+	resp.Journal = &status
+	if status.Filling && resp.JetStream != nil {
+		resp.JetStream.Degraded = append(resp.JetStream.Degraded, journalDegraded)
 	}
 }
 

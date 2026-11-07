@@ -27,6 +27,12 @@ const agentJournalDuplicates = 2 * time.Minute
 // the leader, and the claim protocol needs the true tail. Without it,
 // GetLastMsgForSubject goes through the JetStream API, which only the
 // stream leader serves.
+//
+// A journal record is the only account of an agent step's progress, so
+// the journal never loses one: no age limit, and DiscardNew, so a full
+// journal refuses the append (the step fails loudly) instead of dropping
+// its oldest records the way the history ring buffers do. The server
+// warns at 80% of the ceiling (server/journal_monitor.go).
 func agentJournalStreamConfig(replicas int, maxStoreBytes int64) jetstream.StreamConfig {
 	if replicas < 1 {
 		panic("agentJournalStreamConfig: replicas must be positive")
@@ -36,7 +42,7 @@ func agentJournalStreamConfig(replicas int, maxStoreBytes int64) jetstream.Strea
 		Subjects:   []string{"journal.>"},
 		Retention:  jetstream.LimitsPolicy,
 		Storage:    jetstream.FileStorage,
-		MaxAge:     historyMaxAge,
+		Discard:    jetstream.DiscardNew,
 		Duplicates: agentJournalDuplicates,
 		MaxBytes: proportionalMaxBytes(
 			maxStoreBytes, fractionAgentJournal,
@@ -46,6 +52,9 @@ func agentJournalStreamConfig(replicas int, maxStoreBytes int64) jetstream.Strea
 	}
 	if cfg.AllowDirect {
 		panic("agentJournalStreamConfig: direct get must stay off")
+	}
+	if cfg.Discard != jetstream.DiscardNew || cfg.MaxAge != 0 {
+		panic("agentJournalStreamConfig: the journal must never drop a record")
 	}
 	return cfg
 }

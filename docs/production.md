@@ -284,18 +284,42 @@ data_dir: /var/lib/dagnats
 When `max_store_bytes` is unset, it defaults to half of the free disk
 under `data_dir`, capped at 10 GiB. This is the JetStream storage
 budget. Each stream gets a share of it (for example WORKFLOW_HISTORY
-25%, EVENTS 15%, TASK_QUEUES 12%, TELEMETRY 10%, DEAD_LETTERS 5%).
+25%, EVENTS 15%, TASK_QUEUES 12%, TELEMETRY 10%, DEAD_LETTERS 5%,
+AGENT_JOURNAL 4%), and the `workflow_runs` bucket is held to 8%.
+
+**History is a ring buffer, not a timer.** How long to keep history is
+your call, not dagnats'. The history stores (WORKFLOW_HISTORY, EVENTS,
+DEAD_LETTERS, TELEMETRY, TRIGGER_HISTORY) have no age
+limit: each keeps as much as its share holds, and only when it is full
+does the oldest message fall off. To keep history longer than its share
+holds, raise `max_store_bytes` or drain the stream into your own
+storage. Expect each store to fill to its share in time, so give the
+disk headroom for the whole of `max_store_bytes`, not today's usage.
+
+The `workflow_runs` bucket cannot work that way: a full KV bucket
+rejects writes. So the engine's run pruner checks it every 10 minutes,
+and when it holds more than its 8% share it deletes the oldest terminal
+runs, by completion time, until it is under 90% of the share (at most
+10,000 per pass). In-flight runs are never deleted. This size pruning is
+always on. `runs_max_age` adds an age limit on top of it; it is unset by
+default.
+
+Expiry that is part of correct behaviour is unchanged: dedup windows,
+idempotency keys (24h), HTTP trigger idempotency (1h), worker liveness
+(60s), sticky routing (30m), approval tokens (7d) and debounce state
+(14d). Two KV buckets keep a TTL because a KV bucket cannot roll by size
+and nothing else deletes their keys: checkpoints (30d) and the console
+audit log (90d). BUILD_LOGS keeps its own `DAGNATS_BUILD_LOGS_TTL`.
 
 Sizing depends on:
 
 - **Workflow volume:** each event is a small JSON message (typically
   1-10 KB). A workflow run with 10 steps generates roughly 20-40
   events.
-- **Retention:** DEAD_LETTERS retains for 30 days and TELEMETRY for
-  7 days, each also bounded by its share of the budget. Terminal runs
-  are pruned from the `workflow_runs` bucket after `runs_max_age`
-  (30 days by default). BUILD_LOGS keeps task log lines for
-  `DAGNATS_BUILD_LOGS_TTL` (168h by default).
+- **Retention:** history stores keep what their share holds (see
+  above). Terminal runs stay in `workflow_runs` until its share is
+  full, or until `runs_max_age` when you set one. BUILD_LOGS keeps task
+  log lines for `DAGNATS_BUILD_LOGS_TTL` (168h by default).
 - **Checkpoint data:** workers can store checkpoint blobs in the
   `checkpoints` KV bucket. Large checkpoints consume storage fast.
 
@@ -317,6 +341,21 @@ dagnats logs an `ERROR` when free space under `data_dir` falls below
 `max(disk_free_min_bytes, 2 x max_store_bytes)` and reports `disk` in
 `/health/cluster`. See the Low-Disk Warning section of the production
 checklist for the details.
+
+### Watching the agent journal
+
+AGENT_JOURNAL never drops a record. It has no age limit and is not a
+ring buffer: when it reaches its byte ceiling it refuses new appends,
+so agent steps fail loudly instead of losing the records they recover
+from. Every 60 seconds dagnats reads its size, and once it reaches 80%
+of its `MaxBytes` it logs an `ERROR` with `bytes`, `max_bytes` and
+`warn_bytes`, saying writes will be refused at 100%, repeated at most
+every 10 minutes, with an `INFO` once it drops back below.
+`/health/cluster` reports `agent_journal` (`bytes`, `max_bytes`,
+`warn_bytes`, `filling`) and adds `agent_journal` to
+`jetstream.degraded`; the status stays 200. When it fires, raise
+`max_store_bytes` (the journal's ceiling is 4% of it) before the
+journal fills.
 
 ### Watching connection traffic
 
@@ -419,7 +458,7 @@ Useful for Prometheus scraping or manual debugging.
 For deployment modes (embedded sidecar, distributed S3, external collector) and direct telemetry consumption (`nats sub "telemetry.spans.>"`), see [observability.md](observability.md). The two production-specific notes are:
 
 - **Export failures never affect workflow execution.** The internal `TELEMETRY` stream always receives data regardless of OTLP export status.
-- The `TELEMETRY` stream keeps 7 days and is bounded by its share of `max_store_bytes` — size externals accordingly if you need longer history.
+- The `TELEMETRY` stream has no age limit: it keeps as much as its share of `max_store_bytes` holds, dropping the oldest when full. Export to an external store if you need a guaranteed window.
 
 ### Instrumentation Points
 

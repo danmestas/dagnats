@@ -66,15 +66,6 @@ const (
 	defaultMaxActiveRunsPerRoot         = 100
 	defaultMaxDefsPerRoot               = 500
 	defaultMaxRegistersPerMinutePerRoot = 60
-
-	// DefaultRunsMaxAge is the run-retention window applied when the operator
-	// configures nothing (#521). It matches WORKFLOW_HISTORY's 30d so a run's
-	// authoritative snapshot never outlives the history it summarizes, and it
-	// bounds the otherwise-unbounded workflow_runs KV (the prod disk-growth
-	// symptom). The pruner is terminal-only (deletes by CompletedAt), so
-	// in-flight runs are never touched and recovery is preserved. An explicit
-	// 0/off/disabled still turns pruning off — see parseRetentionDuration.
-	DefaultRunsMaxAge = 30 * 24 * time.Hour
 )
 
 // WorkerConfig defines a config-driven embedded worker handler.
@@ -199,15 +190,16 @@ type Config struct {
 	Workers      []WorkerConfig `json:"workers"`
 	OTLPEndpoint string         `json:"otlp_endpoint"`
 
-	// RunsMaxAge is the run-retention window for the workflow_runs KV
-	// (#453, #521). It DEFAULTS to DefaultRunsMaxAge (30d): an unconfigured
-	// serve prunes terminal runs older than 30d, bounding the previously
-	// unbounded bucket. When > 0, terminal runs whose CompletedAt is older
-	// than this are dropped (delete-only) by the orchestrator's background
-	// sweeper; in-flight runs are never touched. Set via DAGNATS_RUNS_MAX_AGE
-	// or the runs_max_age config key, which accept a Go duration ("720h") or
-	// a d/w suffix ("30d", "2w"). An explicit 0/off/disabled turns pruning
-	// off entirely — the escape hatch for operators who want it off.
+	// RunsMaxAge is an optional age limit for terminal runs in the
+	// workflow_runs KV (#453, #521). Unset (0, the default) means no age
+	// pruning: how long to keep runs is the consumer's call. When > 0,
+	// terminal runs whose CompletedAt is older than this are dropped
+	// (delete-only) by the orchestrator's background sweeper; in-flight runs
+	// are never touched. Size pruning runs regardless and is what bounds the
+	// bucket: past its share of MaxStoreBytes the oldest terminal runs go.
+	// Set via DAGNATS_RUNS_MAX_AGE or the runs_max_age config key, which
+	// accept a Go duration ("168h") or a d/w suffix ("30d", "2w");
+	// 0/off/disabled mean the same as unset.
 	RunsMaxAge time.Duration `json:"runs_max_age"`
 
 	// QueueSnapshotInterval is the periodic event.queue.snapshot
@@ -356,7 +348,6 @@ func DefaultConfig() Config {
 		// nothing set it.
 		MaxStoreBytes:                0,
 		MaxMemoryBytes:               defaultMaxMemoryBytes,
-		RunsMaxAge:                   DefaultRunsMaxAge,
 		QueueSnapshotInterval:        queueSnapshotInterval,
 		MaxActiveRunsPerRoot:         defaultMaxActiveRunsPerRoot,
 		MaxDefsPerRoot:               defaultMaxDefsPerRoot,
@@ -733,9 +724,9 @@ func applyEnvOverrides(cfg *Config) {
 }
 
 // applyRunsMaxAgeEnv resolves DAGNATS_RUNS_MAX_AGE into cfg.RunsMaxAge
-// (#453, #521). Unset or empty leaves whatever the file/default resolved (the
-// 30d default when the operator is silent). An explicit "0"/"off"/"disabled"
-// turns pruning off, overriding that default. A valid window sets the sweeper
+// (#453, #521). Unset or empty leaves whatever the file resolved (no age
+// pruning when the operator is silent). An explicit "0"/"off"/"disabled"
+// turns age pruning off, overriding the file. A valid window sets the sweeper
 // window; an invalid value is a hard error so a typo fails fast at config
 // load rather than silently changing retention.
 func applyRunsMaxAgeEnv(cfg *Config) error {

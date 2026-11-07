@@ -34,7 +34,7 @@ Every write to the journal is a JetStream publish with `Nats-Expected-Last-Subje
 
 An iteration ends with one `commit` record that holds the next action and the state. After the commit is stored, the worker publishes the lifecycle event (`step.continue`, `step.completed` or `step.failed`), which carries the commit's sequence as `journal_seq`. For a journal step the commit is the state of record. The state in `Checkpoint()` and `LoadCheckpoint()` travels through the journal, and the `loop_state_max_bytes` cap does not apply.
 
-The journal lives in the `AGENT_JOURNAL` stream, one subject per step (`journal.{run}.{step}`). It is kept 30 days and purged with the run. It holds model inputs, model outputs and tool results, so give it the same access control as run history, and do not write secrets into records.
+The journal lives in the `AGENT_JOURNAL` stream, one subject per step (`journal.{run}.{step}`). It has no age limit and never drops a record: when the stream reaches its byte ceiling it refuses new appends, so a journal step fails rather than lose its history. The server warns when the stream reaches 80% of its ceiling. It holds model inputs, model outputs and tool results, so give it the same access control as run history, and do not write secrets into records.
 
 ## Tools
 
