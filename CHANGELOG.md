@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Delete answers `trigger not found` for a missing trigger, one outside the prefix, or one the program did not create.
   - No permission changes: programs already publish under `api.p.<name>.>`, and the `triggers` bucket stays read-only to them. There is no list route.
 
+### Fixed
+
+- **A queued run is no longer missed when the store holds more than 1000 runs.** When a run of a concurrency-limited workflow finished, the engine looked for that workflow's oldest pending run by listing every `run.*` key in the bucket, across all workflows, and reading only the first 1000. A mesh holding more runs than that within its retention window (one forge had about 4,000 in 30 days) could miss a pending run outright. If every remaining run was pending, nothing would start it. It also logged "pending scan degraded" on every completion, and listed the whole bucket plus up to 1000 reads each time. The scan now reads the existing `runactive` index, which holds only in-flight runs, so terminal history never hides a pending run, never counts toward the cap, and costs no reads. The cap and its warning remain for more than 1000 in-flight runs.
+
 ## [0.0.54] - 2026-11-06
 
 ### Added

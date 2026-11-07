@@ -1877,7 +1877,7 @@ func (o *Orchestrator) startNextPendingRun(
 
 // findOldestPendingRun finds the oldest pending run for the given workflow
 // among what it can read this tick (#523). It is bounded and best-effort:
-// it filters to run.* keys BEFORE any GET, caps the fetched keys at
+// it reads only in-flight runs (the runactive index), caps the fetched keys at
 // pendingRunScanMax, and uses ParallelGetJSBestEffort so a slow key is
 // skipped rather than discarding the whole batch. When the population
 // exceeds the cap or any key was skipped it degrades LOUDLY (WARN + metric)
@@ -1906,20 +1906,17 @@ func (o *Orchestrator) findOldestPendingRun(
 	if o.store == nil {
 		panic("findOldestPendingRun: store must not be nil")
 	}
-	keys, err := natsutil.KVKeys(ctx, o.store.kv)
+	// Only in-flight runs can be pending, and "runactive.<id>" exists exactly
+	// while a run is in flight (#664), so the scan reads that index rather
+	// than every run.* key. Terminal history, which is most of the bucket,
+	// never counts toward the cap or costs a GET.
+	activeIDs, err := o.store.listActiveRunIDs(ctx)
 	if err != nil {
-		if errors.Is(err, jetstream.ErrNoKeysFound) {
-			return "", false, nil
-		}
-		return "", false, fmt.Errorf("list run keys: %w", err)
+		return "", false, fmt.Errorf("list active runs: %w", err)
 	}
-	// Filter to run.* keys FIRST — key names are cheap, so we never GET a
-	// non-run key just to discard it. Then cap the expensive GETs.
-	runKeys := make([]string, 0, len(keys))
-	for _, key := range keys {
-		if isRunKey(key) {
-			runKeys = append(runKeys, key)
-		}
+	runKeys := make([]string, 0, len(activeIDs))
+	for _, runID := range activeIDs {
+		runKeys = append(runKeys, "run."+runID)
 	}
 	total := len(runKeys)
 	capped := total > pendingRunScanMax
