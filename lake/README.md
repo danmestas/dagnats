@@ -76,6 +76,22 @@ either copy of the part, and either commit record, is right.
 `writer.LocalStore` is the local implementation, used by dagnats' archive. It writes a temp
 file, fsyncs it, and links it into place with link(2), which fails if the key exists. It needs a
 filesystem with hard links, and one instance per root per process, since an instance sweeps
-crashed runs' temp files on its first Put to a table. lode
-(`github.com/danmestas/lode`) holds the S3-compatible store. Its conditional-PUT path is tested
-live against Cloudflare R2; Garage v2.1.0 ignores `If-None-Match` and is check-first.
+crashed runs' temp files on its first Put to a table.
+
+`lake/s3store` is the S3-compatible implementation: Cloudflare R2, Garage, Tigris, MinIO and
+S3, over net/http and SigV4 with no SDK. It has Put, Get, Has, List and Delete; the writer
+needs only the first two.
+
+```go
+store, err := s3store.New(s3store.Config{
+	Endpoint: "https://<account>.r2.cloudflarestorage.com", Bucket: "lake", Prefix: "prod",
+	AccessKey: os.Getenv("AWS_ACCESS_KEY_ID"), SecretKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+})
+```
+
+Put is a conditional PUT (`If-None-Match: *`), so it is create-only and atomic; errors match
+`fs.ErrExist` and `fs.ErrNotExist`. Set `NoConditionalPut` for Garage v2.1.0, which ignores the
+header: Put then checks with HEAD first, and two racing Puts of one key can both succeed.
+`List` follows continuation pages and fails rather than truncate past its limit.
+`Config.ObjectSizeMax` bounds one object (default 128 MiB), above `writer.PartBytesMax`. Its
+conditional-PUT path is tested live against Cloudflare R2 by lode, whose copy this replaces.
