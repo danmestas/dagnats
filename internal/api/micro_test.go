@@ -72,7 +72,8 @@ func TestMicroInfoListsExactlyTwentyFourEndpointSubjects(t *testing.T) {
 	// (#376), the additive budget read (#378), the five lease subjects,
 	// the three input endpoints (ADR-027), the four program-scoped
 	// endpoints, the three program relay endpoints and the three
-	// program store relays (#885).
+	// program store relays (#885), and the two program trigger endpoints
+	// (#957).
 	want := map[string]bool{
 		"api.workflows.register": true,
 		"api.runs.start":         true,
@@ -95,6 +96,9 @@ func TestMicroInfoListsExactlyTwentyFourEndpointSubjects(t *testing.T) {
 		"api.p.*.runs.start":         true,
 		"api.p.*.runs.get":           true,
 		"api.p.*.runs.cancel":        true,
+		// Program cron triggers (#957).
+		"api.p.*.triggers.create": true,
+		"api.p.*.triggers.delete": true,
 		// Program step-event and journal relay (#885).
 		"api.p.*.events":         true,
 		"api.p.*.journal.append": true,

@@ -31,6 +31,10 @@ func (n *NATSAPI) programEndpoints() []endpointSpec {
 		{"program-runs-start", "api.p.*.runs.start", n.handleProgramStart, programQueueGroup},
 		{"program-runs-get", "api.p.*.runs.get", n.handleProgramGet, programQueueGroup},
 		{"program-runs-cancel", "api.p.*.runs.cancel", n.handleProgramCancel, programQueueGroup},
+		{"program-triggers-create", "api.p.*.triggers.create",
+			n.handleProgramTriggerCreate, programQueueGroup},
+		{"program-triggers-delete", "api.p.*.triggers.delete",
+			n.handleProgramTriggerDelete, programQueueGroup},
 	}
 }
 

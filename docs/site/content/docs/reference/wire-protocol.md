@@ -898,6 +898,10 @@ A program (#885) manages its own workflows on these subjects. Programs are trust
 | `api.p.<name>.runs.start` | `{"workflow","input"}`, workflow `<name>.*` | `{"run_id"}` |
 | `api.p.<name>.runs.get` | The run ID as plain text | The run snapshot |
 | `api.p.<name>.runs.cancel` | The run ID as plain text | `{"status":"cancelled","run_id"}` |
+| `api.p.<name>.triggers.create` | A `TriggerDef` with only `cron` set; `id` and `workflow_id` both `<name>.*` | `{"status":"created","id"}` |
+| `api.p.<name>.triggers.delete` | The trigger ID as plain text | `{"status":"deleted","id"}` |
+
+A program's triggers are cron only. The handler stamps `source` as `program:<name>` whatever the caller sent. Create is an upsert by ID, so a program re-asserts its triggers on every start. Create refuses to overwrite a trigger whose `source` is not `program:<name>`, and delete answers `trigger not found` for a trigger that is missing, outside the prefix, or not the program's own. There is no list route: the `triggers` bucket stays read-only to programs.
 
 Register refuses a def that reaches outside the prefix anywhere: its name, any step's `task` (normal, agent, agent loop, map), a sub-workflow target, a `wait_for_event` event type, or a `cancel_on` event type. It refuses planner steps outright for now: the engine checks a planner's run-time fragment only against `allowed_tasks`, not the fragment steps' types or configs, so a fragment could still reach outside the prefix. It also refuses a workflow the operator's control-plane policy grants or lets promote: grants name a workflow, not a definition, so the operator registers those. The check runs at registration only: a grant added later by hot reload does not evict a definition the program already registered under that name, so review a program's registered definition before granting it. `runs.get` and `runs.cancel` answer a run of another program's workflow with the same `{"error":"workflow run not found"}` as a run that does not exist. These endpoints share the queue group `dagnats-program-api`, so one instance serves each request. Workflow names under the prefix need not be declared in `Manifest.Workflows`.
 

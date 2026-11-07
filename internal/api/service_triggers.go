@@ -217,6 +217,30 @@ func (s *Service) deleteTriggerInner(
 	)
 }
 
+// getTrigger loads one trigger definition. found is false, with a nil
+// error, when no trigger has that ID.
+func (s *Service) getTrigger(
+	ctx context.Context, triggerID string,
+) (def trigger.TriggerDef, found bool, err error) {
+	if triggerID == "" {
+		panic("getTrigger: triggerID must not be empty")
+	}
+	if s.triggerKV == nil {
+		return def, false, fmt.Errorf("triggers KV bucket not available")
+	}
+	entry, err := s.triggerKV.Get(ctx, triggerID)
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		return def, false, nil
+	}
+	if err != nil {
+		return def, false, err
+	}
+	if err := json.Unmarshal(entry.Value(), &def); err != nil {
+		return def, false, fmt.Errorf("unmarshal trigger %q: %w", triggerID, err)
+	}
+	return def, true, nil
+}
+
 // SetTriggerEnabled updates the enabled state of a trigger.
 func (s *Service) SetTriggerEnabled(
 	ctx context.Context, triggerID string, enabled bool,
