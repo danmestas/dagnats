@@ -122,7 +122,7 @@ func TestDoPublishMetricNotIncrementedOnFailure(t *testing.T) {
 	}
 
 	err := tp.doPublish(
-		context.Background(), "run-1", step, []byte(`{}`), dag.WorkflowRun{}, "", "",
+		context.Background(), "run-1", step, []byte(`{}`), dag.WorkflowRun{}, "", "", dispatchNewAttempt,
 	)
 
 	// doPublish must return an error on failed publish.
@@ -178,7 +178,7 @@ func TestDoPublishMetricIncrementedOnSuccess(t *testing.T) {
 	}
 
 	err := tp.doPublish(
-		context.Background(), "run-1", step, []byte(`{}`), dag.WorkflowRun{}, "", "",
+		context.Background(), "run-1", step, []byte(`{}`), dag.WorkflowRun{}, "", "", dispatchNewAttempt,
 	)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
@@ -337,7 +337,7 @@ func TestDoPublishSpanNameAndWorkflowAttribute(t *testing.T) {
 
 	err := tp.doPublish(
 		context.Background(), "run-1", step, []byte(`{}`), dag.WorkflowRun{},
-		"deploy-pipeline", "",
+		"deploy-pipeline", "", dispatchNewAttempt,
 	)
 	if err != nil {
 		t.Fatalf("doPublish failed: %v", err)
@@ -439,7 +439,7 @@ func TestDoPublishOmitsWorkflowNameAttributeWhenEmpty(t *testing.T) {
 
 	err := tp.doPublish(
 		context.Background(), "run-1", step, []byte(`{}`), dag.WorkflowRun{},
-		"", "",
+		"", "", dispatchNewAttempt,
 	)
 	if err != nil {
 		t.Fatalf("doPublish failed: %v", err)

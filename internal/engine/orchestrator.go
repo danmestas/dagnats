@@ -935,8 +935,12 @@ func (o *Orchestrator) dispatchEvent(
 	// between) is sent again once this event is handled: it is often
 	// the redelivery of the event whose dispatch died. After, not
 	// before: a step.started or step.completed for that step proves
-	// its send landed, and handling it first clears the mark.
-	resend := loadErr == nil && hasUnsentStep(run)
+	// its send landed, and handling it first clears the mark. Never on
+	// a step.queued: enqueueReady publishes it between the dispatch save
+	// and the send, so it arrives while that send is still in flight
+	// (#953). A real crash gap still heals: the event whose dispatch
+	// died is redelivered, and the reconciler visits the run.
+	resend := loadErr == nil && evt.Type != protocol.EventStepQueued && hasUnsentStep(run)
 	if err := o.routeEvent(ctx, evt); err != nil || !resend {
 		return err
 	}
@@ -2541,7 +2545,7 @@ func (o *Orchestrator) publishStepQueuedEvents(
 		qEvt := protocol.NewStepEvent(
 			protocol.EventStepQueued, run.RunID, step.ID, nil,
 		)
-		qEvt.AttemptNumber = 1
+		qEvt.AttemptNumber = firstDispatchAttempt
 		if err := publishLifecycleEvent(ctx, o.tp, qEvt); err != nil {
 			slog.ErrorContext(ctx, "failed to publish step.queued",
 				"error", err,
