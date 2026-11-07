@@ -12,7 +12,6 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/inputs"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
@@ -216,53 +215,6 @@ func NewServiceWithLimits(
 			"error", err)
 	}
 	return svc
-}
-
-// checkIdempotency extracts the idempotency key from input, hashes it,
-// and checks the KV for an existing run. Returns the existing run ID
-// if found, empty string if not, or error on extraction/KV failure.
-func (s *Service) checkIdempotency(
-	ctx context.Context,
-	workflowName string, keyPath string, input []byte,
-) (string, error) {
-	if workflowName == "" {
-		panic("checkIdempotency: workflowName must not be empty")
-	}
-	if keyPath == "" {
-		panic("checkIdempotency: keyPath must not be empty")
-	}
-	val, err := dag.ExtractDotPath(keyPath, input)
-	if err != nil {
-		return "", fmt.Errorf("extract key %q: %w", keyPath, err)
-	}
-	kvKey := idempotencyHash(workflowName, fmt.Sprintf("%v", val))
-
-	entry, err := s.idempotencyKV.Get(
-		ctx, kvKey,
-	)
-	if err == nil {
-		return string(entry.Value()), nil
-	}
-	return "", nil
-}
-
-// storeIdempotencyKey stores the idempotency key -> run ID mapping.
-// Uses Create for atomicity — if another request raced and won, this
-// is a no-op (the winner's mapping stands).
-func (s *Service) storeIdempotencyKey(
-	ctx context.Context,
-	workflowName string, keyPath string,
-	input []byte, runID string,
-) {
-	val, err := dag.ExtractDotPath(keyPath, input)
-	if err != nil {
-		return // extraction failed — skip silently
-	}
-	kvKey := idempotencyHash(workflowName, fmt.Sprintf("%v", val))
-	// Create fails if key exists (race loser) — that's fine.
-	_, _ = s.idempotencyKV.Create(
-		ctx, kvKey, []byte(runID),
-	)
 }
 
 // idempotencyHash produces a deterministic KV key from workflow name

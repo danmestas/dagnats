@@ -14,7 +14,6 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/engine"
-	"github.com/danmestas/dagnats/internal/runid"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel/attribute"
@@ -123,29 +122,41 @@ func (s *Service) startRunInner(
 		}
 	}
 
-	// Idempotency check: if configured, extract key from input
-	// and check for existing run.
-	if def.IdempotencyKey != "" && input != nil &&
-		s.idempotencyKV != nil {
-		existingID, err := s.checkIdempotency(
-			ctx, workflowName, def.IdempotencyKey, input,
-		)
-		if err != nil {
-			slog.ErrorContext(ctx,
-				"idempotency check failed",
-				"error", err,
-				"workflow", workflowName,
-			)
-			// Fall through — run without idempotency
-		} else if existingID != "" {
-			return existingID, nil
-		}
-	}
-
-	runID := runid.New()
-	payload, err := buildStartPayload(entry.Value(), input, labels)
+	runID, publish, err := s.resolveStartRunID(ctx, workflowName, def, input)
 	if err != nil {
 		return "", err
+	}
+	if !publish {
+		return runID, nil
+	}
+	if err := s.publishRunStarted(
+		ctx, runID, entry.Value(), input, labels,
+	); err != nil {
+		return "", err
+	}
+	slog.InfoContext(ctx, "started run",
+		"run_id", runID,
+		"workflow", workflowName,
+	)
+	return runID, nil
+}
+
+// publishRunStarted publishes WorkflowStarted for runID. The message ID
+// is the event's own, which embeds the run ID, so a republish of the same
+// run inside the stream's dedup window is dropped.
+func (s *Service) publishRunStarted(
+	ctx context.Context,
+	runID string, defJSON, input []byte, labels map[string]string,
+) error {
+	if runID == "" {
+		panic("publishRunStarted: runID must not be empty")
+	}
+	if len(defJSON) == 0 {
+		panic("publishRunStarted: defJSON must not be empty")
+	}
+	payload, err := buildStartPayload(defJSON, input, labels)
+	if err != nil {
+		return err
 	}
 	evt := protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, runID, payload,
@@ -157,22 +168,8 @@ func (s *Service) startRunInner(
 	// JSPublishMsgEvent injects trace context, then re-marshals evt
 	// so the persisted body carries TraceParent. msg.Data must stay
 	// unset on entry.
-	if _, err := s.tp.JSPublishMsgEvent(ctx, msg, &evt); err != nil {
-		return "", err
-	}
-	// Store idempotency key mapping after successful publish.
-	if def.IdempotencyKey != "" && input != nil &&
-		s.idempotencyKV != nil {
-		s.storeIdempotencyKey(
-			ctx, workflowName, def.IdempotencyKey, input, runID,
-		)
-	}
-
-	slog.InfoContext(ctx, "started run",
-		"run_id", runID,
-		"workflow", workflowName,
-	)
-	return runID, nil
+	_, err = s.tp.JSPublishMsgEvent(ctx, msg, &evt)
+	return err
 }
 
 // RunResponse wraps a workflow run snapshot with the trace ID
