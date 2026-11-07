@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A program can register cron triggers for its own workflows (#957).** `api.p.<name>.triggers.create` takes a `TriggerDef` and `api.p.<name>.triggers.delete` takes the trigger ID as plain text; replies are `{"status":"created","id"}` and `{"status":"deleted","id"}`.
+  - Both the trigger ID and its workflow must be under `<name>.`, and only `cron` may be set (no subject, webhook, HTTP, external, run-terminal or debounce).
+  - The handler stamps `source` as `program:<name>`. Create is an upsert by ID, so a program re-asserts its triggers on every start, but it refuses to overwrite a trigger whose source is not its own, such as an operator's trigger under the prefix.
+  - Delete answers `trigger not found` for a missing trigger, one outside the prefix, or one the program did not create.
+  - No permission changes: programs already publish under `api.p.<name>.>`, and the `triggers` bucket stays read-only to them. There is no list route.
+
 ## [0.0.54] - 2026-11-06
 
 ### Added
