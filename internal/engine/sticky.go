@@ -119,25 +119,11 @@ func (sr *StickyRouter) PublishTask(
 	)
 	defer span.End()
 
-	// Build the task payload
-	attempt, iteration := dispatchIdentity(run, step.ID, mode)
-	payload := protocol.TaskPayload{
-		TaskID:        runID + "." + step.ID,
-		RunID:         runID,
-		StepID:        step.ID,
-		Attempt:       attempt,
-		Iteration:     iteration,
-		Input:         input,
-		WorkflowName:  workflowName,
-		DispatchNonce: dispatchNonce,
-		Metadata:      step.Metadata,
-		State:         run.Steps[step.ID].LoopState,
-		StateMaxBytes: sr.loopStateMaxBytes,
-		AgentLoop:     step.Type == dag.StepTypeAgentLoop,
-	}
-	data, err := json.Marshal(payload)
+	data, attempt, err := sr.stickyPayload(
+		runID, step, input, run, dispatchNonce, workflowName, mode,
+	)
 	if err != nil {
-		return fmt.Errorf("marshal TaskPayload: %w", err)
+		return err
 	}
 
 	// Worker-specific subject on STICKY_TASKS stream
@@ -164,6 +150,46 @@ func (sr *StickyRouter) PublishTask(
 	}
 
 	return nil
+}
+
+// stickyPayload builds and encodes the TaskPayload a sticky dispatch
+// sends, returning it with the attempt it stamps (the soft fallback
+// timer carries the same attempt).
+func (sr *StickyRouter) stickyPayload(
+	runID string,
+	step dag.StepDef,
+	input []byte,
+	run dag.WorkflowRun,
+	dispatchNonce string,
+	workflowName string,
+	mode dispatchIdentityMode,
+) ([]byte, int, error) {
+	if runID == "" {
+		panic("stickyPayload: runID must not be empty")
+	}
+	if step.ID == "" {
+		panic("stickyPayload: step.ID must not be empty")
+	}
+	attempt, iteration := dispatchIdentity(run, step.ID, mode)
+	payload := protocol.TaskPayload{
+		TaskID:        runID + "." + step.ID,
+		RunID:         runID,
+		StepID:        step.ID,
+		Attempt:       attempt,
+		Iteration:     iteration,
+		Input:         input,
+		WorkflowName:  workflowName,
+		DispatchNonce: dispatchNonce,
+		Metadata:      step.Metadata,
+		State:         run.Steps[step.ID].LoopState,
+		StateMaxBytes: sr.loopStateMaxBytes,
+		AgentLoop:     step.Type == dag.StepTypeAgentLoop,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, 0, fmt.Errorf("marshal TaskPayload: %w", err)
+	}
+	return data, attempt, nil
 }
 
 // scheduleSoftFallback schedules the soft-sticky fallback timer: if
