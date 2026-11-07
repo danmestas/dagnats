@@ -37,7 +37,10 @@ func seedRun(
 		Status:     status,
 		CreatedAt:  created,
 	}
-	if err := o.store.Save(context.Background(), run); err != nil {
+	// SaveInitial is how the engine creates a run: it writes the snapshot
+	// and the derived indexes, including the runactive marker the pending
+	// scan reads.
+	if err := o.store.SaveInitial(context.Background(), run); err != nil {
 		t.Fatalf("seed run %s: %v", runID, err)
 	}
 }
@@ -130,14 +133,16 @@ func TestFindOldestPendingRunCapDegradesLoudly(t *testing.T) {
 	orch := NewOrchestrator(nc)
 	ctx := context.Background()
 
-	// 5 run keys > cap of 3. Sorted window = [a-target, b-term, c-other].
-	// Only a-target is Pending AND wf-a, so it alone can satisfy found.
+	// 4 in-flight runs > cap of 3 (terminal runs are not scanned at all).
+	// Sorted window = [a-target, c-other, e-other]. Only a-target is
+	// Pending AND wf-a, so it alone can satisfy found.
 	base := time.Now().UTC().Add(-time.Hour)
 	seedPendingRun(t, orch, "a-target", "wf-a", base)
 	seedRun(t, orch, "b-term", "wf-a", dag.RunStatusCompleted, base)
 	seedPendingRun(t, orch, "c-other", "wf-b", base)
 	seedRun(t, orch, "d-term", "wf-a", dag.RunStatusFailed, base)
 	seedPendingRun(t, orch, "e-other", "wf-b", base)
+	seedPendingRun(t, orch, "f-other", "wf-b", base)
 
 	buf, restore := captureSlog(t)
 	defer restore()
@@ -197,5 +202,49 @@ func TestFindOldestPendingRunUnderCapFindsAllAndIsQuiet(t *testing.T) {
 	// Negative: the healthy path is SILENT — no false degradation alarm.
 	if strings.Contains(buf.String(), "pending scan degraded") {
 		t.Fatalf("under-cap scan must not warn; got:\n%s", buf.String())
+	}
+}
+
+func TestFindOldestPendingRunIgnoresTerminalHistory(t *testing.T) {
+	// The scan's population is in-flight runs only. Terminal history, however
+	// large and from whatever workflows, must neither hide a pending run nor
+	// count toward the cap. Before this, the cap applied to every run.* key in
+	// the bucket: a mesh holding more runs than the cap within its retention
+	// window could miss a pending run outright, and warned on every completion.
+	prevCap := pendingRunScanMax
+	pendingRunScanMax = 3
+	t.Cleanup(func() { pendingRunScanMax = prevCap })
+
+	_, nc := natstest.StartServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	orch := NewOrchestrator(nc)
+	ctx := context.Background()
+
+	// Four terminal runs sort ahead of the target, filling and exceeding the
+	// cap of 3 if terminal keys were counted.
+	base := time.Now().UTC().Add(-time.Hour)
+	seedRun(t, orch, "a-done", "wf-a", dag.RunStatusCompleted, base)
+	seedRun(t, orch, "b-done", "wf-b", dag.RunStatusFailed, base)
+	seedRun(t, orch, "c-done", "wf-a", dag.RunStatusCancelled, base)
+	seedRun(t, orch, "d-done", "wf-b", dag.RunStatusCompleted, base)
+	seedPendingRun(t, orch, "z-target", "wf-a", base)
+
+	buf, restore := captureSlog(t)
+	defer restore()
+
+	runID, found, err := orch.findOldestPendingRun(ctx, "wf-a")
+	if err != nil {
+		t.Fatalf("findOldestPendingRun: %v", err)
+	}
+	// Positive: the pending run behind the terminal history is found.
+	if !found || runID != "z-target" {
+		t.Fatalf("found=%v runID=%q, want true/z-target", found, runID)
+	}
+	// Negative: terminal history does not trip the degradation warning.
+	if strings.Contains(buf.String(), "pending scan degraded") {
+		t.Fatalf("terminal history must not count toward the cap; got:\n%s",
+			buf.String())
 	}
 }
