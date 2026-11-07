@@ -1,6 +1,6 @@
 // internal/natsutil/agent_journal_test.go
 // AGENT_JOURNAL provisioning (ADR-026): the per-step journal stream
-// exists after SetupStreams with the retention of WORKFLOW_HISTORY and
+// exists after SetupStreams as a size-bounded ring buffer (no age limit) and
 // with direct get disabled, so a tail read is answered by the stream
 // leader rather than a replica that may lag it.
 //
@@ -37,8 +37,8 @@ func TestAgentJournalStreamProvisioned(t *testing.T) {
 	if len(cfg.Subjects) != 1 || cfg.Subjects[0] != "journal.>" {
 		t.Errorf("subjects = %v, want [journal.>]", cfg.Subjects)
 	}
-	if cfg.MaxAge != historyMaxAge {
-		t.Errorf("MaxAge = %v, want %v (as WORKFLOW_HISTORY)", cfg.MaxAge, historyMaxAge)
+	if cfg.MaxAge != 0 {
+		t.Errorf("MaxAge = %v, want 0 (the journal is never aged out)", cfg.MaxAge)
 	}
 	if cfg.Retention != jetstream.LimitsPolicy || cfg.Storage != jetstream.FileStorage {
 		t.Errorf("retention/storage = %v/%v, want limits/file", cfg.Retention, cfg.Storage)

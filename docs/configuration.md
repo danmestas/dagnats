@@ -42,7 +42,7 @@ DagNats uses a three-tier configuration system. Each tier overrides the previous
 | `max_defs_per_root`       | int      | `500`                                              | `500`                                    |
 | `max_generation_depth`    | int      | `3`                                                | `3`                                      |
 | `max_registers_per_minute_per_root` | int | `60`                                         | `60`                                     |
-| `runs_max_age`            | duration | `720h` (30 days)                                   | `720h` (30 days)                         |
+| `runs_max_age`            | duration | unset (no age pruning)                             | unset (no age pruning)                   |
 | `legacy_step_events`      | bool     | `true`                                             | `true`                                   |
 | `loop_state_max_bytes`    | int      | `262144` (256 KiB)                                 | `262144` (256 KiB)                       |
 | `otlp_endpoint`           | string   | (none)                                             | (none)                                   |
@@ -124,7 +124,13 @@ A clustered node may also hold `leaf_remotes`, which links two regional clusters
 
 ### Run retention
 
-`runs_max_age` is how long terminal runs stay in the `workflow_runs` bucket. The orchestrator's background sweeper deletes terminal runs whose completion time is older than this window; in-flight runs are never touched. The default is 30 days. Accepted values are a Go duration (`720h`), a day or week count (`30d`, `2w`), or `0`, `off` or `disabled` to turn pruning off.
+dagnats does not decide how long to keep history; you do. History stores are size-bounded ring buffers: WORKFLOW_HISTORY, EVENTS, DEAD_LETTERS, TELEMETRY and TRIGGER_HISTORY have no age limit, each keeps as much as its share of `max_store_bytes` holds, and the oldest message falls off only when it is full. See [Sizing `max_store_bytes`](production.md#sizing-max_store_bytes) for the shares.
+
+Terminal runs in the `workflow_runs` bucket are pruned by size, always: a KV bucket that fills rejects writes, so every 10 minutes the engine checks the bucket against its share (8% of `max_store_bytes`) and, when it is over, deletes the oldest terminal runs by completion time until it is under 90% of the share, at most 10,000 per pass. In-flight runs are never touched.
+
+`runs_max_age` adds an optional age limit on top of size pruning. Unset (the default) means no age pruning. A duration, as a Go duration (`168h`) or a day or week count (`30d`, `2w`), also deletes terminal runs whose completion time is older than it. `0`, `off` and `disabled` mean the same as unset. Releases before this one defaulted to `720h`; set that explicitly to keep the old behaviour.
+
+AGENT_JOURNAL holds the only record of an agent step's progress, so it never drops one: it has no age limit and is not a ring buffer. When it reaches its byte ceiling it refuses new appends, and the agent steps writing to it fail, rather than silently losing their oldest records. Once it reaches 80% of its byte ceiling the server logs an `ERROR` and adds `agent_journal` to `/health/cluster` `jetstream.degraded` (still HTTP 200); see [Watching the agent journal](production.md#watching-the-agent-journal).
 
 ### Step event fencing and agent-loop state
 
@@ -179,7 +185,7 @@ On Linux, `data_dir` respects `XDG_DATA_HOME` if set.
 | `DAGNATS_MAX_DEFS_PER_ROOT` | `max_defs_per_root` | Must be a positive integer |
 | `DAGNATS_MAX_GENERATION_DEPTH` | `max_generation_depth` | Must be a positive integer; clamped to engine ceiling |
 | `DAGNATS_MAX_REGISTERS_PER_MINUTE_PER_ROOT` | `max_registers_per_minute_per_root` | Must be a positive integer |
-| `DAGNATS_RUNS_MAX_AGE` | `runs_max_age` | Go duration, or `<n>d` / `<n>w`; `0`, `off` or `disabled` turns pruning off; negatives rejected |
+| `DAGNATS_RUNS_MAX_AGE` | `runs_max_age` | Optional age limit for terminal runs: Go duration, or `<n>d` / `<n>w`; unset, `0`, `off` or `disabled` mean no age pruning (size pruning always runs); negatives rejected |
 | `DAGNATS_LEGACY_STEP_EVENTS` | `legacy_step_events` | `1`/`true`/`yes`/`on` or `0`/`false`/`no`/`off`; anything else is rejected at load |
 | `DAGNATS_LOOP_STATE_MAX_BYTES` | `loop_state_max_bytes` | Bytes; must be positive and at most `max_payload` |
 

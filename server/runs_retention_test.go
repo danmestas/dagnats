@@ -1,6 +1,7 @@
 // Methodology: unit tests for the run-retention config knob (#453, #521).
-// Verify the 30d default when the operator sets nothing, the explicit
-// disable escape hatch (0/off/disabled → pruning off), the
+// Verify the unset default (no age pruning; size pruning bounds the bucket),
+// that 0/off/disabled also mean no age pruning, that an explicit window
+// such as 168h still enables it, the
 // DAGNATS_RUNS_MAX_AGE env override across Go-duration and d/w suffixes, and
 // that an invalid value is a hard config-load error rather than a silent
 // no-op. Positive + negative space; no NATS server needed.
@@ -14,25 +15,22 @@ import (
 	"time"
 )
 
-func TestDefaultConfig_RunsMaxAgeDefaultsTo30d(t *testing.T) {
+func TestDefaultConfig_RunsMaxAgeDefaultsToUnset(t *testing.T) {
 	cfg := DefaultConfig()
 
-	// #521: an unconfigured serve now prunes terminal runs older than 30d,
-	// bounding the previously unbounded workflow_runs KV. In-flight runs are
-	// never touched (pruner is terminal-only via CompletedAt), so recovery is
-	// preserved. Zero/off remains the explicit disable escape hatch.
-	if cfg.RunsMaxAge != DefaultRunsMaxAge {
-		t.Errorf("RunsMaxAge = %v, want %v (DefaultRunsMaxAge)",
-			cfg.RunsMaxAge, DefaultRunsMaxAge)
+	// Retention is the consumer's call: an unconfigured serve does no age
+	// pruning. Size pruning, always on, is what bounds workflow_runs.
+	if cfg.RunsMaxAge != 0 {
+		t.Errorf("RunsMaxAge = %v, want 0 (unset: no age pruning)", cfg.RunsMaxAge)
 	}
-	if cfg.RunsMaxAge != 30*24*time.Hour {
-		t.Errorf("RunsMaxAge = %v, want 30d (720h)", cfg.RunsMaxAge)
+	if cfg.RunsMaxAge == 30*24*time.Hour {
+		t.Error("RunsMaxAge still carries the old 720h default")
 	}
 }
 
-func TestConfigFromEnv_RunsMaxAgeDefaultsWhenUnset(t *testing.T) {
+func TestConfigFromEnv_RunsMaxAgeUnsetWhenSilent(t *testing.T) {
 	// No file (temp CWD guarantees no dagnats.yaml) and no env override: the
-	// resolved config must land on the 30d default, not disabled.
+	// resolved config must stay unset.
 	dir := t.TempDir()
 	origDir, err := os.Getwd()
 	if err != nil {
@@ -50,12 +48,23 @@ func TestConfigFromEnv_RunsMaxAgeDefaultsWhenUnset(t *testing.T) {
 
 	cfg := ConfigFromEnv()
 
-	if cfg.RunsMaxAge != DefaultRunsMaxAge {
-		t.Errorf("RunsMaxAge = %v, want %v (default when unset)",
-			cfg.RunsMaxAge, DefaultRunsMaxAge)
+	if cfg.RunsMaxAge != 0 {
+		t.Errorf("RunsMaxAge = %v, want 0 (unset when the operator is silent)",
+			cfg.RunsMaxAge)
+	}
+}
+
+func TestConfigFromEnv_RunsMaxAgeExplicit168h(t *testing.T) {
+	// zeitforge sets 168h explicitly; it must still turn age pruning on.
+	t.Setenv("DAGNATS_RUNS_MAX_AGE", "168h")
+
+	cfg := ConfigFromEnv()
+
+	if cfg.RunsMaxAge != 168*time.Hour {
+		t.Errorf("RunsMaxAge = %v, want 168h", cfg.RunsMaxAge)
 	}
 	if cfg.RunsMaxAge == 0 {
-		t.Error("RunsMaxAge must not be disabled when the operator is silent")
+		t.Error("an explicit window must enable age pruning")
 	}
 }
 
@@ -64,8 +73,7 @@ func TestConfigFromEnv_RunsMaxAgeOffStaysDisabled(t *testing.T) {
 
 	cfg := ConfigFromEnv()
 
-	// The disable escape hatch must survive the 30d default: an explicit
-	// "off" is an intentional operator choice, not silence.
+	// "off" means no age pruning, the same as leaving it unset.
 	if cfg.RunsMaxAge != 0 {
 		t.Errorf("RunsMaxAge = %v, want 0 (explicit off = disabled)",
 			cfg.RunsMaxAge)

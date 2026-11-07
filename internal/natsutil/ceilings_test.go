@@ -136,3 +136,33 @@ func TestZeroBudgetDisablesCeiling(t *testing.T) {
 		t.Fatalf("proportionalMaxBytes(0, _) = %d, want 0", got)
 	}
 }
+
+// runsShareCommittedMax is the percentage of the budget the stream
+// ceilings plus the workflow_runs share may commit, leaving the rest for
+// the unbudgeted KV buckets.
+const runsShareCommittedMax = 93
+
+// TestRunsShareFitsHeadroom guards the workflow_runs share. The bucket gets
+// no MaxBytes (a full KV rejects writes), so its share is a pruning target
+// rather than a reservation: it comes out of the headroom the stream
+// ceilings leave, and must leave part of that headroom for the other,
+// unbudgeted KV buckets.
+func TestRunsShareFitsHeadroom(t *testing.T) {
+	const budget = testServerMaxStoreBytes
+	share := RunsShareBytes(budget)
+	if share != proportionalMaxBytes(budget, fractionWorkflowRuns) {
+		t.Fatalf("RunsShareBytes = %d, want budget*%.2f", share, fractionWorkflowRuns)
+	}
+	var reserved int64
+	for _, cfg := range streamConfigsWithBudget(t, budget) {
+		reserved += cfg.MaxBytes
+	}
+	reserved += submissionsBucketConfig(1, budget).MaxBytes
+	if reserved+share > budget*runsShareCommittedMax/100 {
+		t.Fatalf("reserved %d + runs share %d exceeds %d%% of budget %d",
+			reserved, share, runsShareCommittedMax, budget)
+	}
+	if RunsShareBytes(0) != 0 {
+		t.Fatalf("RunsShareBytes(0) = %d, want 0 (no budget, no share)", RunsShareBytes(0))
+	}
+}

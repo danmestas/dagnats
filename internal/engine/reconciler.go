@@ -72,10 +72,10 @@ var pendingRunScanMax = 1000
 // degrades quickly and observably rather than blocking.
 const bestEffortGetTimeout = 2 * time.Second
 
-// prunePassInterval is the cadence of the opt-in run-retention
-// sweeper (#453). var rather than const for test injection —
-// tests lower it so the background pass fires without waiting the
-// production default. Production callers must not mutate.
+// prunePassInterval is the cadence of the run pruner (#453). var rather
+// than const for test injection — tests lower it so the background pass
+// fires without waiting the production default. Production callers must
+// not mutate.
 var prunePassInterval = 10 * time.Minute
 
 // pruneMaxRunsScan caps deletions per prune pass so a single sweep
@@ -338,17 +338,16 @@ func (o *Orchestrator) repairRunIndexToConvergence(ctx context.Context) error {
 	return nil
 }
 
-// startRunPruner launches the opt-in run-retention sweeper
-// goroutine (#453). The loop exits when ctx is cancelled (from
-// Stop). Callers must only invoke this when o.runsMaxAge > 0 —
-// Start guards that, so the ticker never runs in the default
-// OFF-by-default posture.
+// startRunPruner launches the run pruner goroutine (#453). The loop
+// exits when ctx is cancelled (from Stop). It always runs: size pruning
+// is what keeps workflow_runs bounded, and age pruning rides along when
+// runsMaxAge is set.
 func (o *Orchestrator) startRunPruner(ctx context.Context) {
 	if ctx == nil {
 		panic("startRunPruner: ctx must not be nil")
 	}
-	if o.runsMaxAge <= 0 {
-		panic("startRunPruner: runsMaxAge must be positive")
+	if prunePassInterval <= 0 {
+		panic("startRunPruner: prunePassInterval must be positive")
 	}
 	go func() {
 		ticker := time.NewTicker(prunePassInterval)
@@ -364,28 +363,68 @@ func (o *Orchestrator) startRunPruner(ctx context.Context) {
 	}()
 }
 
-// pruneTerminalRuns runs one drop-only retention pass and logs the
-// deleted count. Bounded by pruneMaxRunsScan deletions per pass.
+// pruneTerminalRuns runs one drop-only pass: the age pass when runsMaxAge
+// is set, then the size pass. Each is bounded by pruneMaxRunsScan
+// deletions and logs what it dropped.
 func (o *Orchestrator) pruneTerminalRuns(ctx context.Context) {
 	if ctx == nil {
 		panic("pruneTerminalRuns: ctx must not be nil")
 	}
-	if o.runsMaxAge <= 0 {
-		panic("pruneTerminalRuns: runsMaxAge must be positive")
+	if o.store == nil {
+		panic("pruneTerminalRuns: store must not be nil")
 	}
-	deleted, err := o.store.PruneTerminal(
-		ctx, o.runsMaxAge, pruneMaxRunsScan,
+	if o.runsMaxAge > 0 {
+		deleted, err := o.store.PruneTerminal(
+			ctx, o.runsMaxAge, pruneMaxRunsScan,
+		)
+		if err != nil {
+			slog.ErrorContext(ctx,
+				"pruner: prune aged terminal runs", "error", err)
+		} else if deleted > 0 {
+			slog.InfoContext(ctx,
+				"pruner: dropped aged terminal runs",
+				"deleted", deleted,
+				"max_age", o.runsMaxAge.String(),
+			)
+		}
+	}
+	o.pruneRunsBySize(ctx)
+}
+
+// pruneRunsBySize runs the size pass against workflow_runs' share of
+// the store budget.
+func (o *Orchestrator) pruneRunsBySize(ctx context.Context) {
+	if ctx == nil {
+		panic("pruneRunsBySize: ctx must not be nil")
+	}
+	if o.storeBudget < 0 {
+		panic("pruneRunsBySize: storeBudget must not be negative")
+	}
+	share := natsutil.RunsShareBytes(o.storeBudget)
+	if o.storeBudget == 0 {
+		resolveCtx, cancel := context.WithTimeout(ctx, bestEffortGetTimeout)
+		var err error
+		share, err = natsutil.ResolveRunsShareBytes(resolveCtx, o.js)
+		cancel()
+		if err != nil {
+			slog.ErrorContext(ctx,
+				"pruner: resolve store budget", "error", err)
+			return
+		}
+	}
+	deleted, err := o.store.PruneTerminalBySize(
+		ctx, share, pruneMaxRunsScan,
 	)
 	if err != nil {
 		slog.ErrorContext(ctx,
-			"pruner: prune terminal runs", "error", err)
+			"pruner: prune terminal runs by size", "error", err)
 		return
 	}
 	if deleted > 0 {
 		slog.InfoContext(ctx,
-			"pruner: dropped aged terminal runs",
+			"pruner: dropped oldest terminal runs to fit the store share",
 			"deleted", deleted,
-			"max_age", o.runsMaxAge.String(),
+			"share_bytes", share,
 		)
 	}
 }

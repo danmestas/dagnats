@@ -168,8 +168,8 @@ func TestSetupTelemetryStream(t *testing.T) {
 		t.Fatalf("Stream: %v", err)
 	}
 	info := stream.CachedInfo()
-	if info.Config.MaxAge != 7*24*time.Hour {
-		t.Fatalf("MaxAge = %v, want 7d", info.Config.MaxAge)
+	if info.Config.MaxAge != 0 {
+		t.Fatalf("MaxAge = %v, want 0 (rolls by size)", info.Config.MaxAge)
 	}
 	// Proportional ceiling: a fraction of the budget, not the old
 	// absolute 1 GiB cap.

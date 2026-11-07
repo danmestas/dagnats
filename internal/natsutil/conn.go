@@ -13,28 +13,21 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// Durability windows for the history/event streams (issue #441). These
-// streams are the real storage grower; aging them is recovery-safe because
-// recovery is snapshot-first (the workflow_runs KV is authoritative and has
-// no TTL). A window only needs to exceed (max orchestrator downtime + max run
-// duration); a shorter window risks at most a reconciler-recoverable run
-// stall, never data loss. max_age is the retention bound.
-const (
-	// historyMaxAge bounds WORKFLOW_HISTORY (run step events). 30d is well
-	// past any plausible downtime+run-duration sum for an LLM pipeline.
-	historyMaxAge = 30 * 24 * time.Hour
-	// eventsMaxAge bounds EVENTS (workflow signal/event log). Events are
-	// consumed promptly; 14d is generous slack for replay/debug.
-	eventsMaxAge = 14 * 24 * time.Hour
-	// deadLettersMaxAge bounds DEAD_LETTERS. 30d gives operators a month to
-	// triage a failed run before its dead-letter record ages out.
-	deadLettersMaxAge = 30 * 24 * time.Hour
-	// checkpointsTTL bounds the checkpoints bucket. A Pause marker or
-	// bridge checkpoint is read again within the hour; nothing deletes
-	// one once its run ends, so without a TTL they pile up forever.
-	// Matches history: a checkpoint never outlives the events of its run.
-	checkpointsTTL = historyMaxAge
-)
+// History streams (WORKFLOW_HISTORY, EVENTS, DEAD_LETTERS, TELEMETRY,
+// TRIGGER_HISTORY) are size-bounded ring buffers: no MaxAge,
+// a proportional MaxBytes and DiscardOld, so they keep as much as their
+// share of the budget holds and the oldest falls off only when full. How
+// long to keep history is the consumer's call, not dagnats'; a consumer
+// that wants it longer drains it elsewhere. Losing the oldest history is
+// recovery-safe: recovery is snapshot-first (workflow_runs is
+// authoritative). AGENT_JOURNAL has no MaxAge either but is not a ring:
+// it refuses appends when full (agentJournalStreamConfig).
+
+// checkpointsTTL bounds the checkpoints bucket. A Pause marker or bridge
+// checkpoint is read again within the hour; nothing deletes one once its
+// run ends, so without a TTL they pile up forever. It is garbage
+// collection of run-scoped state, not history, so it keeps its expiry.
+const checkpointsTTL = 30 * 24 * time.Hour
 
 // Proportional per-stream byte ceilings (#441 follow-up). Each file-based
 // JetStream stream gets a MaxBytes sized as a fraction of the configured
@@ -64,19 +57,28 @@ const (
 //	------------------------
 //	total             0.845
 //
+//	KV workflow_runs  0.08   run pruner's target, NOT a reservation
+//
+// With history rolling by size alone, every ring buffer eventually fills
+// to its ceiling, so the headroom is real disk that the unbudgeted KV
+// buckets live in. workflow_runs takes 0.08 of it as a pruning target (see
+// RunsShareBytes): the engine deletes the oldest terminal runs once the
+// bucket passes it. Ceilings plus that target commit 0.925, leaving 7.5%
+// for every other KV bucket (TestRunsShareFitsHeadroom).
+//
 // ADR-026 added AGENT_JOURNAL out of the headroom, not out of any
 // stream: every existing ceiling keeps its as-shipped size, so an
 // upgrade's shrink pass touches nothing, and the journal is small (one
-// record per claim, pause, entry and commit, aged out at 30 days like
-// history) next to history's lifecycle traffic. ADR-027 took the
+// record per claim, pause, entry and commit, never aged out) next to
+// history's lifecycle traffic. ADR-027 took the
 // submissions bucket's half percent from the headroom the same way; it
 // is the only KV bucket with an explicit ceiling, because its values
 // are caller-supplied model input rather than engine state. The sum
 // stays under the 85% guard TestMaxBytesSumUnderBudget enforces.
 //
 // #624 added BUILD_LOGS by trimming WORKFLOW_HISTORY from 0.30 to 0.25
-// rather than adding on top of 0.80: WORKFLOW_HISTORY is bounded by
-// history's own 30d MaxAge and dominated in practice by step lifecycle
+// rather than adding on top of 0.80: WORKFLOW_HISTORY was then bounded by
+// a 30d MaxAge (since dropped) and dominated by step lifecycle
 // events, not step output, so it had headroom to give up; every other
 // fraction (including the new one) keeps its as-shipped size, and the
 // table's total — and hence the store-budget headroom — stays exactly
@@ -91,6 +93,9 @@ const (
 	fractionAgentJournal    = 0.04
 	fractionTriggerHistory  = 0.04
 	fractionSleepTimers     = 0.04
+	// fractionWorkflowRuns is a pruning target, not a ceiling: see
+	// RunsShareBytes. It comes out of the headroom.
+	fractionWorkflowRuns = 0.08
 )
 
 // defaultMaxStoreBytes is the last-resort store budget, used only when the
@@ -147,6 +152,37 @@ func resolveStoreBudget(
 	return storeBudgetFromLimit(info.Limits.MaxStore), nil
 }
 
+// RunsShareBytes is workflow_runs' share of the store budget: the size
+// the engine's run pruner holds the bucket under. It is a pruning target,
+// not a MaxBytes ceiling, because a full KV bucket rejects writes and a
+// rejected run write is a lost run. 0 when the budget is unset.
+func RunsShareBytes(maxStoreBytes int64) int64 {
+	share := proportionalMaxBytes(maxStoreBytes, fractionWorkflowRuns)
+	if share < 0 || share > maxStoreBytes && maxStoreBytes > 0 {
+		panic(fmt.Sprintf("RunsShareBytes: share %d out of budget %d",
+			share, maxStoreBytes))
+	}
+	return share
+}
+
+// ResolveRunsShareBytes is RunsShareBytes for the budget the server js is
+// connected to enforces, for a caller that was not handed one.
+func ResolveRunsShareBytes(
+	ctx context.Context, js jetstream.JetStream,
+) (int64, error) {
+	if ctx == nil || js == nil {
+		panic("ResolveRunsShareBytes: ctx and js must not be nil")
+	}
+	budget, err := resolveStoreBudget(ctx, js)
+	if err != nil {
+		return 0, err
+	}
+	if budget <= 0 {
+		panic("ResolveRunsShareBytes: a resolved budget is always positive")
+	}
+	return RunsShareBytes(budget), nil
+}
+
 // proportionalMaxBytes returns floor(budget*fraction), or 0 when the budget
 // is unset (<= 0) so the caller skips MaxBytes entirely (no ceiling) rather
 // than setting an invalid 0-byte cap.
@@ -196,7 +232,7 @@ func setupStreams(
 			Retention:  jetstream.LimitsPolicy,
 			Storage:    jetstream.FileStorage,
 			Duplicates: 5_000_000_000,
-			MaxAge:     historyMaxAge,
+			Discard:    jetstream.DiscardOld,
 			MaxBytes: proportionalMaxBytes(
 				maxStoreBytes, fractionWorkflowHistory,
 			),
@@ -229,7 +265,7 @@ func setupStreams(
 			Subjects:  []string{"event.>"},
 			Retention: jetstream.LimitsPolicy,
 			Storage:   jetstream.FileStorage,
-			MaxAge:    eventsMaxAge,
+			Discard:   jetstream.DiscardOld,
 			MaxBytes: proportionalMaxBytes(
 				maxStoreBytes, fractionEvents,
 			),
@@ -251,7 +287,7 @@ func setupStreams(
 			// conservative; cost is small (header-only state per
 			// dedup-id).
 			Duplicates: 24 * time.Hour,
-			MaxAge:     deadLettersMaxAge,
+			Discard:    jetstream.DiscardOld,
 			MaxBytes: proportionalMaxBytes(
 				maxStoreBytes, fractionDeadLetters,
 			),
@@ -445,8 +481,8 @@ func setupStickyStream(
 }
 
 // SetupTelemetryStream creates the TELEMETRY stream for all
-// observability signals (spans, metrics, logs). 7-day retention,
-// proportional byte ceiling, 5s dedup window. maxStoreBytes is the
+// observability signals (spans, metrics, logs). A size-bounded ring
+// buffer (no age limit), proportional byte ceiling, 5s dedup window. maxStoreBytes is the
 // JetStreamMaxStore budget; the byte ceiling is a fraction of it (was an
 // absolute 1 GiB cap, which is 50% of the 2 GiB test cluster — folded into
 // the proportional scheme). A budget of 0 disables the ceiling.
@@ -473,7 +509,7 @@ func setupTelemetryStream(
 		Subjects:  []string{"telemetry.>"},
 		Retention: jetstream.LimitsPolicy,
 		Storage:   jetstream.FileStorage,
-		MaxAge:    7 * 24 * time.Hour,
+		Discard:   jetstream.DiscardOld,
 		MaxBytes: proportionalMaxBytes(
 			maxStoreBytes, fractionTelemetry,
 		),
@@ -487,8 +523,8 @@ func setupTelemetryStream(
 }
 
 // SetupTriggerHistoryStream creates the TRIGGER_HISTORY stream
-// for recording trigger fire events. 30-day retention, file
-// storage, discard oldest messages when limits are reached.
+// for recording trigger fire events. A size-bounded ring buffer: file
+// storage, no age limit, discard oldest messages when full.
 // maxStoreBytes is the JetStreamMaxStore budget; the byte ceiling is a
 // fraction of it. A budget of 0 disables the ceiling.
 func SetupTriggerHistoryStream(
@@ -516,7 +552,6 @@ func setupTriggerHistoryStream(
 		Subjects:  []string{"trigger.fire.>"},
 		Retention: jetstream.LimitsPolicy,
 		Storage:   jetstream.FileStorage,
-		MaxAge:    30 * 24 * time.Hour,
 		MaxBytes: proportionalMaxBytes(
 			maxStoreBytes, fractionTriggerHistory,
 		),

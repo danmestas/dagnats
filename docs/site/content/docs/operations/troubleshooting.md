@@ -90,7 +90,7 @@ dagnats run retry <run-id>
 dagnats run retry-all --workflow=my-workflow --mode=rerun \
   --after=2026-04-01T00:00:00Z --before=2026-04-02T00:00:00Z
 
-# Replay from the DLQ (resume at the failed step, needs the entry to be under 30 days old)
+# Replay from the DLQ (resume at the failed step, needs the entry still in DEAD_LETTERS)
 dagnats run retry-all --workflow=my-workflow --mode=replay
 
 # Replay one dead letter by its sequence number

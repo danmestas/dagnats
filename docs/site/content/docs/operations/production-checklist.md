@@ -20,12 +20,16 @@ JetStream data lives in `{data_dir}/jetstream/`. Use fast storage (SSD or NVMe) 
 
 ### Stream Retention
 
-Each file-backed stream has a max age and a byte ceiling that is a share of `max_store_bytes` (see [NATS Infrastructure]({{< ref "/docs/operations/nats-infrastructure" >}})). Raising `max_store_bytes` raises every ceiling with it. In a cluster, raise it one node at a time: a replicated stream needs its ceiling reserved on every replica, so a node restarted with a larger budget than its peers keeps the existing ceilings, logs a warning naming each stream, and keeps running. The ceilings grow when a node starts after every peer has the larger budget, normally the last one you restart.
+Each file-backed stream has a byte ceiling that is a share of `max_store_bytes` (see [NATS Infrastructure]({{< ref "/docs/operations/nats-infrastructure" >}})). Raising `max_store_bytes` raises every ceiling with it. In a cluster, raise it one node at a time: a replicated stream needs its ceiling reserved on every replica, so a node restarted with a larger budget than its peers keeps the existing ceilings, logs a warning naming each stream, and keeps running. The ceilings grow when a node starts after every peer has the larger budget, normally the last one you restart.
 
-- **WORKFLOW_HISTORY**: 30-day max age, 25% of the store budget. Events older than your recovery window are safe to discard.
-- **EVENTS**: 14-day max age, 15% of the budget.
-- **DEAD_LETTERS**: 30-day max age, 5% of the budget. Raise `max_store_bytes` if you need longer post-mortem windows.
-- **TELEMETRY**: 7-day max age, 10% of the budget. Raise `max_store_bytes` if you export slowly or want deeper history.
+History streams other than AGENT_JOURNAL have no max age: each keeps what its ceiling holds and drops the oldest message only when full, so expect each to fill to its ceiling and give the disk headroom for all of `max_store_bytes`.
+
+- **WORKFLOW_HISTORY**: 25% of the store budget. Events older than your recovery window are safe to discard.
+- **EVENTS**: 15% of the budget.
+- **DEAD_LETTERS**: 5% of the budget. Raise `max_store_bytes` if you need longer post-mortem windows.
+- **TELEMETRY**: 10% of the budget. Raise `max_store_bytes` if you export slowly or want deeper history.
+- **AGENT_JOURNAL**: 4% of the budget. It never drops a record: no max age, and when full it refuses new appends, so agent steps fail rather than lose their journal. The server logs an `ERROR` and reports `agent_journal` degraded in `/health/cluster` once it reaches 80% of its ceiling; raise `max_store_bytes` before it reaches 100%.
+- **workflow_runs** (KV): held to 8% of the budget by deleting the oldest terminal runs; `runs_max_age` optionally adds an age limit.
 - **BUILD_LOGS**: `DAGNATS_BUILD_LOGS_TTL`, default 7 days, 5% of the budget.
 - **TASK_QUEUES** and **SLEEP_TIMERS** have no max age, because their messages are pending work.
 

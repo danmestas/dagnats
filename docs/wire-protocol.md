@@ -750,7 +750,8 @@ different purposes and neither replaces the other:
   run shares the single `history.{runID}` subject, so events *within
   a run* arrive in publish order. There is no cross-run or
   cross-subject ordering guarantee.
-- **Retention**: `historyMaxAge` — 30 days (`internal/natsutil/conn.go`).
+- **Retention**: no age limit; a size-bounded ring buffer that drops the
+  oldest event only when full (`internal/natsutil/conn.go`).
 - **Use for**: reconstructing a run's full step-by-step timeline
   (waterfall views, per-step duration, debugging a specific run).
 
@@ -796,7 +797,8 @@ different purposes and neither replaces the other:
   — a run reaches a terminal status exactly once, so redelivery of the
   same finalize (e.g. a NAK'd handler retry) collapses to one message
   within JetStream's dedup window.
-- **Retention**: `eventsMaxAge` — 14 days (`internal/natsutil/conn.go`).
+- **Retention**: no age limit; a size-bounded ring buffer that drops the
+  oldest event only when full (`internal/natsutil/conn.go`).
 - **Failure policy**: publishing this event is best-effort. A publish
   failure is logged (WARN) and counted
   (`engine.run_event.publish_failures`) but never fails the run —
@@ -1024,8 +1026,7 @@ exact fix.
 - **Ordering**: per-subject JetStream order; every snapshot is
   independent (no cross-snapshot ordering requirement for a consumer
   that just wants the latest depth).
-- **Retention**: `eventsMaxAge` — 14 days (`internal/natsutil/conn.go`),
-  same as `event.run.*`.
+- **Retention**: the EVENTS ring buffer, same as `event.run.*`.
 - **Source of truth**: the `TASK_QUEUES` stream's own state (a
   subject-filtered `StreamInfo` plus a direct-get of the oldest pending
   message per subject via `Stream.GetMsg(WithGetMsgSubject(...))`,

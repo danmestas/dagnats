@@ -485,6 +485,22 @@ func (s *SnapshotStore) PruneTerminal(
 	if err != nil {
 		return 0, err
 	}
+	return s.deletePrunedRuns(ctx, doomed)
+}
+
+// deletePrunedRuns is the one delete path both prune passes share: each
+// run.* key goes together with its derived index entries, so runidx and
+// runactive stay consistent with the snapshots. Returns how many runs
+// were deleted before the first failure.
+func (s *SnapshotStore) deletePrunedRuns(
+	ctx context.Context, doomed []string,
+) (int, error) {
+	if s.kv == nil {
+		panic("SnapshotStore.deletePrunedRuns: kv bucket must not be nil")
+	}
+	if len(doomed) > runKeyScanMax {
+		panic("SnapshotStore.deletePrunedRuns: doomed exceeds the scan bound")
+	}
 	deleted := 0
 	for _, key := range doomed {
 		if err := s.kv.Delete(ctx, key); err != nil {
@@ -498,7 +514,7 @@ func (s *SnapshotStore) PruneTerminal(
 			return deleted, err
 		}
 		// Defense-in-depth: a pruned run is by definition terminal
-		// (collectPrunable's predicate), so its runactive entry should
+		// (loadPrunable's predicate), so its runactive entry should
 		// already be gone via finalizeRun's explicit delete -- but a
 		// run pruned without ever going through finalizeRun (a
 		// legacy/direct write) could still carry one. deleteActiveEntry
@@ -570,24 +586,52 @@ func (s *SnapshotStore) isPrunable(
 	if cutoff.IsZero() {
 		panic("SnapshotStore.isPrunable: cutoff must not be zero")
 	}
+	candidate, ok, err := s.loadPrunable(ctx, key)
+	if err != nil || !ok {
+		return false, err
+	}
+	return candidate.completedAt.Before(cutoff), nil
+}
+
+// pruneCandidate is a run either prune pass may delete: its key, when it
+// completed, and how many value bytes deleting it frees.
+type pruneCandidate struct {
+	key         string
+	completedAt time.Time
+	valueBytes  int64
+}
+
+// loadPrunable loads one snapshot key and reports whether the run may be
+// pruned at all: terminal, stamped with a CompletedAt, and not
+// ReleasePending (see isPrunable). A key that vanished between scan and
+// load is not prunable and not an error.
+func (s *SnapshotStore) loadPrunable(
+	ctx context.Context, key string,
+) (pruneCandidate, bool, error) {
+	if key == "" {
+		panic("SnapshotStore.loadPrunable: key must not be empty")
+	}
+	if s.kv == nil {
+		panic("SnapshotStore.loadPrunable: kv bucket must not be nil")
+	}
 	entry, err := s.kv.Get(ctx, key)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return false, nil
+			return pruneCandidate{}, false, nil
 		}
-		return false, err
+		return pruneCandidate{}, false, err
 	}
 	var run dag.WorkflowRun
 	if err := json.Unmarshal(entry.Value(), &run); err != nil {
-		return false, err
+		return pruneCandidate{}, false, err
 	}
-	if !run.Status.IsTerminal() || run.CompletedAt == nil {
-		return false, nil
+	if !run.Status.IsTerminal() || run.CompletedAt == nil || run.ReleasePending {
+		return pruneCandidate{}, false, nil
 	}
-	if run.ReleasePending {
-		return false, nil
-	}
-	return run.CompletedAt.Before(cutoff), nil
+	return pruneCandidate{
+		key: key, completedAt: *run.CompletedAt,
+		valueBytes: int64(len(entry.Value())),
+	}, true, nil
 }
 
 // Load retrieves and deserializes the WorkflowRun for the given run ID.
