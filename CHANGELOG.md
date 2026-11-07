@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.55] - 2026-11-07
+
 ### Added
 
 - **A program can register cron triggers for its own workflows (#957).** `api.p.<name>.triggers.create` takes a `TriggerDef` and `api.p.<name>.triggers.delete` takes the trigger ID as plain text; replies are `{"status":"created","id"}` and `{"status":"deleted","id"}`.
