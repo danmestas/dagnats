@@ -95,6 +95,7 @@ func (sr *StickyRouter) PublishTask(
 	dispatchNonce string,
 	workflowName string,
 	fallbackSubject string,
+	mode dispatchIdentityMode,
 ) error {
 	if sr == nil {
 		panic("StickyRouter.PublishTask: called on nil receiver")
@@ -119,7 +120,7 @@ func (sr *StickyRouter) PublishTask(
 	defer span.End()
 
 	// Build the task payload
-	attempt, iteration := dispatchIdentity(run, step.ID, dispatchNewAttempt)
+	attempt, iteration := dispatchIdentity(run, step.ID, mode)
 	payload := protocol.TaskPayload{
 		TaskID:        runID + "." + step.ID,
 		RunID:         runID,

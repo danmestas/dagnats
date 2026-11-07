@@ -129,6 +129,8 @@ func NewTaskPublisher(
 // run (not a pre-computed attempt int) is what makes the class of bug
 // this round fixes impossible to reintroduce — the only way to get an
 // Attempt/Iteration onto the wire is through dispatchIdentity.
+// Publish is a new attempt (dispatchNewAttempt); PublishBatch is the
+// one caller with another mode.
 func (tp *TaskPublisher) Publish(
 	ctx context.Context,
 	runID string,
@@ -137,6 +139,22 @@ func (tp *TaskPublisher) Publish(
 	run dag.WorkflowRun,
 	workflowName string,
 	dispatchNonce string,
+) error {
+	return tp.publish(
+		ctx, runID, step, input, run, workflowName, dispatchNonce, dispatchNewAttempt,
+	)
+}
+
+// publish is Publish with the dispatch's identity mode.
+func (tp *TaskPublisher) publish(
+	ctx context.Context,
+	runID string,
+	step dag.StepDef,
+	input []byte,
+	run dag.WorkflowRun,
+	workflowName string,
+	dispatchNonce string,
+	mode dispatchIdentityMode,
 ) error {
 	if runID == "" {
 		panic("TaskPublisher.Publish: runID must not be empty")
@@ -186,13 +204,13 @@ func (tp *TaskPublisher) Publish(
 			return tp.sticky.PublishTask(
 				ctx, runID, step, input, run,
 				workerID, wfDef.Sticky, dispatchNonce, workflowName,
-				tp.StepSubject(step, runID),
+				tp.StepSubject(step, runID), mode,
 			)
 		}
 	}
 
 	return tp.doPublish(
-		ctx, runID, step, input, run, workflowName, dispatchNonce,
+		ctx, runID, step, input, run, workflowName, dispatchNonce, mode,
 	)
 }
 
@@ -417,10 +435,10 @@ func spanWorkflowNameAttrs(
 // withholds. dispatchNonce rides the payload for server-side run-binding;
 // it was stamped on the step's StepState in the same snapshot write.
 //
-// Attempt and Iteration come from dispatchIdentity(run, step.ID,
-// dispatchNewAttempt) — this is the ONLY site in the New-attempt path
-// that builds a TaskPayload, so it is the ONLY site that needs to call
-// it (#624 review round 4).
+// Attempt and Iteration come from dispatchIdentity(run, step.ID, mode)
+// — this is the ONLY site in the publish path that builds a
+// TaskPayload, so it is the ONLY site that needs to call it (#624
+// review round 4).
 func (tp *TaskPublisher) doPublish(
 	ctx context.Context,
 	runID string,
@@ -429,6 +447,7 @@ func (tp *TaskPublisher) doPublish(
 	run dag.WorkflowRun,
 	workflowName string,
 	dispatchNonce string,
+	mode dispatchIdentityMode,
 ) error {
 	if runID == "" {
 		panic("doPublish: runID must not be empty")
@@ -448,7 +467,7 @@ func (tp *TaskPublisher) doPublish(
 		),
 	)
 	defer span.End()
-	attempt, iteration := dispatchIdentity(run, step.ID, dispatchNewAttempt)
+	attempt, iteration := dispatchIdentity(run, step.ID, mode)
 	payload := protocol.TaskPayload{
 		TaskID:       runID + "." + step.ID,
 		RunID:        runID,
@@ -606,7 +625,9 @@ func (tp *TaskPublisher) StepSubject(
 }
 
 // PublishBatch publishes a task message for each ready step.
-// Steps are published concurrently since they are independent.
+// Steps are published concurrently since they are independent. It
+// sends enqueueReady's dispatches and their resends (resendUnsent), so
+// both copies carry one identity: dispatchFirstAttempt (#953).
 func (tp *TaskPublisher) PublishBatch(
 	ctx context.Context,
 	runID string,
@@ -640,9 +661,9 @@ func (tp *TaskPublisher) PublishBatch(
 		// the attempt for any step being re-queued after a prior one.
 		nonce := run.Steps[step.ID].DispatchNonce
 		g.Go(func() error {
-			return tp.Publish(
+			return tp.publish(
 				ctx, runID, step, input, run,
-				run.WorkflowID, nonce,
+				run.WorkflowID, nonce, dispatchFirstAttempt,
 			)
 		})
 	}

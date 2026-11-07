@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - a pass that runs out of attempts starts another itself, still at most one pass per retry interval;
   - the first failure of a pass is logged at `WARN` with its error, and a pass that runs out is logged at `ERROR` with the last error.
 
+- **A resent dispatch keeps its attempt number, so a step that ran once reports attempt 1 (#953).** When the engine resent a step saved as dispatched but never sent, it numbered the resend as a new attempt. The step's `step.queued` had usually already counted attempt 1, so the resend went out as attempt 2 under the original's msg id, and JetStream kept whichever copy arrived first. A step that ran once could then show `attempts: 2` in its snapshot, hand its handler attempt 2, and lose one retry from its budget. A dispatch and its resends now carry the same attempt and dispatch nonce, so a worker's completion is accepted whichever copy it ran, and a genuine retry still gets the next attempt and a fresh nonce. The step's own `step.queued` no longer triggers the resend either: it is published while the original send is still in flight. A real crash between save and send is still healed by the redelivered event or the reconciler.
+
 ## [0.0.55] - 2026-11-07
 
 ### Added

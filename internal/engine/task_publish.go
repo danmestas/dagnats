@@ -55,7 +55,21 @@ const (
 	// the step never spent, so Attempt is Steps[stepID].Attempts
 	// AS-IS — no +1.
 	dispatchSameAttempt
+	// dispatchFirstAttempt is for enqueueReady's dispatch of a step and
+	// every resend of that same dispatch (resendUnsent, #953): the step
+	// was never dispatched before, so this is its first attempt, the one
+	// its step.queued announces. Applying that step.queued raises
+	// Attempts to firstDispatchAttempt, possibly before a resend, so the
+	// +1 of dispatchNewAttempt would stamp the resend attempt 2 while
+	// the original carried 1, and the msg-id dedup keeps either copy.
+	// Attempts floored at firstDispatchAttempt is the same number
+	// whether or not step.queued landed first.
+	dispatchFirstAttempt
 )
+
+// firstDispatchAttempt is the attempt number of a step's first
+// dispatch, announced by its step.queued and stamped on its task.
+const firstDispatchAttempt = 1
 
 // dispatchIdentity is the ONE builder for the (attempt, iteration)
 // pair every protocol.TaskPayload construction and BUILD_LOGS subject
@@ -118,6 +132,8 @@ func dispatchIdentity(
 		attempt = state.Attempts + 1
 	case dispatchSameAttempt:
 		attempt = state.Attempts
+	case dispatchFirstAttempt:
+		attempt = max(state.Attempts, firstDispatchAttempt)
 	default:
 		panic("dispatchIdentity: unknown dispatchIdentityMode")
 	}
