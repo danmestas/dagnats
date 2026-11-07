@@ -247,6 +247,9 @@ type Worker struct {
 	// stickyRetryMin is the sticky lane's first recovery backoff
 	// (stickyRetryMinDefault); tests lengthen it.
 	stickyRetryMin time.Duration
+	// stickyRecoverAttempts bounds one sticky recovery pass
+	// (stickyRecoverAttemptsMax); tests shorten it.
+	stickyRecoverAttempts int
 
 	// Pre-allocated metric instruments — created once in constructor.
 	stepDuration          metric.Float64Histogram
@@ -460,6 +463,7 @@ func NewWorker(
 		setupInFlight:         setupInFlightMax,
 		heartbeatMax:          DefaultHeartbeatMax,
 		stickyRetryMin:        stickyRetryMinDefault,
+		stickyRecoverAttempts: stickyRecoverAttemptsMax,
 		catchupKeysMax:        maxCatchupKeys,
 		stopping:              make(chan struct{}),
 		abandoned:             make(chan struct{}),
@@ -990,7 +994,9 @@ func (w *Worker) createStickyConsumer(
 		taskType: taskType, handler: handler, ackWait: info.Config.AckWait,
 		park: &lanePark{},
 	}
-	sticky, err := startStickyConsume(stream, cons, w.messageHandler(l), w.stickyRetryMin)
+	sticky, err := startStickyConsume(stream, cons, w.messageHandler(l), stickyRecovery{
+		retryMin: w.stickyRetryMin, attemptsMax: w.stickyRecoverAttempts,
+	})
 	if err != nil {
 		slog.Warn("sticky consume failed; sticky routing off for this worker",
 			"consumer", subject, "error", err)

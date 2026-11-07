@@ -19,13 +19,20 @@ const (
 	stickyRetryMinDefault = time.Second
 	// stickyRetryMax caps the doubling backoff between attempts.
 	stickyRetryMax = 30 * time.Second
-	// stickyRecoverAttemptsMax bounds one recovery pass: past it, about
-	// twenty minutes of failures, the lane waits for the next consume
-	// error to try again.
+	// stickyRecoverAttemptsMax bounds one recovery pass, about twenty
+	// minutes of failures. A pass that runs out starts another: by then
+	// Consume has usually ended, so no consume error would.
 	stickyRecoverAttemptsMax = 40
 	// stickyAPITimeout bounds each JetStream API call of an attempt.
 	stickyAPITimeout = 5 * time.Second
 )
+
+// stickyRecovery tunes a sticky lane's recovery: the first backoff and
+// the attempts in one pass. Workers use the defaults; tests shorten them.
+type stickyRecovery struct {
+	retryMin    time.Duration
+	attemptsMax int
+}
 
 // stickyConsume is the sticky lane's ConsumeContext, and it keeps the
 // lane alive. The server reaps a sticky consumer whose pull lapses past
@@ -41,6 +48,8 @@ type stickyConsume struct {
 	logError jetstream.ConsumeErrHandlerFunc
 	label    string
 	retryMin time.Duration
+	// attemptsMax bounds one recovery pass.
+	attemptsMax int
 	// kick holds at most one pending recovery request.
 	kick   chan struct{}
 	done   chan struct{}
@@ -60,20 +69,25 @@ type stickyConsume struct {
 // goroutine that recovers it, which runs until Stop or Drain.
 func startStickyConsume(
 	stream jetstream.Stream, cons jetstream.Consumer,
-	handler jetstream.MessageHandler, retryMin time.Duration,
+	handler jetstream.MessageHandler, tune stickyRecovery,
 ) (*stickyConsume, error) {
 	if stream == nil || cons == nil || handler == nil {
 		panic("startStickyConsume: stream, consumer and handler are required")
 	}
+	retryMin := tune.retryMin
 	if retryMin <= 0 || retryMin > stickyRetryMax*time.Duration(stickyRecoverAttemptsMax) {
 		panic("startStickyConsume: retryMin must be positive and bounded")
+	}
+	if tune.attemptsMax <= 0 || tune.attemptsMax > stickyRecoverAttemptsMax {
+		panic("startStickyConsume: attemptsMax must be in 1..stickyRecoverAttemptsMax")
 	}
 	config := cons.CachedInfo().Config
 	s := &stickyConsume{
 		stream: stream, config: config, handler: handler,
 		logError: consumeErrHandler(config.FilterSubject),
 		label:    config.FilterSubject, retryMin: retryMin,
-		kick: make(chan struct{}, 1), done: make(chan struct{}),
+		attemptsMax: tune.attemptsMax,
+		kick:        make(chan struct{}, 1), done: make(chan struct{}),
 		exited: make(chan struct{}),
 	}
 	current, err := s.consume(cons)
@@ -114,10 +128,7 @@ func (s *stickyConsume) onError(cc jetstream.ConsumeContext, err error) {
 	}
 	s.logError(cc, err)
 	if stickyConsumerGone(err) {
-		select {
-		case s.kick <- struct{}{}:
-		default:
-		}
+		s.requestRecovery()
 	}
 }
 
@@ -155,7 +166,8 @@ func (s *stickyConsume) end(finish func(jetstream.ConsumeContext)) {
 }
 
 // supervise runs one recovery pass per kick, at most one per retryMin,
-// for the life of the lane.
+// for the life of the lane. A pass that ends unrecovered queues the next
+// itself.
 func (s *stickyConsume) supervise() {
 	defer close(s.exited)
 	for {
@@ -164,35 +176,57 @@ func (s *stickyConsume) supervise() {
 			return
 		case <-s.kick:
 		}
-		if !s.recover() || !s.wait(s.retryMin) {
+		recovered, live := s.recover()
+		if !live {
+			return
+		}
+		if !recovered {
+			s.requestRecovery()
+		}
+		if !s.wait(s.retryMin) {
 			return
 		}
 	}
 }
 
+// requestRecovery queues a recovery pass unless one is already queued.
+func (s *stickyConsume) requestRecovery() {
+	if s.kick == nil {
+		panic("requestRecovery: stickyConsume not built by startStickyConsume")
+	}
+	select {
+	case s.kick <- struct{}{}:
+	default:
+	}
+}
+
 // recover retries with a doubling backoff until the lane consumes a
-// live consumer. It returns false once the lane is stopping.
-func (s *stickyConsume) recover() bool {
+// live consumer or the pass runs out of attempts. live is false once the
+// lane is stopping.
+func (s *stickyConsume) recover() (recovered, live bool) {
 	if s.retryMin <= 0 || s.label == "" {
 		panic("recover: stickyConsume not built by startStickyConsume")
 	}
 	backoff := s.retryMin
-	for attempt := 1; attempt <= stickyRecoverAttemptsMax; attempt++ {
+	var lastErr error
+	for attempt := 1; attempt <= s.attemptsMax; attempt++ {
 		s.attempts.Add(1)
-		err := s.tryRecover()
-		if err == nil {
-			return true
+		lastErr = s.tryRecover()
+		if lastErr == nil {
+			return true, true
 		}
-		slog.Debug("sticky consumer recovery attempt failed",
-			"consumer", s.label, "attempt", attempt, "error", err)
+		if attempt == 1 {
+			slog.Warn("sticky consumer recovery attempt failed; retrying",
+				"consumer", s.label, "error", lastErr)
+		}
 		if !s.wait(backoff) {
-			return false
+			return false, false
 		}
 		backoff = min(backoff*2, stickyRetryMax)
 	}
-	slog.Error("sticky consumer not recovered; waiting for the next consume error",
-		"consumer", s.label, "attempts", stickyRecoverAttemptsMax)
-	return true
+	slog.Error("sticky consumer not recovered; starting another pass",
+		"consumer", s.label, "attempts", s.attemptsMax, "error", lastErr)
+	return false, true
 }
 
 // wait sleeps for d, returning false early when the lane stops.
