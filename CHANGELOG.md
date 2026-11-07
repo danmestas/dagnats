@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.56] - 2026-11-07
+
 ### Fixed
 
 - **A program's sticky consumer is recovered after the server reaps it.** The worker's sticky-lane recovery (0.0.52) first looks its consumer up by name, but a program's NATS user was granted only `NEXT`, `ACK` and `CREATE` on `STICKY_TASKS`, not `CONSUMER.INFO`. The server dropped each lookup, so every attempt timed out at 5 s and never reached the recreate. After 40 attempts, about 20 minutes, the lane waited for a consume error that could not arrive, because Consume had already ended. That sticky queue stayed dead until the program restarted, as notify saw for its in-app and email workers after a boot and after a control-plane blip. Now:
