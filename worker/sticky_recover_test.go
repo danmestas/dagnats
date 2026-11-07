@@ -277,3 +277,48 @@ func awaitStickyPull(t *testing.T, js jetstream.JetStream, name string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// TestStickyConsumer_RecoveredAfterAFailedPass: a recovery pass can run
+// out of attempts while the consumer cannot be recreated, here because
+// its stream is gone. By then Consume has ended, so no further consume
+// error arrives to start another pass. Recovery must try again on its
+// own, or the lane stays dead until the Worker restarts.
+func TestStickyConsumer_RecoveredAfterAFailedPass(t *testing.T) {
+	nc, js := startConcurrencyServer(t)
+	const taskType = "probe.failedpass"
+	const passAttempts = 3
+	w, handled := startStickyWorker(t, nc, taskType, func(w *Worker) {
+		w.stickyRetryMin = 20 * time.Millisecond
+		w.stickyRecoverAttempts = passAttempts
+	})
+	sticky := stickyLaneOf(t, w)
+	stickyConsumerName(t, js)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := js.DeleteStream(ctx, "STICKY_TASKS"); err != nil {
+		t.Fatalf("delete sticky stream: %v", err)
+	}
+	// Wait until at least one whole pass has failed.
+	deadline := time.Now().Add(stickyRecoverWait)
+	for sticky.attempts.Load() < int64(passAttempts) {
+		if time.Now().After(deadline) {
+			t.Fatalf("recovery made %d attempts, want a full pass of %d",
+				sticky.attempts.Load(), passAttempts)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if err := natsutil.SetupStickyStream(js, 1); err != nil {
+		t.Fatalf("SetupStickyStream: %v", err)
+	}
+
+	// Positive: once the stream is back, a later pass recreates the
+	// consumer and a sticky task reaches the handler.
+	publishSticky(t, js, w, taskType, "run-after-pass")
+	awaitHandled(t, handled, "run-after-pass")
+	// Negative: recovery did not stop at the first failed pass.
+	if got := sticky.attempts.Load(); got <= int64(passAttempts) {
+		t.Fatalf("recovery made %d attempts, want more than one pass", got)
+	}
+}

@@ -855,3 +855,55 @@ func TestPermissions_OwnOutputSubscribable(t *testing.T) {
 		t.Error("no violation logged for subscribing to another program's output")
 	}
 }
+
+// TestPermissions_OwnStickyConsumerInfo: a worker's sticky-lane recovery
+// first asks whether its consumer still exists, by name, before
+// recreating it. Without CONSUMER.INFO on STICKY_TASKS a program's user
+// was denied that lookup: every recovery attempt timed out, and a reaped
+// sticky consumer stayed dead until the program restarted.
+func TestPermissions_OwnStickyConsumerInfo(t *testing.T) {
+	m := validManifest()
+	f := startFixture(t, m)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	admin, err := jetstream.New(f.admin)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	if _, err := admin.Stream(ctx, "STICKY_TASKS"); err != nil {
+		if err := natsutil.SetupStickyStream(admin, 1); err != nil {
+			t.Fatalf("SetupStickyStream: %v", err)
+		}
+	}
+	nc := f.dialProgram(t, m.Name)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream.New: %v", err)
+	}
+	const durable = "sticky-toy-echo-0011223344556677"
+	if _, err := js.CreateOrUpdateConsumer(ctx, "STICKY_TASKS", jetstream.ConsumerConfig{
+		Durable: durable, FilterSubject: "sticky.toy.echo.wid1.>",
+		AckPolicy: jetstream.AckExplicitPolicy,
+	}); err != nil {
+		t.Fatalf("own sticky consumer: %v", err)
+	}
+	stream, err := js.Stream(ctx, "STICKY_TASKS")
+	if err != nil {
+		t.Fatalf("own stream: %v", err)
+	}
+	short, stop := context.WithTimeout(ctx, 2*time.Second)
+	defer stop()
+	// Positive: the program looks up its own consumer by name.
+	cons, err := stream.Consumer(short, durable)
+	if err != nil {
+		t.Fatalf("own sticky consumer info: %v", err)
+	}
+	if got := cons.CachedInfo().Config.FilterSubject; got != "sticky.toy.echo.wid1.>" {
+		t.Fatalf("info filter = %q", got)
+	}
+	// Negative: no violation is logged for the lookup.
+	subject := "$JS.API.CONSUMER.INFO.STICKY_TASKS." + durable
+	if f.violations.contains(subject) {
+		t.Fatalf("violation logged for own sticky consumer info %q", subject)
+	}
+}

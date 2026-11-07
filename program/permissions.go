@@ -65,7 +65,7 @@ var engineEventSubjects = []string{"stream", "logs"}
 // isolation boundary: JetStream reply reflection lets a program write
 // any stream or bucket of the account (package doc, dagnats#909).
 //
-// Residual: next, ack and create on a STICKY_TASKS consumer are granted
+// Residual: info, next, ack and create on a STICKY_TASKS consumer are granted
 // for any consumer name, so a program holding a sibling's name could pull,
 // ack or reconfigure it. The names are unguessable and never disclosed
 // (stickyPublish), and TestPermissions_StickyConsumerNamesNotDisclosed
@@ -161,6 +161,10 @@ func stickyPublish(taskTypes []string) []string {
 	}
 	out := []string{
 		"$JS.API.STREAM.INFO.STICKY_TASKS",
+		// The worker's sticky-lane recovery looks its consumer up by name
+		// before recreating it; without this the lookup was denied and a
+		// reaped consumer stayed dead until restart.
+		"$JS.API.CONSUMER.INFO.STICKY_TASKS.*",
 		"$JS.API.CONSUMER.MSG.NEXT.STICKY_TASKS.*",
 		"$JS.ACK.STICKY_TASKS.>",
 	}

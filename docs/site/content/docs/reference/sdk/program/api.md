@@ -480,7 +480,7 @@ PermissionsFor derives the NATS permission set for a manifest: every crossing th
 
 These are guardrails against a trusted program's mistakes, not an isolation boundary: JetStream reply reflection lets a program write any stream or bucket of the account \(package doc, dagnats\#909\).
 
-Residual: next, ack and create on a STICKY\_TASKS consumer are granted for any consumer name, so a program holding a sibling's name could pull, ack or reconfigure it. The names are unguessable and never disclosed \(stickyPublish\), and TestPermissions\_StickyConsumerNamesNotDisclosed pins the disclosure surfaces.
+Residual: info, next, ack and create on a STICKY\_TASKS consumer are granted for any consumer name, so a program holding a sibling's name could pull, ack or reconfigure it. The names are unguessable and never disclosed \(stickyPublish\), and TestPermissions\_StickyConsumerNamesNotDisclosed pins the disclosure surfaces.
 
 <a name="Program"></a>
 ## type [Program](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L124-L132>)
