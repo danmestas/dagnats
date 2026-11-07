@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`lake/s3store` is the lake writer's S3 store.** It is the pure-Go S3-compatible store moved from lode (`snapshot/s3store`, lode commit 41401ab): a SigV4 client over net/http with no SDK, for R2, Garage, Tigris, MinIO and S3. It satisfies `writer.Store` and keeps `Has`, `List` and `Delete`. `Put` is a conditional create-only PUT, with a HEAD-first fallback (`NoConditionalPut`) for Garage v2.1. Errors are `s3store.ErrExists` and `s3store.ErrNotFound`, matching `fs.ErrExist` and `fs.ErrNotExist`. `List` follows continuation pages and errors past its limit. `Config.ObjectSizeMax` (default 128 MiB) replaces lode's snapshot constant. Lode can drop its copy and import this one.
+
 ## [0.0.56] - 2026-11-07
 
 ### Fixed
