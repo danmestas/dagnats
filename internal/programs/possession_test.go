@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -110,7 +111,8 @@ func TestPossession_ManifestChangeAppliesOnlyOnConfirm(t *testing.T) {
 }
 
 func TestPossession_UnconfirmedRegistrationExpiresAndRefunds(t *testing.T) {
-	f := newFixture(t, Config{Open: true, PendingTTL: 50 * time.Millisecond})
+	clock := newFakeClock()
+	f := newFixture(t, Config{Open: true, PendingTTL: 50 * time.Millisecond, Now: clock.Now})
 	key, plaintext := f.createKey(t, joinkey.Spec{Label: "once", UsesMax: 1})
 	squatter := request(t, "notify", plaintext)
 	if _, err := registerOnly(t, f, squatter); err != nil {
@@ -119,7 +121,7 @@ func TestPossession_UnconfirmedRegistrationExpiresAndRefunds(t *testing.T) {
 	if got := f.usesLeft(t, key.ID); got != 0 {
 		t.Fatalf("UsesLeft = %d after the pending registration, want 0", got)
 	}
-	time.Sleep(100 * time.Millisecond)
+	clock.Advance(100 * time.Millisecond)
 	_, err := confirm(t, f, squatter.PublicKey, squatter)
 	wantRefused(t, err, program.RefusedConfirmExpired)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -142,21 +144,22 @@ func TestPossession_UnconfirmedRegistrationExpiresAndRefunds(t *testing.T) {
 		t.Fatalf("the rate-limited retry spent a use: UsesLeft = %d", got)
 	}
 	// ...but can once the window has passed.
-	time.Sleep(100 * time.Millisecond)
+	clock.Advance(100 * time.Millisecond)
 	if _, err := f.register(t, owner); err != nil {
 		t.Fatalf("the real owner after the window: %v", err)
 	}
 }
 
 func TestPossession_ExpiredPendingFreesTheNameOnRegister(t *testing.T) {
-	f := newFixture(t, Config{Open: true, PendingTTL: 50 * time.Millisecond})
+	clock := newFakeClock()
+	f := newFixture(t, Config{Open: true, PendingTTL: 50 * time.Millisecond, Now: clock.Now})
 	if _, err := registerOnly(t, f, request(t, "notify", "")); err != nil {
 		t.Fatalf("first: %v", err)
 	}
 	other := request(t, "notify", "")
 	_, err := registerOnly(t, f, other)
 	wantRefused(t, err, program.RefusedNameTaken)
-	time.Sleep(100 * time.Millisecond)
+	clock.Advance(100 * time.Millisecond)
 	if _, err := f.register(t, other); err != nil {
 		t.Fatalf("a new key once the pending one expired: %v", err)
 	}
@@ -178,4 +181,29 @@ func TestPossession_PendingWithADifferentManifestIsRefused(t *testing.T) {
 	wantRefused(t, err, program.RefusedManifestChanged)
 	_, err = confirm(t, f, req.PublicKey, changed)
 	wantRefused(t, err, program.RefusedManifestChanged)
+}
+
+// fakeClock is a registrar clock the test steps, so a pending
+// registration's expiry falls exactly where the test puts it, however
+// slowly the machine runs.
+type fakeClock struct {
+	mu sync.Mutex
+	at time.Time
+}
+
+func newFakeClock() *fakeClock { return &fakeClock{at: time.Now()} }
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.at
+}
+
+func (c *fakeClock) Advance(d time.Duration) {
+	if d <= 0 {
+		panic("fakeClock.Advance: d must be positive")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.at = c.at.Add(d)
 }
