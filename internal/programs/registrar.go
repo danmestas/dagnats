@@ -72,6 +72,9 @@ type Config struct {
 	// PendingTTL is how long an unconfirmed registration lives; zero
 	// means the PendingTTL default.
 	PendingTTL time.Duration
+	// Now is the registrar's clock; nil means time.Now. Tests set it so
+	// expiry windows are stepped, not slept through.
+	Now func() time.Time
 }
 
 // Record is one registered program, as stored.
@@ -91,6 +94,17 @@ type Record struct {
 }
 
 // Registrar admits programs. Safe for concurrent use.
+// now is the registrar's clock: cfg.Now, or time.Now when unset.
+func (r *Registrar) now() time.Time {
+	if r == nil {
+		panic("Registrar.now: r is nil")
+	}
+	if r.cfg.Now == nil {
+		return time.Now()
+	}
+	return r.cfg.Now()
+}
+
 type Registrar struct {
 	js     jetstream.JetStream
 	kv     jetstream.KeyValue
@@ -194,7 +208,7 @@ func (r *Registrar) existing(
 	if !found {
 		return program.Grant{}, false, nil
 	}
-	if record.expired(time.Now()) {
+	if record.expired(r.now()) {
 		free, err := r.expireIfStale(ctx, req.Manifest.Name)
 		if err != nil || free {
 			return program.Grant{}, !free, err
@@ -253,7 +267,7 @@ func (r *Registrar) reserveUse(ctx context.Context, req program.RegisterRequest)
 		if refusal := protocolsOutsideGlob(key, req.Manifest.Protocols); refusal != nil {
 			return "", refusal
 		}
-		if r.expired.recent(key.ID, req.Manifest.Name, r.pendingTTL()) {
+		if r.expired.recent(key.ID, req.Manifest.Name, r.pendingTTL(), r.now()) {
 			return "", refused(program.RefusedConfirmExpired,
 				"program %q expired unconfirmed with this join key; retry after %s",
 				req.Manifest.Name, r.pendingTTL())

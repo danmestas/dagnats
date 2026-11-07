@@ -126,7 +126,7 @@ func (r *Registrar) promote(
 	if !record.Pending || revision == 0 {
 		panic("programs.promote: only a pending record at a read revision")
 	}
-	if record.expired(time.Now()) {
+	if record.expired(r.now()) {
 		return program.Grant{}, refused(program.RefusedConfirmExpired,
 			"program %q was not confirmed within %s; register again",
 			record.Manifest.Name, r.pendingTTL())
@@ -186,7 +186,7 @@ func (r *Registrar) expireIfStale(ctx context.Context, name string) (bool, error
 		panic("programs.expireIfStale: name must not be empty")
 	}
 	entry, record, err := r.lookupEntry(ctx, name)
-	if err != nil || !record.expired(time.Now()) {
+	if err != nil || !record.expired(r.now()) {
 		return false, nil
 	}
 	err = r.kv.Delete(ctx, name, jetstream.LastRevision(entry.Revision()))
@@ -198,7 +198,7 @@ func (r *Registrar) expireIfStale(ctx context.Context, name string) (bool, error
 	}
 	if record.JoinKeyID != "" {
 		r.refund(record.JoinKeyID, name)
-		r.expired.note(record.JoinKeyID, name)
+		r.expired.note(record.JoinKeyID, name, r.now())
 	}
 	slog.Info("programs: unconfirmed registration expired",
 		"program", name, "join_key_id", record.JoinKeyID)
@@ -214,7 +214,7 @@ func (r *Registrar) ExpirePending(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	now := time.Now()
+	now := r.now()
 	var errs []error
 	for _, record := range records {
 		if !record.expired(now) {
@@ -266,9 +266,12 @@ type expiredRegistrations struct {
 
 func expiredKey(keyID, name string) string { return keyID + "\x00" + name }
 
-func (e *expiredRegistrations) note(keyID, name string) {
+func (e *expiredRegistrations) note(keyID, name string, at time.Time) {
 	if keyID == "" || name == "" {
 		panic("expiredRegistrations.note: key and name must be set")
+	}
+	if at.IsZero() {
+		panic("expiredRegistrations.note: at must be set")
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -284,17 +287,22 @@ func (e *expiredRegistrations) note(keyID, name string) {
 		}
 		delete(e.when, oldest)
 	}
-	e.when[expiredKey(keyID, name)] = time.Now()
+	e.when[expiredKey(keyID, name)] = at
 }
 
 // recent reports whether keyID's registration of name expired within
-// window.
-func (e *expiredRegistrations) recent(keyID, name string, window time.Duration) bool {
+// window of now.
+func (e *expiredRegistrations) recent(
+	keyID, name string, window time.Duration, now time.Time,
+) bool {
 	if keyID == "" || name == "" {
 		panic("expiredRegistrations.recent: key and name must be set")
+	}
+	if now.IsZero() {
+		panic("expiredRegistrations.recent: now must be set")
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	at, ok := e.when[expiredKey(keyID, name)]
-	return ok && time.Since(at) < window
+	return ok && now.Sub(at) < window
 }

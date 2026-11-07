@@ -96,7 +96,7 @@ func (r *Registrar) reserveName(
 	if err := r.checkLive(ctx, req.Manifest, grant); err != nil {
 		return Record{}, 0, err
 	}
-	now := time.Now().UTC()
+	now := r.now().UTC()
 	record = Record{
 		Manifest: req.Manifest, PublicKey: req.PublicKey,
 		Grant:     grant,
