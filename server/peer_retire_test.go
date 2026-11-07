@@ -47,6 +47,32 @@ func leaderMeta(t *testing.T, nodes []metaNode) (metaNode, natsutil.MetaState) {
 	return metaNode{}, natsutil.MetaState{}
 }
 
+// awaitMetaPeersOnline waits until the meta leader reports want peers
+// (every server but itself), each current and online. A freshly started
+// cluster elects its meta leader before every server has joined, and
+// placing an R3 stream in that gap fails with "no suitable peers".
+func awaitMetaPeersOnline(t *testing.T, nodes []metaNode, want int) {
+	t.Helper()
+	if want < 1 {
+		t.Fatalf("awaitMetaPeersOnline: want %d peers, need at least 1", want)
+	}
+	deadline := time.Now().Add(metaSettleWait)
+	for time.Now().Before(deadline) {
+		_, meta := leaderMeta(t, nodes)
+		online := 0
+		for _, peer := range meta.Peers {
+			if peer.Current && !peer.Offline {
+				online++
+			}
+		}
+		if online == want {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("meta group never reported %d peers online", want)
+}
+
 // metaPeerOf finds name in meta by name or peer ID.
 func metaPeerOf(meta natsutil.MetaState, name string) (natsutil.MetaPeer, bool) {
 	for _, peer := range meta.Peers {
@@ -116,6 +142,9 @@ func TestPeerRetirer_RemovesAStoppedPeerAndReplacesItsReplicas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
+	// R3 placement needs every server online in the meta group, which can
+	// lag the meta leader's election on a cold start.
+	awaitMetaPeersOnline(t, nodes, len(nodes)-1)
 	createR3Streams(t, js)
 	victim := pickVictim(t, js, leader.ns.Name())
 	stopAndAwaitOffline(t, nodes, victim)
