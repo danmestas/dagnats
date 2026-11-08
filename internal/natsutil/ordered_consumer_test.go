@@ -282,3 +282,77 @@ func TestConsumerListed_ReadsTheStreamsConsumerList(t *testing.T) {
 		t.Fatalf("failed listing = %v, want boom", err)
 	}
 }
+
+// flakyConsumer is a jetstream.Consumer whose fetches answer "no
+// responders" failures times before they succeed: the server's answer
+// while a replacement consumer placed on another cluster peer is not
+// yet reachable from the reader's server. Unused methods panic through
+// the nil embedded interface.
+type flakyConsumer struct {
+	jetstream.Consumer
+	failures int
+	calls    int
+}
+
+func (c *flakyConsumer) attempt() error {
+	c.calls++
+	if c.calls <= c.failures {
+		return nats.ErrNoResponders
+	}
+	return nil
+}
+
+func (c *flakyConsumer) CachedInfo() *jetstream.ConsumerInfo { return nil }
+
+func (c *flakyConsumer) Next(...jetstream.FetchOpt) (jetstream.Msg, error) {
+	return nil, c.attempt()
+}
+
+func (c *flakyConsumer) Fetch(int, ...jetstream.FetchOpt) (jetstream.MessageBatch, error) {
+	return nil, c.attempt()
+}
+
+func (c *flakyConsumer) FetchBytes(int, ...jetstream.FetchOpt) (jetstream.MessageBatch, error) {
+	return nil, c.attempt()
+}
+
+func (c *flakyConsumer) FetchNoWait(int) (jetstream.MessageBatch, error) {
+	return nil, c.attempt()
+}
+
+// Pure unit test: the consumer is a fake. On a cluster nats.go places
+// each replacement consumer on any stream peer, and a fetch sent before
+// the reader's server learns of it answers "no responders" (seen on the
+// eu mesh: 13 of 15 full journal reads failed). Positive: a few such
+// answers are absorbed by every fetch method. Negative: an endless run
+// of them surfaces after the bound instead of looping.
+func TestOrderedConsumer_FetchRetriesNoResponders(t *testing.T) {
+	fetches := map[string]func(c *OrderedConsumer) error{
+		"Next":  func(c *OrderedConsumer) error { _, err := c.Next(); return err },
+		"Fetch": func(c *OrderedConsumer) error { _, err := c.Fetch(1); return err },
+		"FetchBytes": func(c *OrderedConsumer) error {
+			_, err := c.FetchBytes(1024)
+			return err
+		},
+		"FetchNoWait": func(c *OrderedConsumer) error { _, err := c.FetchNoWait(1); return err },
+	}
+	for name, fetch := range fetches {
+		fake := &flakyConsumer{failures: orderedNoRespondersMax - 1}
+		if err := fetch(&OrderedConsumer{Consumer: fake}); err != nil {
+			t.Fatalf("%s: %v after %d no-responders answers, want success", name, err,
+				fake.failures)
+		}
+		if fake.calls != orderedNoRespondersMax {
+			t.Fatalf("%s: %d calls, want %d", name, fake.calls, orderedNoRespondersMax)
+		}
+		endless := &flakyConsumer{failures: 1 << 30}
+		err := fetch(&OrderedConsumer{Consumer: endless})
+		if !errors.Is(err, nats.ErrNoResponders) {
+			t.Fatalf("%s: endless no responders returned %v", name, err)
+		}
+		if endless.calls != orderedNoRespondersMax {
+			t.Fatalf("%s: %d calls before giving up, want %d", name, endless.calls,
+				orderedNoRespondersMax)
+		}
+	}
+}

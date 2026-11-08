@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -151,10 +152,9 @@ func (c *OrderedConsumer) Close() {
 func (c *OrderedConsumer) Fetch(
 	batch int, opts ...jetstream.FetchOpt,
 ) (jetstream.MessageBatch, error) {
-	previous := c.currentName()
-	result, err := c.Consumer.Fetch(batch, opts...)
-	c.releaseReplaced(previous)
-	return result, err
+	return fetchReplacing(c, func() (jetstream.MessageBatch, error) {
+		return c.Consumer.Fetch(batch, opts...)
+	})
 }
 
 // FetchBytes is jetstream.Consumer.FetchBytes that deletes the consumer
@@ -162,27 +162,61 @@ func (c *OrderedConsumer) Fetch(
 func (c *OrderedConsumer) FetchBytes(
 	bytesMax int, opts ...jetstream.FetchOpt,
 ) (jetstream.MessageBatch, error) {
-	previous := c.currentName()
-	result, err := c.Consumer.FetchBytes(bytesMax, opts...)
-	c.releaseReplaced(previous)
-	return result, err
+	return fetchReplacing(c, func() (jetstream.MessageBatch, error) {
+		return c.Consumer.FetchBytes(bytesMax, opts...)
+	})
 }
 
 // FetchNoWait is jetstream.Consumer.FetchNoWait that deletes the
 // consumer it replaced.
 func (c *OrderedConsumer) FetchNoWait(batch int) (jetstream.MessageBatch, error) {
-	previous := c.currentName()
-	result, err := c.Consumer.FetchNoWait(batch)
-	c.releaseReplaced(previous)
-	return result, err
+	return fetchReplacing(c, func() (jetstream.MessageBatch, error) {
+		return c.Consumer.FetchNoWait(batch)
+	})
 }
 
 // Next is jetstream.Consumer.Next that deletes the consumer it replaced.
 func (c *OrderedConsumer) Next(opts ...jetstream.FetchOpt) (jetstream.Msg, error) {
-	previous := c.currentName()
-	msg, err := c.Consumer.Next(opts...)
-	c.releaseReplaced(previous)
-	return msg, err
+	return fetchReplacing(c, func() (jetstream.Msg, error) {
+		return c.Consumer.Next(opts...)
+	})
+}
+
+// orderedNoRespondersMax bounds the attempts of one fetch that the
+// server answered with "no responders". On a cluster each replacement
+// consumer goes to any stream peer, and a pull sent before the reader's
+// server has learned the new consumer's interest finds nobody; the
+// interest arrives within milliseconds. On the eu mesh 13 of 15 full
+// journal reads hit it at least once.
+const orderedNoRespondersMax = 6
+
+// orderedNoRespondersBackoff is the base wait between those attempts;
+// attempt n waits n times this, under 400ms across the bound.
+const orderedNoRespondersBackoff = 25 * time.Millisecond
+
+// fetchReplacing runs one fetch, deletes the consumer it replaced, and
+// repeats it while the server answers "no responders", up to
+// orderedNoRespondersMax attempts. A repeat is safe: nats.go resumes
+// the ordered consumer one past the last message it delivered.
+func fetchReplacing[T any](c *OrderedConsumer, fetch func() (T, error)) (T, error) {
+	if c == nil || c.Consumer == nil {
+		panic("OrderedConsumer.fetch: consumer must not be nil")
+	}
+	if fetch == nil {
+		panic("OrderedConsumer.fetch: fetch must not be nil")
+	}
+	var result T
+	var err error
+	for attempt := 1; attempt <= orderedNoRespondersMax; attempt++ {
+		previous := c.currentName()
+		result, err = fetch()
+		c.releaseReplaced(previous)
+		if !errors.Is(err, nats.ErrNoResponders) || attempt == orderedNoRespondersMax {
+			break
+		}
+		time.Sleep(time.Duration(attempt) * orderedNoRespondersBackoff)
+	}
+	return result, err
 }
 
 // currentName is the server-side consumer the reader is on, or "" when
