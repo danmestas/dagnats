@@ -154,3 +154,58 @@ func TestCronClusterClaimErrorSkipsThenRetriesSameMinute(t *testing.T) {
 		t.Fatalf("retry in same minute fired %d, want 1", got)
 	}
 }
+
+// flakyFire fails the first `failures` calls, then delegates to Fire.
+func flakyFire(failures int) (fireFunc, *int) {
+	calls := 0
+	return func(
+		ctx context.Context, tp *natsutil.TracingPublisher,
+		def TriggerDef, source string, now time.Time,
+	) (string, error) {
+		calls++
+		if calls <= failures {
+			return "", errInjectedKV
+		}
+		return Fire(ctx, tp, def, source, now)
+	}, &calls
+}
+
+func TestCronClusterClaimFireRetriesThenFiresOnce(t *testing.T) {
+	a, b, sub := twoNodeSchedulers(t)
+	at := time.Date(2026, 11, 7, 6, 17, 2, 0, time.UTC)
+	var calls *int
+	a.fire, calls = flakyFire(2)
+
+	if err := a.Tick(at); err != nil {
+		t.Fatalf("Tick a: %v", err)
+	}
+	if err := b.Tick(at.Add(21 * time.Second)); err != nil {
+		t.Fatalf("Tick b: %v", err)
+	}
+	if *calls != 3 {
+		t.Fatalf("fire attempts = %d, want 3", *calls)
+	}
+	if got := countFires(sub, 500*time.Millisecond); got != 1 {
+		t.Fatalf("fires = %d, want 1", got)
+	}
+}
+
+func TestCronClusterClaimLostFireKeepsClaim(t *testing.T) {
+	a, b, sub := twoNodeSchedulers(t)
+	at := time.Date(2026, 11, 7, 6, 17, 2, 0, time.UTC)
+	var calls *int
+	a.fire, calls = flakyFire(1000)
+
+	if err := a.Tick(at); err == nil {
+		t.Fatalf("Tick must report the lost fire")
+	}
+	if *calls != fireAttemptsMax {
+		t.Fatalf("fire attempts = %d, want %d", *calls, fireAttemptsMax)
+	}
+	if err := b.Tick(at.Add(21 * time.Second)); err != nil {
+		t.Fatalf("Tick b: %v", err)
+	}
+	if got := countFires(sub, 300*time.Millisecond); got != 0 {
+		t.Fatalf("other node fired %d after a lost fire, want 0", got)
+	}
+}

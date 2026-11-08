@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -141,42 +142,53 @@ func (s *Scheduler) markLocally(triggerID string, minute time.Time) {
 	}
 }
 
-// releaseClaim undoes a won claim whose fire failed, so another node
-// (or this one on its next tick) can still start the run instead of the
-// minute being lost. Best effort: a failed release is logged; the
-// revision guard stops it deleting a claim another node has since taken.
-func (s *Scheduler) releaseClaim(
-	ctx context.Context, triggerID string, rev uint64,
-) {
-	if triggerID == "" {
-		panic("releaseClaim: triggerID must not be empty")
-	}
-	if rev == 0 {
-		panic("releaseClaim: rev must be non-zero")
-	}
-	err := s.stateKV.Delete(ctx, claimKey(triggerID), jetstream.LastRevision(rev))
-	if err != nil {
-		slog.Warn("cron: release claim failed",
-			"trigger_id", triggerID, "error", err)
-	}
-	s.lastFiredMu.Lock()
-	delete(s.lastFired, triggerID)
-	s.lastFiredMu.Unlock()
-}
+// fireFunc is the Fire signature, so tests can inject publish failures.
+type fireFunc func(
+	context.Context, *natsutil.TracingPublisher, TriggerDef, string,
+	time.Time,
+) (string, error)
+
+// Fire retries stay inside WORKFLOW_HISTORY's 5 s duplicate window,
+// measured from the first attempt.
+const (
+	fireAttemptsMax  = 3
+	fireRetryBackoff = 200 * time.Millisecond
+	fireRetryWindow  = 4 * time.Second
+)
 
 // claimAndFire is the single path both Tick and Backfill use to start a
-// cron run for `minute`: cluster claim, then fire, releasing the claim
-// if the fire fails.
+// cron run for `minute`: cluster claim, then fire with bounded retry.
+//
+// The claim is never released. A failed Fire is ambiguous: the publish
+// may have landed with only its ack lost, and releasing would let
+// another node fire ~30 s later, past the 5 s duplicate window, which
+// is the double fire this claim exists to stop. A visible lost fire
+// (ERROR log plus returned error) beats a silent double fire. Retries
+// reuse `minute`, hence the same Nats-Msg-Id trigger.<id>.<unix/60>
+// (startedDedupID takes only id, source and minute), so a retry after a
+// publish that did land is dropped by JetStream as a duplicate.
 func (s *Scheduler) claimAndFire(
 	ctx context.Context, def TriggerDef, minute time.Time,
 ) error {
-	won, rev, err := s.tryClaim(ctx, def.ID, minute)
+	won, _, err := s.tryClaim(ctx, def.ID, minute)
 	if err != nil || !won {
 		return err
 	}
-	if err := s.fireWorkflow(ctx, def, minute); err != nil {
-		s.releaseClaim(ctx, def.ID, rev)
-		return err
+	started := time.Now()
+	for attempt := 1; ; attempt++ {
+		err = s.fireWorkflow(ctx, def, minute)
+		if err == nil {
+			return nil
+		}
+		if attempt >= fireAttemptsMax ||
+			time.Since(started)+fireRetryBackoff > fireRetryWindow {
+			break
+		}
+		time.Sleep(fireRetryBackoff * time.Duration(attempt))
 	}
-	return nil
+	slog.Error("cron fire lost for minute",
+		"trigger_id", def.ID, "minute", minute.Truncate(time.Minute),
+		"error", err)
+	return fmt.Errorf("cron fire lost for minute %s: %w",
+		minute.Truncate(time.Minute).Format(time.RFC3339), err)
 }

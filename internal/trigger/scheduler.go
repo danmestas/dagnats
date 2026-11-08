@@ -30,10 +30,12 @@ import (
 // only catches publishes inside the stream's Duplicates window (5s for
 // the workflow events stream). See issue #173.
 type Scheduler struct {
-	nc          *nats.Conn
-	js          jetstream.JetStream
-	tp          *natsutil.TracingPublisher
-	stateKV     jetstream.KeyValue
+	nc      *nats.Conn
+	js      jetstream.JetStream
+	tp      *natsutil.TracingPublisher
+	stateKV jetstream.KeyValue
+	// fire is Fire; a field so tests can inject publish failures.
+	fire        fireFunc
 	triggers    map[string]TriggerDef
 	mu          sync.RWMutex
 	lastFiredMu sync.Mutex
@@ -84,6 +86,7 @@ func NewScheduler(nc *nats.Conn) (*Scheduler, error) {
 		js:        js,
 		tp:        natsutil.NewTracingPublisher(nc, js),
 		stateKV:   kv,
+		fire:      Fire,
 		triggers:  make(map[string]TriggerDef),
 		lastFired: make(map[string]time.Time),
 		firedAt:   make(map[string]time.Time),
@@ -410,7 +413,7 @@ func (s *Scheduler) fireWorkflow(
 	if def.WorkflowID == "" {
 		panic("fireWorkflow: def.WorkflowID is empty")
 	}
-	if _, err := Fire(ctx, s.tp, def, SourceCron, now); err != nil {
+	if _, err := s.fire(ctx, s.tp, def, SourceCron, now); err != nil {
 		RecordFiring(ctx, TypeCron, OutcomeError)
 		return err
 	}

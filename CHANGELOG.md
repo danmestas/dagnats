@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **A cron trigger no longer starts two runs for one minute on a cluster.** `notify.health-verify-daily` (`17 6 * * *`) started runs at 06:17:02Z and 06:17:21Z from two nodes. Every node runs a cron scheduler, and the only cross-node guard was the `workflow.started` message id, which WORKFLOW_HISTORY remembers for 5 seconds, so ticks 19 seconds apart both fired. Before firing, the scheduler now claims the minute with an atomic create/update on a per-trigger `<id>.cron_claim` key in `trigger_state`; only the winner fires, and backfill uses the same claim. If the claim hits a KV error the tick is skipped and retried on the next tick, and a claim whose fire fails is released so the minute is not lost.
+- **A cron trigger no longer starts two runs for one minute on a cluster.** `notify.health-verify-daily` (`17 6 * * *`) started runs at 06:17:02Z and 06:17:21Z from two nodes. Every node runs a cron scheduler, and the only cross-node guard was the `workflow.started` message id, which WORKFLOW_HISTORY remembers for 5 seconds, so ticks 19 seconds apart both fired. Before firing, the scheduler now claims the minute with an atomic create/update on a per-trigger `<id>.cron_claim` key in `trigger_state`; only the winner fires, and backfill uses the same claim. If the claim hits a KV error the tick is skipped and retried on the next tick, and the claim winner retries its own fire up to 3 times (same message id, inside the 5 s duplicate window). The claim is never released: if every retry fails the node logs an ERROR and keeps it, because a failed publish is ambiguous and a visible lost fire beats a silent double fire.
 
 ## [0.0.57] - 2026-11-07
 
