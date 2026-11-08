@@ -105,6 +105,7 @@ func (s *Service) routeRuns(
 //
 //	GET  /runs/{id}              → handleGetRun
 //	POST /runs/{id}/cancel       → handleCancelRun
+//	POST /runs/{id}/fork         → handleForkRun (#810)
 //	POST /runs/{id}/signal/{name} → handleSendSignal
 //	GET  /runs/{id}/steps/{step}/journal → handleGetStepJournal
 //	.../steps/{step}/inputs[/{request_id}] → routeStepInputs (ADR-027)
@@ -119,28 +120,12 @@ func (s *Service) routeRunByID(
 		s.routeStepInputs(w, r, parts)
 		return
 	}
-	if len(parts) >= 2 && parts[1] == "cancel" {
+	if handler := s.runPostAction(parts); handler != nil {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		handleCancelRun(s, w, r)
-		return
-	}
-	if len(parts) >= 3 && parts[1] == "signal" {
-		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		handleSendSignal(s, w, r)
-		return
-	}
-	if len(parts) >= 3 && parts[1] == "approval" {
-		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		handleApproval(s, w, r)
+		handler(w, r)
 		return
 	}
 	if len(parts) == 4 && parts[1] == "steps" && parts[3] == "journal" {
@@ -175,6 +160,28 @@ func (s *Service) routeRunByID(
 		return
 	}
 	handleGetRun(s, w, r)
+}
+
+// runPostAction returns the handler of a POST-only /runs/{id} action
+// (cancel, fork, signal, approval), nil when parts names none.
+func (s *Service) runPostAction(parts []string) http.HandlerFunc {
+	if len(parts) == 0 {
+		panic("runPostAction: parts must hold the run id")
+	}
+	if len(parts) < 2 {
+		return nil
+	}
+	switch {
+	case parts[1] == "cancel":
+		return func(w http.ResponseWriter, r *http.Request) { handleCancelRun(s, w, r) }
+	case parts[1] == "fork" && len(parts) == 2:
+		return func(w http.ResponseWriter, r *http.Request) { handleForkRun(s, w, r, parts[0]) }
+	case parts[1] == "signal" && len(parts) >= 3:
+		return func(w http.ResponseWriter, r *http.Request) { handleSendSignal(s, w, r) }
+	case parts[1] == "approval" && len(parts) >= 3:
+		return func(w http.ResponseWriter, r *http.Request) { handleApproval(s, w, r) }
+	}
+	return nil
 }
 
 // routeHealth dispatches GET /health to handleHealth.

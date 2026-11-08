@@ -97,14 +97,14 @@ func Check(ctx context.Context, nc *nats.Conn, runID string) (Report, error) {
 	}
 	sort.Strings(stepIDs)
 	for _, stepID := range stepIDs {
-		records, err := Read(ctx, js, runID, stepID)
+		base, records, err := readForCheck(ctx, js, runID, stepID)
 		if err != nil {
 			return Report{}, err
 		}
 		if len(records) == 0 {
 			continue
 		}
-		step := checkStep(stepID, run.Steps[stepID], records, historyByStep[stepID])
+		step := checkStepFrom(stepID, run.Steps[stepID], base, records, historyByStep[stepID])
 		if submissions != nil {
 			subs, err := submissions.List(ctx, runID, stepID)
 			if err != nil {
@@ -204,16 +204,49 @@ func readHistoryEvents(
 		})
 }
 
+// readForCheck reads a step's journal for Check. A forked journal
+// comes back without its fork record, with the records it inherits
+// from its parent as base: the parent's tool intents a forked step
+// answers pair with base, while every other invariant is the forked
+// step's own.
+func readForCheck(
+	ctx context.Context, js jetstream.JetStream, runID, stepID string,
+) ([]Record, []Record, error) {
+	if ctx == nil || js == nil {
+		panic("readForCheck: ctx and js must not be nil")
+	}
+	if runID == "" || stepID == "" {
+		panic("readForCheck: run and step must not be empty")
+	}
+	records, err := Read(ctx, js, runID, stepID)
+	if err != nil {
+		return nil, nil, err
+	}
+	base, forked, err := forkBaseFor(ctx, js, records)
+	if err != nil || !forked {
+		return nil, records, err
+	}
+	return base.records, records[1:], nil
+}
+
 // checkStep applies the invariants to one step's journal. history is
 // the step's step.started and lifecycle events.
 func checkStep(
 	stepID string, state dag.StepState, records []Record, history []protocol.Event,
 ) StepReport {
+	return checkStepFrom(stepID, state, nil, records, history)
+}
+
+// checkStepFrom is checkStep for a journal that inherits base from a
+// fork's parent: tool calls pair across base and records.
+func checkStepFrom(
+	stepID string, state dag.StepState, base, records []Record, history []protocol.Event,
+) StepReport {
 	if stepID == "" {
-		panic("checkStep: stepID must not be empty")
+		panic("checkStepFrom: stepID must not be empty")
 	}
-	if len(records) > recordsMax {
-		panic("checkStep: records exceed the read bound")
+	if len(records)+len(base) > recordsMax {
+		panic("checkStepFrom: records exceed the read bound")
 	}
 	report := StepReport{StepID: stepID, Records: len(records)}
 	commits := commitsByIteration(records)
@@ -224,7 +257,8 @@ func checkStep(
 		checkCommits(state, records, commits, history)...)
 	report.Violations = append(report.Violations, checkFencing(records)...)
 	report.Violations = append(report.Violations,
-		checkToolPairs(records, state.Status == dag.StepStatusFailed)...)
+		checkToolPairs(append(append([]Record(nil), base...), records...),
+			state.Status == dag.StepStatusFailed)...)
 	report.Violations = append(report.Violations, checkPlacedInputs(records)...)
 	return report
 }

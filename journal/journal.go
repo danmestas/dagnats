@@ -300,11 +300,11 @@ func Open(
 	if tail.Seq > 0 && tail.Iteration > task.Iteration {
 		return nil, ErrStale
 	}
-	records, err := j.readUpTo(ctx, tail.Seq)
+	base, records, err := j.readHistory(ctx, tail.Seq)
 	if err != nil {
 		return nil, err
 	}
-	j.rebuild(records)
+	j.rebuild(base, records)
 	j.seq = tail.Seq
 	if j.committed != nil {
 		j.done = true
@@ -424,7 +424,9 @@ func (j *Journal) Fenced() bool { return j.fenced }
 func (j *Journal) State() []byte { return j.state }
 
 // Records returns this iteration's records written before this claim,
-// in journal order: what a recovering attempt may reuse.
+// in journal order: what a recovering attempt may reuse. A forked
+// journal's iteration 0 starts with the records it inherits from its
+// parent (see Fork).
 func (j *Journal) Records() []Record { return j.records }
 
 // Committed returns this attempt's own commit: the one Open found, or
@@ -718,18 +720,24 @@ func (j *Journal) relayedUpTo(ctx context.Context, tailSeq uint64) ([]Record, er
 // rebuild derives the recovery view from the records before the
 // claim: the last committed state of an earlier iteration, this
 // iteration's records, its newest pause, and this attempt's commit.
-func (j *Journal) rebuild(records []Record) {
-	if len(records) > recordsMax {
+// A forked journal's base comes first: its state is the state before
+// iteration 0, its records are iteration 0's inherited records, and
+// its placements already cover them.
+func (j *Journal) rebuild(base forkBase, records []Record) {
+	if len(records)+len(base.records) > recordsMax {
 		panic("journal.rebuild: records exceed the read bound")
 	}
 	if j.task.Attempt < 1 {
 		panic("journal.rebuild: attempt must be >= 1")
 	}
-	j.state, j.records, j.committed, j.resume, j.placed = nil, nil, nil, "", nil
+	j.state, j.records, j.committed, j.resume = base.state, nil, nil, ""
+	j.placed = append([]InputPlaced(nil), base.placed...)
 	j.restarts, j.lastCommitSeq = 0, 0
+	inherited := len(base.records)
+	records = append(append([]Record(nil), base.records...), records...)
 	for i := range records {
 		r := records[i]
-		if r.Type == TypeInputPlaced {
+		if r.Type == TypeInputPlaced && i >= inherited {
 			if p, ok := placedInput(r); ok {
 				j.placed = append(j.placed, p)
 			}

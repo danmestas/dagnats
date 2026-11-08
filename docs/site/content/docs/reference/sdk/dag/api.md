@@ -10,6 +10,8 @@ WorkflowBuilder provides a fluent DSL for constructing WorkflowDefs. Centralizin
 
 dag/duration\_json.go Duration fields decode from either integer nanoseconds \(what encoding/json writes for time.Duration, so every stored definition\) or a Go duration string such as "30s" \(what people write in workflow JSON\); see internal/durationjson. A type that embeds one of these inherits its UnmarshalJSON and needs its own to decode extra fields.
 
+dag/fork.go Forked runs \(\#810\). A fork is a new run of the parent's workflow, at the def version the parent was pinned to, with the parent's input. Every step the parent finished \(completed or skipped\) that is not the forked step, does not depend on it and is not an auxiliary handler is reused: its status and output are seeded into the new run, so it is not executed again. The forked step and everything downstream of it run afresh; the forked step's journal replays the parent's records up to the fork point \(journal.Fork\).
+
 Labels let external triggers stamp arbitrary key/value metadata on a WorkflowRun at start time \-\- an event source starts a run \*about\* something \(an order ID, a tenant, a region\) and needs to find or bulk cancel those runs later without standing up a shadow lookup table. The bounds here keep labels cheap to carry on every snapshot and cheap to scan when filtering.
 
 dag/priority.go Priority resolution for workflow run ordering.
@@ -17,6 +19,7 @@ dag/priority.go Priority resolution for workflow run ordering.
 ## Index
 
 - [Constants](<#constants>)
+- [func ApplyFork\(run \*WorkflowRun, start ForkStart\)](<#ApplyFork>)
 - [func CalculateDelay\(policy RetryPolicy, attempt int\) time.Duration](<#CalculateDelay>)
 - [func CronSleepLocation\(cfg SleepConfig, runInput json.RawMessage\) \(\*time.Location, error\)](<#CronSleepLocation>)
 - [func DefHash\(def WorkflowDef\) string](<#DefHash>)
@@ -24,6 +27,7 @@ dag/priority.go Priority resolution for workflow run ordering.
 - [func DefVersionKey\(name, hash string\) string](<#DefVersionKey>)
 - [func DefVersionKeyPrefix\(name string\) string](<#DefVersionKeyPrefix>)
 - [func ExtractDotPath\(path string, data \[\]byte\) \(any, error\)](<#ExtractDotPath>)
+- [func ForkReuse\(def WorkflowDef, parent WorkflowRun, stepID string\) map\[string\]StepState](<#ForkReuse>)
 - [func IsComplete\(def WorkflowDef, completed map\[string\]bool\) bool](<#IsComplete>)
 - [func IsDefVersionKey\(key string\) bool](<#IsDefVersionKey>)
 - [func LabelsMatch\(want, have map\[string\]string\) bool](<#LabelsMatch>)
@@ -48,6 +52,8 @@ dag/priority.go Priority resolution for workflow run ordering.
 - [type CancelOn](<#CancelOn>)
   - [func \(cancel \*CancelOn\) UnmarshalJSON\(data \[\]byte\) error](<#CancelOn.UnmarshalJSON>)
 - [type ConcurrencyLimit](<#ConcurrencyLimit>)
+- [type ForkOrigin](<#ForkOrigin>)
+- [type ForkStart](<#ForkStart>)
 - [type KeyedRateLimit](<#KeyedRateLimit>)
   - [func \(limit \*KeyedRateLimit\) UnmarshalJSON\(data \[\]byte\) error](<#KeyedRateLimit.UnmarshalJSON>)
 - [type MapConfig](<#MapConfig>)
@@ -208,6 +214,15 @@ const RetryAttemptCountMax = 100_000
 const RetryMultiplierMax = 100
 ```
 
+<a name="ApplyFork"></a>
+## func [ApplyFork](<https://github.com/danmestas/dagnats/blob/main/dag/fork.go#L92>)
+
+```go
+func ApplyFork(run *WorkflowRun, start ForkStart)
+```
+
+ApplyFork records the origin on a new run and seeds the reused step states. A reused state for a step the run does not have, or for the forked step itself, is ignored.
+
 <a name="CalculateDelay"></a>
 ## func [CalculateDelay](<https://github.com/danmestas/dagnats/blob/main/dag/retry.go#L97-L99>)
 
@@ -276,6 +291,15 @@ func ExtractDotPath(path string, data []byte) (any, error)
 ```
 
 ExtractDotPath extracts a value from JSON data using a dot\-separated path. The path walks nested objects: "data.user.id" accesses data\["user"\]\["id"\]. Returns the raw value \(string, number, bool, map, array, or nil\). Panics if path is empty \(programmer error\); returns error for missing keys.
+
+<a name="ForkReuse"></a>
+## func [ForkReuse](<https://github.com/danmestas/dagnats/blob/main/dag/fork.go#L30>)
+
+```go
+func ForkReuse(def WorkflowDef, parent WorkflowRun, stepID string) map[string]StepState
+```
+
+ForkReuse returns the parent's step states a fork at stepID reuses.
 
 <a name="IsComplete"></a>
 ## func [IsComplete](<https://github.com/danmestas/dagnats/blob/main/dag/resolve.go#L84-L86>)
@@ -516,6 +540,31 @@ ConcurrencyLimit controls parallel execution at workflow and step level.
 type ConcurrencyLimit struct {
     MaxRuns  int `json:"max_runs,omitempty"`
     MaxSteps int `json:"max_steps,omitempty"`
+}
+```
+
+<a name="ForkOrigin"></a>
+## type [ForkOrigin](<https://github.com/danmestas/dagnats/blob/main/dag/fork.go#L16-L20>)
+
+ForkOrigin names where a forked run came from: the parent run, the forked step and the parent journal sequence the fork replays to.
+
+```go
+type ForkOrigin struct {
+    RunID      string `json:"run_id"`
+    StepID     string `json:"step_id"`
+    JournalSeq uint64 `json:"journal_seq"`
+}
+```
+
+<a name="ForkStart"></a>
+## type [ForkStart](<https://github.com/danmestas/dagnats/blob/main/dag/fork.go#L24-L27>)
+
+ForkStart is the "fork" section of a forked run's workflow.started payload: the origin and the parent step states the run reuses.
+
+```go
+type ForkStart struct {
+    Origin ForkOrigin           `json:"origin"`
+    Reused map[string]StepState `json:"reused"`
 }
 ```
 
@@ -1819,7 +1868,7 @@ func (def *WorkflowDef) UnmarshalJSON(data []byte) error
 UnmarshalJSON accepts duration fields as Go duration strings \("30s"\) or integer nanoseconds.
 
 <a name="WorkflowRun"></a>
-## type [WorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L390-L461>)
+## type [WorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L390-L464>)
 
 WorkflowRun holds live state for a single execution of a WorkflowDef. Steps maps step ID to its current StepState; initialized to pending for all steps. Input preserves the original user\-supplied payload so retries can reuse it.
 
@@ -1837,13 +1886,16 @@ type WorkflowRun struct {
     // the same value for every run in a spawn tree (#377). Server-derived,
     // never worker-supplied. Additive: legacy snapshots deserialize to ""
     // and a run with RootRunID=="" self-roots (see rootRunIDOf).
-    RootRunID      string     `json:"root_run_id,omitempty"`
-    ParentStepID   string     `json:"parent_step_id,omitempty"`
-    Deadline       *time.Time `json:"deadline,omitempty"`
-    PriorityOffset int        `json:"priority_offset,omitempty"`
-    SingletonKey   string     `json:"singleton_key,omitempty"`
-    TraceParent    string     `json:"trace_parent,omitempty"`
-    CompletedAt    *time.Time `json:"completed_at,omitempty"`
+    RootRunID    string `json:"root_run_id,omitempty"`
+    ParentStepID string `json:"parent_step_id,omitempty"`
+    // ForkedFrom is set on a run started by POST /runs/{run}/fork
+    // (#810). Additive: other runs leave it nil.
+    ForkedFrom     *ForkOrigin `json:"forked_from,omitempty"`
+    Deadline       *time.Time  `json:"deadline,omitempty"`
+    PriorityOffset int         `json:"priority_offset,omitempty"`
+    SingletonKey   string      `json:"singleton_key,omitempty"`
+    TraceParent    string      `json:"trace_parent,omitempty"`
+    CompletedAt    *time.Time  `json:"completed_at,omitempty"`
     // Labels are caller-supplied key/value metadata set at start time
     // (#629). External triggers start runs *about* something (an order,
     // a tenant, a region) and need to find or bulk-cancel those runs
@@ -1899,7 +1951,7 @@ type WorkflowRun struct {
 ```
 
 <a name="NewWorkflowRun"></a>
-### func [NewWorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L466>)
+### func [NewWorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L469>)
 
 ```go
 func NewWorkflowRun(def WorkflowDef, runID string) WorkflowRun
@@ -1908,7 +1960,7 @@ func NewWorkflowRun(def WorkflowDef, runID string) WorkflowRun
 NewWorkflowRun constructs a WorkflowRun with all steps initialized to pending. runID must be non\-empty — callers are responsible for providing a unique ID \(e.g. nuid.Next\(\)\) before calling this constructor.
 
 <a name="WorkflowRun.EffectiveTime"></a>
-### func \(WorkflowRun\) [EffectiveTime](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L490>)
+### func \(WorkflowRun\) [EffectiveTime](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L493>)
 
 ```go
 func (r WorkflowRun) EffectiveTime() time.Time

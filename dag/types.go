@@ -400,13 +400,16 @@ type WorkflowRun struct {
 	// the same value for every run in a spawn tree (#377). Server-derived,
 	// never worker-supplied. Additive: legacy snapshots deserialize to ""
 	// and a run with RootRunID=="" self-roots (see rootRunIDOf).
-	RootRunID      string     `json:"root_run_id,omitempty"`
-	ParentStepID   string     `json:"parent_step_id,omitempty"`
-	Deadline       *time.Time `json:"deadline,omitempty"`
-	PriorityOffset int        `json:"priority_offset,omitempty"`
-	SingletonKey   string     `json:"singleton_key,omitempty"`
-	TraceParent    string     `json:"trace_parent,omitempty"`
-	CompletedAt    *time.Time `json:"completed_at,omitempty"`
+	RootRunID    string `json:"root_run_id,omitempty"`
+	ParentStepID string `json:"parent_step_id,omitempty"`
+	// ForkedFrom is set on a run started by POST /runs/{run}/fork
+	// (#810). Additive: other runs leave it nil.
+	ForkedFrom     *ForkOrigin `json:"forked_from,omitempty"`
+	Deadline       *time.Time  `json:"deadline,omitempty"`
+	PriorityOffset int         `json:"priority_offset,omitempty"`
+	SingletonKey   string      `json:"singleton_key,omitempty"`
+	TraceParent    string      `json:"trace_parent,omitempty"`
+	CompletedAt    *time.Time  `json:"completed_at,omitempty"`
 	// Labels are caller-supplied key/value metadata set at start time
 	// (#629). External triggers start runs *about* something (an order,
 	// a tenant, a region) and need to find or bulk-cancel those runs

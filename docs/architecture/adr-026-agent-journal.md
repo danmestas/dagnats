@@ -4,7 +4,7 @@
 **Deciders:** Dan Mestas
 **Depends on:** ADR-025
 **Reverses:** ADR-002's rejection of per-tool-call durability
-**Issues:** #804, #805, #807
+**Issues:** #804, #805, #807, #810
 
 ## Context
 
@@ -109,6 +109,7 @@ holds is that afterwards exactly one of them can still write.
 | `input.placed` | SDK | Inputs moved from the inbox into the conversation (ADR-027) |
 | `entry` | Handler | Application records, opaque to dagnats |
 | `commit` | SDK | Ends an iteration: next action and state |
+| `fork` | API | First record of a forked step's journal: the parent journal and sequence it replays (#810) |
 
 Each record is a JSON body. Its identity is in headers so a tail read can
 classify it without decoding the body: `Dagnats-Journal-Type`,
@@ -285,6 +286,50 @@ before they publish once the task has a claim. The outcomes map to
 statuses: `409 fenced` (the successor owns the task; nothing is
 acknowledged), `410 stale` and `410 committed` (the task is acknowledged;
 a committed attempt's event is republished), `503 not_provisioned`.
+
+### Forks
+
+*Added 2026-11-08 (#810).* `POST /runs/{run}/fork` with a step and a
+journal sequence starts a new run whose forked step resumes the parent
+step's conversation at that record. The API writes one `fork` record
+`{"parent_run_id","parent_step_id","parent_subject","parent_seq"}` as the
+first record of the new run's journal for the step (fenced on an empty
+subject), then starts the run. `Open` follows it: the parent's records up
+to and including `parent_seq` are read back, and the view a successor of
+the fork point's claim would have opened with becomes this journal's
+starting point. Its state is the parent's last committed state before the
+forked iteration; the forked iteration's records up to the point become
+iteration 0's history, restamped as iteration 0, attempt 1 for the fork
+point's attempt and 0 for an attempt it superseded, with the parent's
+claims dropped so they never count toward the restart limit. Replay then
+needs no new rule: recorded model responses and tool results before the
+point are reused, an unsafe intent left open at the point is answered as
+interrupted under the parent's key, and everything after it runs afresh.
+The bridge's `journal.view` and `load_checkpoint` come from the same
+`Open`, so a non-Go client replays a fork as the Go SDK does. A fork of a
+fork follows the chain iteratively, at most 16 deep. The checker pairs a
+forked step's tool results with the intents it inherited; its other
+invariants are the forked journal's own.
+
+A fork is a new run of the same workflow, at the def version the parent
+is pinned to, with the parent's input and labels. Re-running the steps
+before the forked step would repeat their side effects, so every parent
+step that finished (completed or skipped), is not the forked step, does
+not depend on it and is not an auxiliary handler is reused: the API puts
+those states in the start payload's `fork` section, so history records
+exactly what the run reused, and the engine seeds them into the new run
+before admission. Overriding the input is not offered: the reused outputs
+were computed from the parent's.
+
+Limits. A fork point is any record of the parent step's journal except a
+`commit` or a `fork`; to fork after an iteration, fork at the next
+iteration's claim. The parent's records must still be in `AGENT_JOURNAL`:
+nothing reads below the stream's first sequence, so a parent whose records
+were archived out of the stream cannot be forked. A program's journal is
+read through the engine relay, which serves only the program's own
+subject, so a forked step run by a program's worker cannot open its
+journal. Forking is admin only: the endpoints are on the global control
+plane, which a program's `api.p.<name>.*` permissions do not reach.
 
 ### Checker
 

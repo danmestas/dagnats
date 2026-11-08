@@ -1178,9 +1178,8 @@ func (o *Orchestrator) handleWorkflowStarted(
 	run := dag.NewWorkflowRun(wfDef, evt.RunID)
 	run.TraceParent = evt.TraceParent
 	run.RootRunID = run.RunID // top-level run is its own tree-root (#377)
-	run.Input = input
-	run.Labels = labels
-	run.TriggerDepth = triggerDepth
+	run.Input, run.Labels, run.TriggerDepth = input, labels, triggerDepth
+	applyForkStart(&run, evt.Payload)
 
 	admission, admitErr := o.admission.Admit(ctx, wfDef, run, input)
 	if errors.Is(admitErr, errAdmissionPermanent) {
