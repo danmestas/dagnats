@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`sdk/httpclient` is documented as a minimal example, not a reference client.** The #851 TypeScript client (`sdk/ts`) carries the whole bridge protocol; the Go client still lacks `failure_type`, heartbeat, journal actions and `inputs.place`, and maps every 409 to `ErrRunCancelled`. Its package comment says so and points Go workers at `worker` and other languages at `sdk/ts`.
 
+### Added
+
+- **`Running.Status()` reports the program's connection, for a host's health endpoint (#898).** It returns a `program.ConnStatus` value: `Program`, `State` (`ConnConnected`, `ConnReconnecting` or `ConnClosed`), `ServerURL`, `ServerName`, `ServerVersion`, `ClusterName` (empty unless connected), `Reconnects` and `LastError`, plus `Connected()`. It describes the program's own connection, not the anonymous registration one Run dials first, is safe to call concurrently, and reports `ConnClosed` after `Stop`. It is a value rather than the `*nats.Conn` so a host cannot publish under the program's identity or bypass Run's inbox and auth guarantees. Worker consume health (#885) is not in it yet.
+
 ## [0.0.58] - 2026-11-08
 
 ### Fixed
