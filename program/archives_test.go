@@ -82,7 +82,7 @@ func TestPermissionsGranted_ArchiveIsDeclaredAndGranted(t *testing.T) {
 		t.Fatalf("EffectiveArchives = %v, want [AGENT_JOURNAL]", got)
 	}
 	base := program.PermissionsFor(m)
-	perms := program.PermissionsGranted(m, granted)
+	perms := program.PermissionsGranted(m, "", granted)
 	for _, s := range archiveSubjects("AGENT_JOURNAL") {
 		if !slices.Contains(perms.Publish.Allow, s) {
 			t.Errorf("declared+granted: %q missing", s)
@@ -107,11 +107,14 @@ func TestPermissionsGranted_ArchiveIsDeclaredAndGranted(t *testing.T) {
 			t.Errorf("archive grant widened to %q", s)
 		}
 	}
-	if !slices.Equal(perms.Subscribe.Allow, base.Subscribe.Allow) {
-		t.Error("archive grant changed subscribe permissions")
+	// Subscribe gains only the range subject the archiver answers on.
+	rangeSubject := "lode.stream.default.AGENT_JOURNAL.range"
+	if !slices.Equal(perms.Subscribe.Allow, append(slices.Clone(base.Subscribe.Allow), rangeSubject)) {
+		t.Errorf("archive grant subscribe = %v, want the base plus %s",
+			perms.Subscribe.Allow, rangeSubject)
 	}
 	// Without a grant, PermissionsFor and PermissionsGranted agree.
-	if !slices.Equal(program.PermissionsGranted(m, nil).Publish.Allow, base.Publish.Allow) {
+	if !slices.Equal(program.PermissionsGranted(m, "", nil).Publish.Allow, base.Publish.Allow) {
 		t.Error("PermissionsGranted(m, nil) differs from PermissionsFor(m)")
 	}
 }

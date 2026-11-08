@@ -74,7 +74,7 @@ func readSubject(
 	if err != nil {
 		return nil, err
 	}
-	return records, nil
+	return withArchived(ctx, js, runID, stepID, tailSeq, records)
 }
 
 // subjectRead is one bounded read of a subject: from its start up to

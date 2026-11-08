@@ -45,7 +45,7 @@ func TestPossession_NewRegistrationIsPendingUntilConfirmed(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 	pending := f.record(t, "notify")
-	perms := UserPermissions(pending, nil)
+	perms := UserPermissions(pending, "", nil)
 	if !pending.Pending || !slices.Equal(perms.Publish.Allow,
 		[]string{program.ConfirmSubject(req.PublicKey)}) {
 		t.Fatalf("pending record %v, publish %v; want only its confirm subject",
@@ -63,7 +63,7 @@ func TestPossession_NewRegistrationIsPendingUntilConfirmed(t *testing.T) {
 		t.Fatalf("the confirmed program's stream was not provisioned: %v", err)
 	}
 	confirmed := f.record(t, "notify")
-	perms = UserPermissions(confirmed, nil)
+	perms = UserPermissions(confirmed, "", nil)
 	if confirmed.Pending || len(perms.Publish.Allow) < 10 ||
 		!slices.Contains(perms.Publish.Allow, program.ConfirmSubject(req.PublicKey)) {
 		t.Fatalf("confirmed record %v; want its full permissions plus confirm", confirmed.Pending)

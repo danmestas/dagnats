@@ -154,6 +154,16 @@ func serveJournalPage(
 ) {
 	ctx, cancel := context.WithTimeout(r.Context(), runLookupTimeout)
 	defer cancel()
+	// Records purged below FirstSeq come from the archive first; the
+	// consumer then starts at the first record JetStream still holds.
+	records, err := journal.ArchivedPrefix(ctx, svc.js, runID, stepID, from, journalPageMax)
+	if err != nil {
+		writeJournalReadError(w, err)
+		return
+	}
+	if records == nil {
+		records = make([]journal.Record, 0, 16)
+	}
 	cons, err := natsutil.OpenConsumer(
 		ctx, svc.js, natsutil.AgentJournalStream, journalConsumerSpec(runID, stepID, from),
 	)
@@ -162,7 +172,6 @@ func serveJournalPage(
 		return
 	}
 	defer cons.Close()
-	records := make([]journal.Record, 0, 16)
 	for len(records) < journalPageMax && ctx.Err() == nil {
 		msg, err := cons.Next(jetstream.FetchMaxWait(logsFetchIdleWait))
 		if err != nil {
@@ -215,6 +224,11 @@ func writeJournalReadError(w http.ResponseWriter, cause error) {
 		writeJSONError(w, http.StatusServiceUnavailable, "journal stream unavailable")
 		return
 	}
+	if errors.Is(cause, journal.ErrArchive) || errors.Is(cause, journal.ErrDiscontinuous) {
+		slog.Warn("journal records purged from AGENT_JOURNAL could not be read", "error", cause)
+		writeJSONError(w, http.StatusServiceUnavailable, cause.Error())
+		return
+	}
 	http.Error(w, cause.Error(), http.StatusInternalServerError)
 }
 
@@ -235,6 +249,11 @@ func serveJournalFollow(
 	defer release()
 	ctx, cancel := context.WithTimeout(r.Context(), followDurationMax)
 	defer cancel()
+	archived, err := journal.ArchivedPrefix(ctx, svc.js, runID, stepID, from, 0)
+	if err != nil {
+		writeJournalReadError(w, err)
+		return
+	}
 	cons, err := natsutil.OpenConsumer(
 		ctx, svc.js, natsutil.AgentJournalStream, journalConsumerSpec(runID, stepID, from),
 	)
@@ -244,6 +263,11 @@ func serveJournalFollow(
 	}
 	defer cons.Close()
 	startSSE(w, flusher)
+	for _, record := range archived {
+		if !writeJournalRecordEvent(w, flusher, record) {
+			return
+		}
+	}
 	runJournalFollowLoop(ctx, svc, w, flusher, cons, runID, stepID)
 }
 

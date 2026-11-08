@@ -2,9 +2,13 @@
 // boundary so out-of-tree modules can register external trigger types and watch
 // trigger lifecycle events without importing internal packages.
 //
-// All types in this package are pure data shapes — no behaviour wiring lives
-// here. They are the contract between the dagnats core SDK (worker package) and
-// add-on modules such as dagnats-ci.
+// The trigger types are pure data shapes, the contract between the dagnats
+// core SDK (worker package) and add-on modules such as dagnats-ci. The one
+// piece of behaviour here is the archive range protocol (archive.go): the
+// ArchiveReader seam an archiver such as lode answers and dagnats reads
+// purged stream records through, and its wire types. The NATS
+// request/reply implementation is dagnatsext/archivenats, so this package
+// stays free of the NATS client.
 package dagnatsext
 
 import (

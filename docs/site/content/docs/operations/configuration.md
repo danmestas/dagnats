@@ -313,6 +313,30 @@ other stream metadata it did not set) across restarts; an older binary's
 provisioning may wipe them, which an archiver reads as "purge nothing"
 until the leader rewrites them on its next pass.
 
+### Reading purged journal records from the archive
+
+Once an archiver purges `AGENT_JOURNAL` below what it archived, a journal read can need records that are no longer in JetStream. dagnats reads them back from the archive over NATS request/reply, so a step's replay is the same before and after the purge. Nothing purges `AGENT_JOURNAL` until the archiver is told to (lode keeps it off by default); until then this path is never taken.
+
+**When the archive is read.** Every journal record carries `Nats-Expected-Last-Subject-Sequence`, the step's previous record, which the server enforced when it stored it. A read that finds its first record naming a predecessor it does not hold asks the archive for the step's subject from sequence 1 up to the stream's `FirstSeq` (exclusive), then continues from JetStream at `FirstSeq`. The same chain proves the two parts meet: every record must name the one before it, so a missing or duplicated record at the boundary fails the read. A journal JetStream still holds in full never reaches the archive. Every reader does this: `journal.Open` and `journal.Read` (Go workers, `dagnats journal check`, forks, the engine's and the API's inputs checks), the bridge's `journal.view`, `journal.read` and `load_checkpoint`, the engine relay's `journal.view` for a program's worker, and `GET /runs/{run}/steps/{step}/journal` (pages and follows).
+
+**Failure is loud.** The read fails, naming the run and step, with `journal.ErrArchive` when no archive answers, the archive answers `not_archived` (it cannot confirm continuity up to `FirstSeq`) or `unknown_epoch`, reports any gap in the range (a must-keep stream cannot replay across a loss), stays `busy` through its bounded retries (5, backing off 0.5s more each time), or times out (15s a request, 2 minutes a read: object storage is slow, so the archive read has its own deadline, not the caller's; an explicit cancel still stops it). A broken chain is `journal.ErrDiscontinuous`. A worker never replays a journal with records missing. The bridge answers the action with an error, the program relay refuses with `archive`, and the client read answers 503. A step whose every record was purged reads as empty, because no record is left to name a predecessor, so an archiver must never purge all of a live step's records.
+
+**The range protocol.** Subject `lode.stream.<domain>.<stream>.range`, where `<domain>` is the server's `jetstream_domain`, or `default` when it has none (`dagnatsext.ArchiveRangeSubject`). The server logs a warning at startup when `jetstream_domain` is literally `default`, since it then shares the subject with every server that has no domain. Request:
+
+```json
+{"epoch":1700000000123456789,"subject":"journal.<run>.<step>","from_seq":1,"to_seq":4812,"offset":0,"max_bytes":524288}
+```
+
+`epoch` is the stream's `StreamInfo.Created` in Unix nanoseconds, an integer, never a float. `to_seq` is exclusive and is the stream's `FirstSeq`. `offset` is the byte offset into the message at `from_seq`. Reply:
+
+```json
+{"messages":[{"seq":17,"subject":"journal.<run>.<step>","time":"2026-11-01T12:00:00.123456Z","headers":{"Dagnats-Journal-Type":["claim"]},"data":"<base64>"}],"next_seq":18,"next_offset":0,"more":false,"gaps":[],"done":false}
+```
+
+`more:true` means the last message is split: dagnats asks again at `next_seq` with `next_offset` and joins the parts. An error reply is `{"error":"...","code":"unknown_epoch|not_archived|busy|..."}`, and `not_archived` carries `"floor":N`. Message times have microsecond precision. Go code uses the protocol through `dagnatsext.ArchiveReader` (`archivenats.NewReader`), which pages, joins split messages and retries `busy`, and returns complete messages in sequence order.
+
+**Who may speak it.** Only dagnats asks, as its own root connection, after the read's ownership check (a program reads only its own step's journal through the relay; a bridge worker only its claimed task's). No program may publish under `lode.stream.>`: `program.PermissionsGranted` denies it to every program, whatever its name, protocols or `Archives`. A program with an effective archive grant on stream `<S>` may subscribe `lode.stream.<domain>.<S>.range` and answers on the requester's `_INBOX.>`, which every program may publish. A program with no effective archive grant is denied subscribe on `lode.stream.>`, so it cannot pose as an archive.
+
 ## Agent-runtime limits & retention
 
 Agent runtimes (runtime-generated workflows) are bounded per generation tree (root run). The following limits are enforced at capability boundaries and return errors the agent loop can handle:

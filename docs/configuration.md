@@ -231,6 +231,8 @@ policy:
 
 On each effective stream `<S>` the program gets: `$JS.API.STREAM.INFO.<S>` and `$JS.API.STREAM.PURGE.<S>`; `$JS.API.CONSUMER.LIST.<S>`, `$JS.API.CONSUMER.NAMES.<S>` and `$JS.API.CONSUMER.INFO.<S>.*` (every consumer, for ack floors); and `$JS.API.CONSUMER.CREATE.<S>.<program>_archive` (and `.>` after it, the filtered form), `$JS.API.CONSUMER.MSG.NEXT.<S>.<program>_archive` and `$JS.API.CONSUMER.DELETE.<S>.<program>_archive`. Nothing wider: no acks, no publish on the stream's subjects. The purge right covers the whole stream (its body is not checkable by subject), so grant it only to a program you trust with the stream's data.
 
+The program may also subscribe `lode.stream.<domain>.<S>.range` (`<domain>` is `jetstream_domain`, or `default` without one) to answer dagnats' reads of records purged from `<S>`. No program may publish under `lode.stream.>`, and a program with no archive grant may not subscribe there. When a journal read needs records below `AGENT_JOURNAL`'s first sequence, dagnats reads them from that subject and fails the read, naming the run and step, if the archive cannot supply all of them. The protocol and its failure modes are in the operations configuration page ("Reading purged journal records from the archive"). A `jetstream_domain` of `default` is allowed but logs a startup warning: it shares the subject of servers with no domain.
+
 ### Console, bridge, and logs
 
 | Variable | Default | Notes |

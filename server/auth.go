@@ -71,7 +71,7 @@ func applyAuth(opts *natsserver.Options, login, password string) {
 		})
 	}
 	opts.NoAuthUser = anonymous.Username
-	opts.Nkeys = programUsers(nil, nil)
+	opts.Nkeys = programUsers(nil, nil, opts.JetStreamDomain)
 	system := natsserver.NewAccount(systemAccountName)
 	opts.Accounts = append(opts.Accounts, system)
 	opts.SystemAccount = systemAccountName
@@ -158,7 +158,7 @@ var placeholderNkey = func() string {
 // PermissionsGranted its manifest and its operator archive grant, in a
 // stable order, plus the placeholder.
 func programUsers(
-	records []programs.Record, archives map[string][]string,
+	records []programs.Record, archives map[string][]string, domain string,
 ) []*natsserver.NkeyUser {
 	sorted := slices.Clone(records)
 	slices.SortFunc(sorted, func(a, b programs.Record) int {
@@ -173,7 +173,7 @@ func programUsers(
 		users = append(users, &natsserver.NkeyUser{
 			Nkey: record.PublicKey,
 			Permissions: serverPermissions(
-				programs.UserPermissions(record, archives[record.Manifest.Name]),
+				programs.UserPermissions(record, domain, archives[record.Manifest.Name]),
 			),
 			AllowedConnectionTypes: clientConnectionTypes(),
 		})
@@ -278,7 +278,7 @@ func (u *userSet) put(name string, record programs.Record, deleted bool) error {
 		return nil
 	}
 	granted := u.archives[name]
-	if !deleted && exists && !u.dirty && sameUser(current, record, granted) {
+	if !deleted && exists && !u.dirty && sameUser(current, record, u.domain(), granted) {
 		return nil
 	}
 	// The change is committed only once the server took it: a failed
@@ -356,15 +356,30 @@ func logArchiveMismatch(record programs.Record, granted []string) {
 
 // sameUser reports whether two records give the same NATS user, so a
 // watch replay of a write this node already applied costs no reload.
-func sameUser(a, b programs.Record, archives []string) bool {
+func sameUser(a, b programs.Record, domain string, archives []string) bool {
 	if a.PublicKey != b.PublicKey {
 		return false
 	}
-	pa, pb := programs.UserPermissions(a, archives), programs.UserPermissions(b, archives)
+	pa := programs.UserPermissions(a, domain, archives)
+	pb := programs.UserPermissions(b, domain, archives)
 	return slices.Equal(pa.Publish.Allow, pb.Publish.Allow) &&
 		slices.Equal(pa.Publish.Deny, pb.Publish.Deny) &&
 		slices.Equal(pa.Subscribe.Allow, pb.Subscribe.Allow) &&
 		slices.Equal(pa.Subscribe.Deny, pb.Subscribe.Deny)
+}
+
+// domain is the server's JetStream domain, which names the archive
+// range subject an archiver may answer on; "" when the options are not
+// known yet.
+func (u *userSet) domain() string {
+	if u.ns == nil {
+		panic("userSet.domain: ns must not be nil")
+	}
+	value, ok := liveOptions.Load(u.ns)
+	if !ok {
+		return ""
+	}
+	return value.(*natsserver.Options).JetStreamDomain
 }
 
 func (u *userSet) reloadLocked(
@@ -382,7 +397,7 @@ func (u *userSet) reloadLocked(
 	for _, record := range set {
 		records = append(records, record)
 	}
-	next.Nkeys = programUsers(records, archives)
+	next.Nkeys = programUsers(records, archives, next.JetStreamDomain)
 	if err := u.ns.ReloadOptions(next); err != nil {
 		return fmt.Errorf("reload NATS users: %w", err)
 	}

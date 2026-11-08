@@ -65,6 +65,10 @@ const (
 	// RefusalInternal: the relay failed on the engine's side (a recovered
 	// panic). The request is not applied.
 	RefusalInternal = "internal"
+	// RefusalArchive: the journal record the view needs was purged from
+	// JetStream and the archive could not supply it (journal.ErrArchive,
+	// journal.ErrDiscontinuous). The worker must not replay.
+	RefusalArchive = "archive"
 	// The inputs store's own outcomes, carried so the worker's placer can
 	// tell them apart (inputs.ErrConflict, ErrNotFound, ErrNotQueued).
 	RefusalInputsConflict  = "inputs_conflict"

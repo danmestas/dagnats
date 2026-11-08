@@ -69,7 +69,7 @@ Programs on a dagnats are trusted: today they are all the operator's own, the sa
   - [func OptionsFromEnv\(name string\) Options](<#OptionsFromEnv>)
 - [type Permissions](<#Permissions>)
   - [func PermissionsFor\(m Manifest\) Permissions](<#PermissionsFor>)
-  - [func PermissionsGranted\(m Manifest, archives \[\]string\) Permissions](<#PermissionsGranted>)
+  - [func PermissionsGranted\(m Manifest, domain string, archives \[\]string\) Permissions](<#PermissionsGranted>)
 - [type Program](<#Program>)
 - [type RegisterReply](<#RegisterReply>)
 - [type RegisterRequest](<#RegisterRequest>)
@@ -136,7 +136,7 @@ var ErrRelayUnavailable = natsutil.ErrRelayUnavailable
 ```
 
 <a name="ArchiveConsumer"></a>
-## func [ArchiveConsumer](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L218>)
+## func [ArchiveConsumer](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L263>)
 
 ```go
 func ArchiveConsumer(name string) string
@@ -167,7 +167,7 @@ func ConfirmSubject(publicKey string) string
 ConfirmSubject is the subject the program with publicKey confirms on.
 
 <a name="EffectiveArchives"></a>
-## func [EffectiveArchives](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L196>)
+## func [EffectiveArchives](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L241>)
 
 ```go
 func EffectiveArchives(m Manifest, granted []string) []string
@@ -552,7 +552,7 @@ func OptionsFromEnv(name string) Options
 OptionsFromEnv reads \<NAME\>\_DAGNATS\_URL, \<NAME\>\_SEED and \<NAME\>\_JOIN\_KEY, with NAME the program name in upper case: notify reads NOTIFY\_DAGNATS\_URL. The URL defaults to nats://127.0.0.1:4222 and the seed to ./\<name\>.seed.
 
 <a name="Permissions"></a>
-## type [Permissions](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L30-L33>)
+## type [Permissions](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L31-L34>)
 
 Permissions is a plain permission set for one program's NATS user. The server converts it to nats\-server's own type, so a program never links nats\-server.
 
@@ -566,7 +566,7 @@ type Permissions struct {
 ```
 
 <a name="PermissionsFor"></a>
-### func [PermissionsFor](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L77>)
+### func [PermissionsFor](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L78>)
 
 ```go
 func PermissionsFor(m Manifest) Permissions
@@ -578,16 +578,18 @@ These are guardrails against a trusted program's mistakes, not an isolation boun
 
 Residual: info, next, ack and create on a STICKY\_TASKS consumer are granted for any consumer name, so a program holding a sibling's name could pull, ack or reconfigure it. The names are unguessable and never disclosed \(stickyPublish\), and TestPermissions\_StickyConsumerNamesNotDisclosed pins the disclosure surfaces.
 
-PermissionsFor carries no operator grant, so no Archives rights: it is PermissionsGranted\(m, nil\).
+PermissionsFor carries no operator grant, so no Archives rights: it is PermissionsGranted\(m, "", nil\).
 
 <a name="PermissionsGranted"></a>
-### func [PermissionsGranted](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L86>)
+### func [PermissionsGranted](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L94>)
 
 ```go
-func PermissionsGranted(m Manifest, archives []string) Permissions
+func PermissionsGranted(m Manifest, domain string, archives []string) Permissions
 ```
 
-PermissionsGranted is PermissionsFor plus the archive rights \(archivePublish\) on each stream in EffectiveArchives\(m, archives\): archives is what the operator granted this program in dagnats.yaml \(policy.archives\), so a stream the manifest declares but the operator has not granted, or the reverse, yields nothing.
+PermissionsGranted is PermissionsFor plus the archive rights \(archivePublish\) on each stream in EffectiveArchives\(m, archives\): archives is what the operator granted this program in dagnats.yaml \(policy.archives\), so a stream the manifest declares but the operator has not granted, or the reverse, yields nothing. domain is the server's JetStream domain \("" for none\), which names the range subject an archiver answers on \(archiveRange\).
+
+Every program is denied publish under "lode.stream.\>", whatever its name or protocols grant: only dagnats itself asks an archive for records, after its own ownership checks, and an archive's answer is trusted as the journal's history.
 
 <a name="Program"></a>
 ## type [Program](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L133-L141>)
@@ -701,7 +703,7 @@ type StreamSpec struct {
 ```
 
 <a name="SubjectPermission"></a>
-## type [SubjectPermission](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L14-L17>)
+## type [SubjectPermission](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L15-L18>)
 
 SubjectPermission is one direction's allow and deny subject lists, with NATS wildcard semantics. A subject is permitted when an Allow entry matches it and no Deny entry does.
 

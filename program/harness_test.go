@@ -117,7 +117,7 @@ func startFixtureGranted(
 		f.keys[m.Name] = key
 		opts.Nkeys = append(opts.Nkeys, &natsserver.NkeyUser{
 			Nkey:        key.PublicKey(),
-			Permissions: serverPermissions(program.PermissionsGranted(m, archives[m.Name])),
+			Permissions: serverPermissions(program.PermissionsGranted(m, "", archives[m.Name])),
 		})
 	}
 	ns, err := natsserver.NewServer(opts)

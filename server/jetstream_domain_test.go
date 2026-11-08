@@ -41,6 +41,23 @@ func TestJetStreamDomainConfig_DefaultFileAndEnv(t *testing.T) {
 	}
 }
 
+// A domain named "default" shares the archive range subject of every
+// server without a domain (dagnatsext.ArchiveDefaultDomain): allowed,
+// but warned about at startup.
+func TestJetStreamDomain_DefaultSharesTheArchiveSubject(t *testing.T) {
+	if !sharesArchiveDomain("default") {
+		t.Error(`domain "default" must be reported as sharing the archive subject`)
+	}
+	for _, domain := range []string{"", "eu", "Default", "default2"} {
+		if sharesArchiveDomain(domain) {
+			t.Errorf("domain %q reported as sharing the archive subject", domain)
+		}
+	}
+	if err := validateJetStreamDomain("default"); err != nil {
+		t.Errorf(`domain "default" must stay valid: %v`, err)
+	}
+}
+
 func TestJetStreamDomainConfig_RejectsNonTokens(t *testing.T) {
 	cases := []struct{ value, reason string }{
 		{"e.mac", "contains a dot"},

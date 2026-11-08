@@ -26,6 +26,8 @@ A Journal is one claim on one dispatch of a step. Open reads the tail from the s
 
 - [Constants](<#constants>)
 - [Variables](<#variables>)
+- [func ArchivedBefore\(ctx context.Context, js jetstream.JetStream, subject string, from uint64, live \*jetstream.RawStreamMsg, limit int\) \(\[\]dagnatsext.ArchivedMessage, error\)](<#ArchivedBefore>)
+- [func CheckContinuity\(records \[\]Record, from uint64\) error](<#CheckContinuity>)
 - [func MsgID\(task Task, index int\) string](<#MsgID>)
 - [func ProtectedFloor\(ctx context.Context, js jetstream.JetStream, listRuns func\(context.Context\) \(\[\]string, error\)\) \(uint64, error\)](<#ProtectedFloor>)
 - [func WriteFork\(ctx context.Context, js jetstream.JetStream, pub \*natsutil.TracingPublisher, runID string, fork Fork\) \(uint64, error\)](<#WriteFork>)
@@ -57,6 +59,7 @@ A Journal is one claim on one dispatch of a step. Open reads the tail from the s
 - [type ModelResponse](<#ModelResponse>)
 - [type Pause](<#Pause>)
 - [type Record](<#Record>)
+  - [func ArchivedPrefix\(ctx context.Context, js jetstream.JetStream, runID, stepID string, from uint64, limit int\) \(\[\]Record, error\)](<#ArchivedPrefix>)
   - [func DecodeMsg\(msg jetstream.Msg\) \(Record, error\)](<#DecodeMsg>)
   - [func Read\(ctx context.Context, js jetstream.JetStream, runID, stepID string\) \(\[\]Record, error\)](<#Read>)
 - [type Replay](<#Replay>)
@@ -130,6 +133,21 @@ const TypeFork = "fork"
 
 ## Variables
 
+<a name="ErrArchive"></a>
+
+```go
+var (
+    // ErrArchive: a journal read needed records below the stream's
+    // FirstSeq and the archive could not supply all of them (no
+    // archive, not archived, unknown epoch, a gap, busy, timeout).
+    ErrArchive = errors.New("journal: records purged from JetStream could not be read " +
+        "from the archive")
+    // ErrDiscontinuous: a record names a predecessor the read does not
+    // hold, or the records are out of order. Replay cannot be trusted.
+    ErrDiscontinuous = errors.New("journal: record chain is broken")
+)
+```
+
 <a name="ErrForkNoJournal"></a>Fork errors.
 
 ```go
@@ -183,8 +201,26 @@ var ErrFloorOverBudget = errors.New("journal: protected floor pass is over its b
 var ErrReplayMismatch = errors.New("journal: tool call does not match the recorded call")
 ```
 
+<a name="ArchivedBefore"></a>
+## func [ArchivedBefore](<https://github.com/danmestas/dagnats/blob/main/journal/archive.go#L94-L97>)
+
+```go
+func ArchivedBefore(ctx context.Context, js jetstream.JetStream, subject string, from uint64, live *jetstream.RawStreamMsg, limit int) ([]dagnatsext.ArchivedMessage, error)
+```
+
+ArchivedBefore returns the archived messages of subject from sequence from up to the live record live, which JetStream still holds: nothing when live's predecessor is below from, so the read needs no archive. limit bounds the messages \(0: recordsMax\). Without a limit cutting it short the last one must be live's predecessor. For the engine relay, which answers a program's journal reads; Read and Open use it inside.
+
+<a name="CheckContinuity"></a>
+## func [CheckContinuity](<https://github.com/danmestas/dagnats/blob/main/journal/archive.go#L62>)
+
+```go
+func CheckContinuity(records []Record, from uint64) error
+```
+
+CheckContinuity verifies that records, read from sequence from, form an unbroken chain on their subject: each record's predecessor is the record before it, and the first one's is below from. A record that carries no predecessor header is not checked against its neighbour.
+
 <a name="MsgID"></a>
-## func [MsgID](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L259>)
+## func [MsgID](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L264>)
 
 ```go
 func MsgID(task Task, index int) string
@@ -211,7 +247,7 @@ func WriteFork(ctx context.Context, js jetstream.JetStream, pub *natsutil.Tracin
 WriteFork checks that fork names a fork point in a parent journal, then writes the fork record as the first record of runID's journal for the parent's step. It returns the record's sequence.
 
 <a name="Claim"></a>
-## type [Claim](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L169-L175>)
+## type [Claim](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L174-L180>)
 
 Claim is the body of a claim record.
 
@@ -226,7 +262,7 @@ type Claim struct {
 ```
 
 <a name="Commit"></a>
-## type [Commit](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L185-L195>)
+## type [Commit](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L190-L200>)
 
 Commit is the body of a commit record: the iteration's outcome and the state the next iteration starts from.
 
@@ -274,7 +310,7 @@ type InputPlaced struct {
 ```
 
 <a name="Journal"></a>
-## type [Journal](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L203-L251>)
+## type [Journal](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L208-L256>)
 
 Journal is one claim on one dispatch of a step. A handle belongs to one goroutine: replay matches tool and model calls by position, so calls issued from several goroutines would replay in another order. A handler running a model's parallel tool calls issues them through the journal one at a time. Concurrent use panics; a tool function may call back into the journal from the goroutine that owns it.
 
@@ -285,7 +321,7 @@ type Journal struct {
 ```
 
 <a name="Open"></a>
-### func [Open](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L278-L281>)
+### func [Open](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L283-L286>)
 
 ```go
 func Open(ctx context.Context, js jetstream.JetStream, pub *natsutil.TracingPublisher, task Task) (*Journal, error)
@@ -294,7 +330,7 @@ func Open(ctx context.Context, js jetstream.JetStream, pub *natsutil.TracingPubl
 Open claims task's dispatch. It returns ErrStale when the tail belongs to a later iteration \(nothing written\), ErrFenced when a rival claim for the same iteration won, and a journal whose Committed reports this attempt's own commit when the previous holder crashed between committing and publishing \(no claim is appended then\).
 
 <a name="Journal.Append"></a>
-### func \(\*Journal\) [Append](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L460-L462>)
+### func \(\*Journal\) [Append](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L465-L467>)
 
 ```go
 func (j *Journal) Append(ctx context.Context, recordType string, data []byte) (uint64, error)
@@ -303,7 +339,7 @@ func (j *Journal) Append(ctx context.Context, recordType string, data []byte) (u
 Append writes a record of recordType with data as its body.
 
 <a name="Journal.Commit"></a>
-### func \(\*Journal\) [Commit](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L496>)
+### func \(\*Journal\) [Commit](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L501>)
 
 ```go
 func (j *Journal) Commit(ctx context.Context, c Commit) (uint64, error)
@@ -312,7 +348,7 @@ func (j *Journal) Commit(ctx context.Context, c Commit) (uint64, error)
 Commit ends the iteration with one record: the action its lifecycle event will carry and the state the next iteration starts from. One message, not an atomic batch \(ADR\-026\). After it nothing more may be appended under this claim.
 
 <a name="Journal.Committed"></a>
-### func \(\*Journal\) [Committed](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L434>)
+### func \(\*Journal\) [Committed](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L439>)
 
 ```go
 func (j *Journal) Committed() (Commit, bool)
@@ -321,7 +357,7 @@ func (j *Journal) Committed() (Commit, bool)
 Committed returns this attempt's own commit: the one Open found, or the one Commit stored.
 
 <a name="Journal.CommittedSeq"></a>
-### func \(\*Journal\) [CommittedSeq](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L443>)
+### func \(\*Journal\) [CommittedSeq](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L448>)
 
 ```go
 func (j *Journal) CommittedSeq() uint64
@@ -330,7 +366,7 @@ func (j *Journal) CommittedSeq() uint64
 CommittedSeq returns the journal sequence of the commit Committed reports, 0 when there is none.
 
 <a name="Journal.Fenced"></a>
-### func \(\*Journal\) [Fenced](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L420>)
+### func \(\*Journal\) [Fenced](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L425>)
 
 ```go
 func (j *Journal) Fenced() bool
@@ -357,7 +393,7 @@ func (j *Journal) Model(ctx context.Context, fn ModelFunc) ([]byte, error)
 Model requests one model response durably: the response a previous holder of this attempt recorded for the call at this position is returned without calling fn; otherwise fn runs and its response is appended as model.response. A request that fails records nothing and leaves the position free, and a new attempt of the iteration requests afresh. Streaming tokens are not the journal's business: PutStream is a non\-durable preview, and a crash mid\-stream re\-sends the request on the next delivery. Model must be called from the goroutine that owns the handle.
 
 <a name="Journal.Pause"></a>
-### func \(\*Journal\) [Pause](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L475-L477>)
+### func \(\*Journal\) [Pause](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L480-L482>)
 
 ```go
 func (j *Journal) Pause(ctx context.Context, name string, duration time.Duration) (uint64, error)
@@ -384,7 +420,7 @@ func (j *Journal) PlacedInputs() []InputPlaced
 PlacedInputs returns every placement in journal order, with the iteration each joined.
 
 <a name="Journal.Records"></a>
-### func \(\*Journal\) [Records](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L430>)
+### func \(\*Journal\) [Records](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L435>)
 
 ```go
 func (j *Journal) Records() []Record
@@ -393,7 +429,7 @@ func (j *Journal) Records() []Record
 Records returns this iteration's records written before this claim, in journal order: what a recovering attempt may reuse. A forked journal's iteration 0 starts with the records it inherits from its parent \(see Fork\).
 
 <a name="Journal.Restarts"></a>
-### func \(\*Journal\) [Restarts](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L457>)
+### func \(\*Journal\) [Restarts](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L462>)
 
 ```go
 func (j *Journal) Restarts() int
@@ -402,7 +438,7 @@ func (j *Journal) Restarts() int
 Restarts returns how many claims on this iteration sat at the tail before this claim with nothing between them: deliveries that claimed and then made no progress. A pause, an entry, a tool or model record, or a commit resets the count; a claim after a commit \(a retry\) starts from 0. Feeds the worker's restart limit \(ADR\-028\).
 
 <a name="Journal.Resume"></a>
-### func \(\*Journal\) [Resume](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L447>)
+### func \(\*Journal\) [Resume](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L452>)
 
 ```go
 func (j *Journal) Resume() (string, bool)
@@ -420,7 +456,7 @@ func (j *Journal) Resync(ctx context.Context) error
 Resync checks, without writing, that no other claim has fenced this one since its last record, and returns ErrFenced if one has. A caller about to act on its view of the journal without appending \(the bridge's journal.view\) uses it to learn of the fence now rather than on its next append.
 
 <a name="Journal.Seq"></a>
-### func \(\*Journal\) [Seq](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L417>)
+### func \(\*Journal\) [Seq](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L422>)
 
 ```go
 func (j *Journal) Seq() uint64
@@ -429,7 +465,7 @@ func (j *Journal) Seq() uint64
 Seq returns the last journal sequence this writer saw.
 
 <a name="Journal.State"></a>
-### func \(\*Journal\) [State](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L424>)
+### func \(\*Journal\) [State](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L429>)
 
 ```go
 func (j *Journal) State() []byte
@@ -438,7 +474,7 @@ func (j *Journal) State() []byte
 State returns the state of the last commit before this iteration, nil when there is none.
 
 <a name="Journal.Task"></a>
-### func \(\*Journal\) [Task](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L392>)
+### func \(\*Journal\) [Task](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L397>)
 
 ```go
 func (j *Journal) Task() Task
@@ -479,7 +515,7 @@ type ModelResponse struct {
 ```
 
 <a name="Pause"></a>
-## type [Pause](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L178-L181>)
+## type [Pause](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L183-L186>)
 
 Pause is the body of a pause record.
 
@@ -491,7 +527,7 @@ type Pause struct {
 ```
 
 <a name="Record"></a>
-## type [Record](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L133-L144>)
+## type [Record](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L133-L149>)
 
 Record is one journal message.
 
@@ -507,8 +543,18 @@ type Record struct {
     Index         int             `json:"index"`
     Time          time.Time       `json:"time"`
     Data          json.RawMessage `json:"data,omitempty"`
+    // contains filtered or unexported fields
 }
 ```
+
+<a name="ArchivedPrefix"></a>
+### func [ArchivedPrefix](<https://github.com/danmestas/dagnats/blob/main/journal/archive.go#L268-L270>)
+
+```go
+func ArchivedPrefix(ctx context.Context, js jetstream.JetStream, runID, stepID string, from uint64, limit int) ([]Record, error)
+```
+
+ArchivedPrefix returns the step's records from sequence from that are only in the archive: empty when the first record at or after from is still in JetStream with no purged predecessor at or after from, or when JetStream holds nothing there. At most limit records \(0: recordsMax\). The client journal read \(GET .../journal\) serves them before its JetStream page.
 
 <a name="DecodeMsg"></a>
 ### func [DecodeMsg](<https://github.com/danmestas/dagnats/blob/main/journal/read.go#L217>)

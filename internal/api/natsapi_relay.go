@@ -231,13 +231,49 @@ func (n *NATSAPI) relayJournalView(
 	if err != nil {
 		return relayResult{}, err
 	}
+	if from > 0 {
+		return n.archivedOrLive(ctx, subject, from, raw)
+	}
+	return viewResult(raw.Sequence, raw.Header, raw.Data, raw.Time), nil
+}
+
+// archivedOrLive answers a view from sequence from: live, the first
+// record JetStream holds at or after from, unless the record before it
+// was purged and is at or after from too. Then the engine reads that
+// one from the archive, as root and only after the ownership check: a
+// program never asks the archive itself.
+func (n *NATSAPI) archivedOrLive(
+	ctx context.Context, subject string, from uint64, live *jetstream.RawStreamMsg,
+) (relayResult, error) {
+	if live == nil || from == 0 {
+		panic("archivedOrLive: live and from must be set")
+	}
+	archived, err := journal.ArchivedBefore(ctx, n.svc.js, subject, from, live, 1)
+	if err != nil {
+		return relayResult{}, refuse(natsutil.RefusalArchive, err.Error())
+	}
+	if len(archived) > 1 {
+		panic("archivedOrLive: the archive read returned more than its limit")
+	}
+	if len(archived) == 1 {
+		m := archived[0]
+		return viewResult(m.Seq, nats.Header(m.Headers), m.Data, m.Time), nil
+	}
+	return viewResult(live.Sequence, live.Header, live.Data, live.Time), nil
+}
+
+// viewResult is a journal.view reply carrying one stored record.
+func viewResult(seq uint64, header nats.Header, data []byte, at time.Time) relayResult {
+	if seq == 0 {
+		panic("viewResult: seq must be positive")
+	}
 	out := nats.Header{}
-	for key, values := range raw.Header {
+	for key, values := range header {
 		out[key] = append([]string(nil), values...)
 	}
-	out.Set(natsutil.RelaySeqHeader, strconv.FormatUint(raw.Sequence, 10))
-	out.Set(natsutil.RelayTimeHeader, raw.Time.UTC().Format(time.RFC3339Nano))
-	return relayResult{header: out, data: raw.Data}, nil
+	out.Set(natsutil.RelaySeqHeader, strconv.FormatUint(seq, 10))
+	out.Set(natsutil.RelayTimeHeader, at.UTC().Format(time.RFC3339Nano))
+	return relayResult{header: out, data: data}
 }
 
 // relayPublish publishes the admitted record and replies with its ack.

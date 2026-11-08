@@ -2,16 +2,29 @@ package server
 
 import (
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"runtime/debug"
 	"strings"
 	"time"
 
+	"github.com/danmestas/dagnats/dagnatsext"
 	natsserver "github.com/nats-io/nats-server/v2/server"
 )
 
 const natsReadyTimeout = 5 * time.Second
+
+// sharesArchiveDomain reports a domain spelled like the token the archive
+// range subject uses for a server with no domain. It is allowed, but two
+// such servers on one NATS network would answer each other's archive
+// reads.
+func sharesArchiveDomain(domain string) bool {
+	if len(domain) > jetStreamDomainMaxLength {
+		panic("sharesArchiveDomain: domain exceeds the validated bound")
+	}
+	return domain == dagnatsext.ArchiveDefaultDomain
+}
 
 const defaultClusterPort = 6222
 
@@ -38,6 +51,13 @@ func startNATS(cfg Config) (*natsserver.Server, error) {
 	}
 	if err := validateJetStreamDomain(cfg.JetStreamDomain); err != nil {
 		return nil, err
+	}
+	if sharesArchiveDomain(cfg.JetStreamDomain) {
+		slog.Warn("jetstream_domain is \"default\", the token the archive range subject "+
+			"uses for servers without a domain: this server's archive reads share "+
+			dagnatsext.ArchiveSubjectPrefix+dagnatsext.ArchiveDefaultDomain+
+			".<stream>.range with them",
+			"jetstream_domain", cfg.JetStreamDomain)
 	}
 
 	// Apply the soft Go memory limit (GOMEMLIMIT equivalent) so the runtime

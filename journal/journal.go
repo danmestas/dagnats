@@ -141,6 +141,11 @@ type Record struct {
 	Index         int             `json:"index"`
 	Time          time.Time       `json:"time"`
 	Data          json.RawMessage `json:"data,omitempty"`
+	// prev is the subject's sequence before this record, as the
+	// server enforced it on append; hasPrev is false for a message
+	// without the header. CheckContinuity reads them.
+	prev    uint64
+	hasPrev bool
 }
 
 // sameClaim reports whether r was written by the claim for task: the
@@ -706,7 +711,7 @@ func (j *Journal) relayedUpTo(ctx context.Context, tailSeq uint64) ([]Record, er
 			return viewErr
 		})
 		if err != nil {
-			return nil, fmt.Errorf("journal: read: %w", err)
+			return nil, relayedReadError(j.task, err)
 		}
 		if !found || raw.Seq > tailSeq {
 			break
@@ -714,7 +719,26 @@ func (j *Journal) relayedUpTo(ctx context.Context, tailSeq uint64) ([]Record, er
 		records = append(records, decodeRecord(raw.Seq, raw.Header, raw.Data, raw.Time))
 		from = raw.Seq + 1
 	}
+	// The relay falls through to the archive for purged records; the
+	// chain proves it served every one.
+	if err := CheckContinuity(records, 1); err != nil {
+		return nil, fmt.Errorf("run %s step %s: %w", j.task.RunID, j.task.StepID, err)
+	}
 	return records, nil
+}
+
+// relayedReadError wraps a failed journal.view; the relay's archive
+// refusal is ErrArchive, so a program's journal fails closed the way a
+// direct read does.
+func relayedReadError(task Task, err error) error {
+	if err == nil {
+		panic("relayedReadError: err must not be nil")
+	}
+	var refusal *natsutil.RelayRefusal
+	if errors.As(err, &refusal) && refusal.Code == natsutil.RefusalArchive {
+		return fmt.Errorf("%w: run %s step %s: %w", ErrArchive, task.RunID, task.StepID, err)
+	}
+	return fmt.Errorf("journal: read: %w", err)
 }
 
 // rebuild derives the recovery view from the records before the
@@ -832,7 +856,9 @@ func decodeRecord(seq uint64, hdr nats.Header, data []byte, at time.Time) Record
 	if hdr == nil {
 		hdr = nats.Header{}
 	}
+	prev, hasPrev := predecessor(hdr)
 	return Record{
+		prev: prev, hasPrev: hasPrev,
 		Seq:           seq,
 		Type:          hdr.Get(HeaderType),
 		Iteration:     headerInt(hdr, HeaderIteration),
