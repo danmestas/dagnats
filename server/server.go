@@ -311,6 +311,10 @@ func (s *Server) startComponents() error {
 		engine.WithDebounceHandler(debounceFire),
 		engine.WithLegacyStepEvents(s.cfg.LegacyStepEvents),
 		engine.WithLoopStateMaxBytes(s.cfg.LoopStateMaxBytes),
+		// The JetStream meta leader publishes the journal's protected
+		// floor: one writer however leadership moves, and in a
+		// standalone server this node always leads.
+		engine.WithJournalFloorWriter(s.ns.JetStreamIsLeader),
 	)
 	if err := s.orch.Start(); err != nil {
 		s.natsAPI.Stop()

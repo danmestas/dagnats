@@ -189,7 +189,9 @@ func readHistoryEvents(
 	if tailSeq == 0 {
 		panic("readHistoryEvents: tailSeq must be positive")
 	}
-	return fetchUpTo(ctx, js, historyStream, subject, tailSeq, historyEventsMax,
+	return fetchUpTo(ctx, js, subjectRead{
+		stream: historyStream, subject: subject, tailSeq: tailSeq, limit: historyEventsMax,
+	},
 		func(_ uint64, msg jetstream.Msg, _ *jetstream.MsgMetadata) error {
 			evt, err := protocol.UnmarshalEvent(msg.Data())
 			if err != nil {

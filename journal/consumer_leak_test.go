@@ -71,8 +71,10 @@ func TestConsumerLeak_FailedReadReleasesItsConsumer(t *testing.T) {
 	for i := 0; i < leakReads; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), caseTimeout)
 		boom := context.Canceled
-		err := fetchUpTo(ctx, c.js, natsutil.AgentJournalStream,
-			natsutil.JournalSubject("failrun", "s"), 1, 10,
+		err := fetchUpTo(ctx, c.js, subjectRead{
+			stream: natsutil.AgentJournalStream, subject: natsutil.JournalSubject("failrun", "s"),
+			tailSeq: 1, limit: 10,
+		},
 			func(uint64, jetstream.Msg, *jetstream.MsgMetadata) error { return boom })
 		cancel()
 		if err == nil {

@@ -272,6 +272,47 @@ Each key is a program name, each value 1 to 32 distinct stream names of `A-Z`, `
 
 > **Purge is powerful.** The purge request body (sequence, filter, keep) cannot be constrained by a subject, so an archive grant lets the program purge the whole stream, not only below the floors it read; the consumer create body likewise decides whether its one consumer is durable. Consumer info and list disclose every consumer on the stream, so never grant `STICKY_TASKS`, whose consumer names are capabilities. Grant only programs you trust with the stream's data. Like every program permission this is a guardrail, not isolation ([#909](https://github.com/danmestas/dagnats/issues/909)): the grant is declared so per-program accounts can enforce it later.
 
+### Purging the agent journal: the protected floor
+
+Agent steps re-read their journal on every delivery: `Open` replays the
+current iteration's model and tool calls and starts from the last
+committed state. Those reads hold no consumer, so ack floors do not
+cover them. dagnats publishes the bound instead, as metadata on
+`AGENT_JOURNAL` that `STREAM.INFO` returns:
+
+| Key | Value |
+|-----|-------|
+| `dagnats.protected_floor` | Decimal stream sequence. Nothing at or above it may be purged. |
+| `dagnats.protected_floor_at` | RFC3339 time the floor was computed. |
+
+The floor is the lowest sequence a live run's agent step still reads:
+for each non-terminal run, for each step journal, the commit of the
+iteration before the step's current one (the state it starts from) or
+the current iteration's first record, whichever is lower. A step with
+no earlier commit is protected from its first record; a fork is
+protected from its first record and so is each parent journal it
+reads. With no live journal the floor is the stream's `LastSeq + 1`.
+Records of earlier, finished iterations sit below it, so a long chat
+does not pin the journal from its first turn.
+
+The JetStream meta leader writes it. It is written when its value
+changes, never more often than once a minute, and rewritten at least
+every 5 minutes when unchanged, so `dagnats.protected_floor_at` stays
+fresh during a long iteration or a quiet journal.
+
+**The archiver's contract.** Never purge at or above
+`dagnats.protected_floor`. Treat the floor as 0 (purge nothing) when
+the key is missing or malformed, or when `dagnats.protected_floor_at`
+is missing, malformed, in the future, or older than 10 minutes (twice
+the refresh interval). A missing or stale floor is normal while the
+writer is down, while a pass is over its budget (more than 10,000 live
+runs, 1,024 journals in one run, or 500,000 journal records across live
+runs: the pass is skipped and logged), or while an older dagnats binary
+leads, so purging simply pauses. Provisioning keeps these keys (and any
+other stream metadata it did not set) across restarts; an older binary's
+provisioning may wipe them, which an archiver reads as "purge nothing"
+until the leader rewrites them on its next pass.
+
 ## Agent-runtime limits & retention
 
 Agent runtimes (runtime-generated workflows) are bounded per generation tree (root run). The following limits are enforced at capability boundaries and return errors the agent loop can handle:

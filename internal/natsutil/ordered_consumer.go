@@ -80,6 +80,9 @@ type OrderedConsumerSpec struct {
 	DeliverPolicy  jetstream.DeliverPolicy
 	OptStartSeq    uint64
 	OptStartTime   *time.Time
+	// HeadersOnly delivers each message's headers without its body,
+	// for a reader that classifies records by header alone.
+	HeadersOnly bool
 }
 
 // OrderedConsumerConfig builds a jetstream.OrderedConsumerConfig from
@@ -97,6 +100,7 @@ func OrderedConsumerConfig(spec OrderedConsumerSpec) jetstream.OrderedConsumerCo
 		DeliverPolicy:  spec.DeliverPolicy,
 		OptStartSeq:    spec.OptStartSeq,
 		OptStartTime:   spec.OptStartTime,
+		HeadersOnly:    spec.HeadersOnly,
 
 		MaxResetAttempts:  OrderedConsumerResetMax,
 		InactiveThreshold: OrderedConsumerInactiveThreshold,

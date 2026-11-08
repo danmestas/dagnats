@@ -113,6 +113,9 @@ type Orchestrator struct {
 	// debounceWired is set by WithDebounceHandler; Start then starts the
 	// sleep-timer consumer eagerly instead of on first Schedule.
 	debounceWired bool
+	// journalFloorWriter, set by WithJournalFloorWriter, reports
+	// whether this node publishes the journal's protected floor.
+	journalFloorWriter func() bool
 
 	// capHitPrev tracks whether the previous reconcile cycle hit
 	// reconcileActiveFetchMax. Used to suppress the steady-state
@@ -496,6 +499,7 @@ func (o *Orchestrator) Start() error {
 	// Run pruner (#453): always on, because size pruning is what keeps
 	// workflow_runs bounded. Age pruning runs only when runsMaxAge > 0.
 	o.startRunPruner(reconcileCtx)
+	o.startJournalFloor(reconcileCtx)
 
 	// Opt-in ephemeral-def reaper (#377). Started ONLY when a grace is
 	// configured — when defReaperGrace is zero the ticker never runs.
