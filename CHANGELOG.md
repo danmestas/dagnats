@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.60] - 2026-11-08
+
 ### Fixed
 
 - **Ordered-consumer reads no longer fail with "no responders" on a cluster.** nats.go replaces an ordered consumer's server-side consumer on every `Fetch`, `FetchBytes`, `FetchNoWait` and `Next`, and on a cluster places each replacement on any stream peer. A pull sent before the reader's server has learned the new consumer's interest found nobody, so `GET /runs/{run}/steps/{step}/journal` answered 500 `nats: no responders available for request` partway through a read: on the eu mesh, 13 of 15 full reads of a 193-record journal. The `natsutil.OrderedConsumer` wrapper, which every ordered-consumer reader goes through (journal and log pages and follows, `dagnats logs`, `trace`, `metrics`, `clean`, span reads), now repeats such a fetch up to 6 times, about 400ms in all, and nats.go resumes it one past the last delivered message. A server that keeps answering "no responders" still surfaces after the bound.
