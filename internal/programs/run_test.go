@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -404,5 +405,90 @@ func TestConfirmAnswersOnlyItsKeysProgram(t *testing.T) {
 	}
 	if _, err := inbox.NextMsg(5 * time.Second); err != nil {
 		t.Fatalf("the key's own confirmation was not answered: %v", err)
+	}
+}
+
+// Status methodology (issue #898): Run's program connection, not the
+// anonymous join one, is what Status describes. The fixture's embedded
+// server is shut down mid-test to observe the reconnecting state.
+
+func statusFixtureRun(t *testing.T) (*program.Running, *fixture) {
+	t.Helper()
+	f := serveFixture(t, Config{Open: true})
+	_, plaintext := f.createKey(t, joinkey.Spec{Label: "k", UsesMax: 1})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	running, err := program.Run(ctx, &countingProgram{manifest: manifest("notify")},
+		program.Options{
+			URL:      f.nc.ConnectedUrl(),
+			SeedPath: filepath.Join(t.TempDir(), "notify.seed"),
+			JoinKey:  plaintext,
+		})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	return running, f
+}
+
+func TestRunning_StatusConnectedThenClosedAfterStop(t *testing.T) {
+	running, f := statusFixtureRun(t)
+	got := running.Status()
+	if !got.Connected() || got.Program != "notify" || got.State != program.ConnConnected {
+		t.Fatalf("Status = %+v, want connected program notify", got)
+	}
+	if got.ServerURL != f.nc.ConnectedUrl() || got.ServerVersion != f.nc.ConnectedServerVersion() ||
+		got.ServerName != f.nc.ConnectedServerName() || got.LastError != "" {
+		t.Fatalf("Status = %+v, want the fixture server's identity", got)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := running.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	after := running.Status()
+	if after.Connected() || after.State != program.ConnClosed || after.ServerURL != "" {
+		t.Fatalf("Status after Stop = %+v, want closed with no server", after)
+	}
+}
+
+func TestRunning_StatusReconnectingWhenServerGoesAway(t *testing.T) {
+	running, f := statusFixtureRun(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	t.Cleanup(func() { _ = running.Stop(ctx) })
+	f.nc.Close()
+	f.server.Shutdown()
+	deadline := time.Now().Add(10 * time.Second)
+	for running.Status().Connected() && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	got := running.Status()
+	if got.Connected() || got.State != program.ConnReconnecting {
+		t.Fatalf("Status = %+v, want reconnecting", got)
+	}
+	if got.Program != "notify" || got.ServerURL != "" {
+		t.Fatalf("Status = %+v, want program name kept and no server", got)
+	}
+}
+
+func TestRunning_StatusConcurrentCalls(t *testing.T) {
+	running, _ := statusFixtureRun(t)
+	var group sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for j := 0; j < 50; j++ {
+				if running.Status().Program != "notify" {
+					t.Error("wrong program name")
+				}
+			}
+		}()
+	}
+	group.Wait()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := running.Stop(ctx); err != nil || running.Status().Connected() {
+		t.Fatalf("Stop err = %v, still connected = %v", err, running.Status().Connected())
 	}
 }

@@ -48,6 +48,9 @@ Programs on a dagnats are trusted: today they are all the operator's own, the sa
 - [func ValidateName\(name string\) error](<#ValidateName>)
 - [func ValidateStreamName\(stream string\) error](<#ValidateStreamName>)
 - [type BucketSpec](<#BucketSpec>)
+- [type ConnState](<#ConnState>)
+- [type ConnStatus](<#ConnStatus>)
+  - [func \(s ConnStatus\) Connected\(\) bool](<#ConnStatus.Connected>)
 - [type ErrRefused](<#ErrRefused>)
   - [func \(e \*ErrRefused\) Error\(\) string](<#ErrRefused.Error>)
 - [type Grant](<#Grant>)
@@ -73,6 +76,7 @@ Programs on a dagnats are trusted: today they are all the operator's own, the sa
 - [type Running](<#Running>)
   - [func Run\(ctx context.Context, prog Program, opts Options\) \(\*Running, error\)](<#Run>)
   - [func \(r \*Running\) Done\(\) \<\-chan error](<#Running.Done>)
+  - [func \(r \*Running\) Status\(\) ConnStatus](<#Running.Status>)
   - [func \(r \*Running\) Stop\(ctx context.Context\) error](<#Running.Stop>)
 - [type StreamSpec](<#StreamSpec>)
 - [type SubjectPermission](<#SubjectPermission>)
@@ -242,6 +246,58 @@ type BucketSpec struct {
     MaxBytes int64
 }
 ```
+
+<a name="ConnState"></a>
+## type [ConnState](<https://github.com/danmestas/dagnats/blob/main/program/running.go#L55>)
+
+ConnState is the state of a program's NATS connection.
+
+```go
+type ConnState string
+```
+
+<a name="ConnConnected"></a>The states a program's connection reports. Reconnecting covers a connection that is down and retrying, which it does forever.
+
+```go
+const (
+    ConnConnected    ConnState = "connected"
+    ConnReconnecting ConnState = "reconnecting"
+    ConnClosed       ConnState = "closed"
+)
+```
+
+<a name="ConnStatus"></a>
+## type [ConnStatus](<https://github.com/danmestas/dagnats/blob/main/program/running.go#L69-L84>)
+
+ConnStatus is a point\-in\-time view of the program's own connection, for a host's health endpoint. It is a value, not the connection, so a host cannot publish under the program's identity or bypass Run's inbox and auth guarantees.
+
+```go
+type ConnStatus struct {
+    // Program is the manifest name.
+    Program string
+    State   ConnState
+    // ServerURL, ServerName, ServerVersion and ClusterName describe the
+    // server the connection is on; they are empty unless connected.
+    ServerURL     string
+    ServerName    string
+    ServerVersion string
+    ClusterName   string
+    // Reconnects counts successful reconnections since Run.
+    Reconnects uint64
+    // LastError is the connection's most recent error, "" if none. It can
+    // outlive the failure it describes, so read State first.
+    LastError string
+}
+```
+
+<a name="ConnStatus.Connected"></a>
+### func \(ConnStatus\) [Connected](<https://github.com/danmestas/dagnats/blob/main/program/running.go#L87>)
+
+```go
+func (s ConnStatus) Connected() bool
+```
+
+Connected reports whether the connection is up.
 
 <a name="ErrRefused"></a>
 ## type [ErrRefused](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L79-L82>)
@@ -601,13 +657,22 @@ Run is the connected placement. It loads or creates the program's NKey at opts.S
 The program's connection reconnects forever, so a dagnats that is down for a long upgrade does not strand the process. It also rides out a node that refuses its key while restarting \(Options.AuthRetryWindow\), and closes only if the refusals outlast that window. Hosts should still watch Running.Done and exit when it fires, so their supervisor restarts them: it reports a connection closed for good.
 
 <a name="Running.Done"></a>
-### func \(\*Running\) [Done](<https://github.com/danmestas/dagnats/blob/main/program/running.go#L58>)
+### func \(\*Running\) [Done](<https://github.com/danmestas/dagnats/blob/main/program/running.go#L130>)
 
 ```go
 func (r *Running) Done() <-chan error
 ```
 
 Done receives exactly one value and is then closed: nil after Stop, or the reason the connection closed for good without Stop. A host should exit on a non\-nil value so its supervisor restarts it; the program is no longer reachable.
+
+<a name="Running.Status"></a>
+### func \(\*Running\) [Status](<https://github.com/danmestas/dagnats/blob/main/program/running.go#L92>)
+
+```go
+func (r *Running) Status() ConnStatus
+```
+
+Status describes the program's connection \(not Run's short\-lived registration one\). It is safe to call concurrently and after Stop or after the connection closed for good, when it reports ConnClosed.
 
 <a name="Running.Stop"></a>
 ### func \(\*Running\) [Stop](<https://github.com/danmestas/dagnats/blob/main/program/running.go#L39>)

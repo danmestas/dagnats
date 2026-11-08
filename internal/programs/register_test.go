@@ -24,6 +24,7 @@ import (
 	"github.com/danmestas/dagnats/internal/natstest"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/program"
+	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -31,6 +32,7 @@ import (
 type fixture struct {
 	// svc is the API service a serveFixture's NATSAPI runs on.
 	svc       *api.Service
+	server    *natsserver.Server
 	nc        *nats.Conn
 	js        jetstream.JetStream
 	keys      *joinkey.Store
@@ -39,7 +41,7 @@ type fixture struct {
 
 func newFixture(t *testing.T, cfg Config) *fixture {
 	t.Helper()
-	_, nc := natstest.StartServer(t)
+	server, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
 	}
@@ -71,7 +73,7 @@ func newFixture(t *testing.T, cfg Config) *fixture {
 	if err != nil {
 		t.Fatalf("NewRegistrar: %v", err)
 	}
-	return &fixture{nc: nc, js: js, keys: keys, registrar: registrar}
+	return &fixture{server: server, nc: nc, js: js, keys: keys, registrar: registrar}
 }
 
 func engineReserved(t *testing.T, ctx context.Context, js jetstream.JetStream) int64 {

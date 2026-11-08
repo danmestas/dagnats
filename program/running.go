@@ -51,6 +51,78 @@ func (r *Running) Stop(ctx context.Context) error {
 	return r.stopErr
 }
 
+// ConnState is the state of a program's NATS connection.
+type ConnState string
+
+// The states a program's connection reports. Reconnecting covers a
+// connection that is down and retrying, which it does forever.
+const (
+	ConnConnected    ConnState = "connected"
+	ConnReconnecting ConnState = "reconnecting"
+	ConnClosed       ConnState = "closed"
+)
+
+// ConnStatus is a point-in-time view of the program's own connection,
+// for a host's health endpoint. It is a value, not the connection, so a
+// host cannot publish under the program's identity or bypass Run's inbox
+// and auth guarantees.
+type ConnStatus struct {
+	// Program is the manifest name.
+	Program string
+	State   ConnState
+	// ServerURL, ServerName, ServerVersion and ClusterName describe the
+	// server the connection is on; they are empty unless connected.
+	ServerURL     string
+	ServerName    string
+	ServerVersion string
+	ClusterName   string
+	// Reconnects counts successful reconnections since Run.
+	Reconnects uint64
+	// LastError is the connection's most recent error, "" if none. It can
+	// outlive the failure it describes, so read State first.
+	LastError string
+}
+
+// Connected reports whether the connection is up.
+func (s ConnStatus) Connected() bool { return s.State == ConnConnected }
+
+// Status describes the program's connection (not Run's short-lived
+// registration one). It is safe to call concurrently and after Stop or
+// after the connection closed for good, when it reports ConnClosed.
+func (r *Running) Status() ConnStatus {
+	if r.nc == nil {
+		panic("program.Running.Status: not running")
+	}
+	status := ConnStatus{
+		Program:    r.name,
+		State:      connState(r.nc.Status()),
+		Reconnects: r.nc.Stats().Reconnects,
+	}
+	if err := r.nc.LastError(); err != nil {
+		status.LastError = err.Error()
+	}
+	if status.State == ConnConnected {
+		status.ServerURL = r.nc.ConnectedUrl()
+		status.ServerName = r.nc.ConnectedServerName()
+		status.ServerVersion = r.nc.ConnectedServerVersion()
+		status.ClusterName = r.nc.ConnectedClusterName()
+	}
+	return status
+}
+
+// connState maps nats.go's states: anything that is neither up nor
+// closed (connecting, reconnecting, draining) is not serving.
+func connState(status nats.Status) ConnState {
+	switch status {
+	case nats.CONNECTED:
+		return ConnConnected
+	case nats.CLOSED:
+		return ConnClosed
+	default:
+		return ConnReconnecting
+	}
+}
+
 // Done receives exactly one value and is then closed: nil after Stop, or
 // the reason the connection closed for good without Stop. A host should
 // exit on a non-nil value so its supervisor restarts it; the program is
