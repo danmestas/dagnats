@@ -39,7 +39,20 @@ func startMetaCluster(t *testing.T) []metaNode {
 // waits for a meta leader.
 func startMetaClusterOf(t *testing.T, size int) []metaNode {
 	t.Helper()
-	clusterPorts := freeTCPPorts(t, size)
+	var nodes []metaNode
+	startWithFreshPorts(t, size, func(clusterPorts []int) error {
+		var err error
+		nodes, err = tryStartMetaNodes(t, clusterPorts)
+		return err
+	})
+	metaLeader(t, nodes)
+	return nodes
+}
+
+// tryStartMetaNodes starts one routed server per port. On a node that
+// does not become ready it stops them all and returns the error.
+func tryStartMetaNodes(t *testing.T, clusterPorts []int) ([]metaNode, error) {
+	t.Helper()
 	routes := make([]string, len(clusterPorts))
 	for i, port := range clusterPorts {
 		routes[i] = fmt.Sprintf("nats://127.0.0.1:%d", port)
@@ -67,11 +80,13 @@ func startMetaClusterOf(t *testing.T, size int) []metaNode {
 	}
 	for _, node := range nodes {
 		if !node.ns.ReadyForConnections(10 * time.Second) {
-			t.Fatalf("%s not ready", node.ns.Name())
+			for _, started := range nodes {
+				started.ns.Shutdown()
+			}
+			return nil, fmt.Errorf("%s not ready", node.ns.Name())
 		}
 	}
-	metaLeader(t, nodes)
-	return nodes
+	return nodes, nil
 }
 
 // metaLeader waits for the cluster to agree on a meta leader and
