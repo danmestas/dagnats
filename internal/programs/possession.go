@@ -59,8 +59,9 @@ var errConfirmRequired = errors.New("program change must be confirmed with its k
 // plus its confirm subject, so it can confirm a later manifest change.
 // archives is what the operator granted the program in policy.archives;
 // it adds rights only to a confirmed record, and only on streams the
-// manifest also declares (program.PermissionsGranted).
-func UserPermissions(record Record, archives []string) program.Permissions {
+// manifest also declares (program.PermissionsGranted). domain is the
+// server's JetStream domain, which names the archive range subject.
+func UserPermissions(record Record, domain string, archives []string) program.Permissions {
 	if record.PublicKey == "" || record.Manifest.Name == "" {
 		panic("programs.UserPermissions: record must name its key and program")
 	}
@@ -72,7 +73,7 @@ func UserPermissions(record Record, archives []string) program.Permissions {
 			Subscribe: program.SubjectPermission{Allow: []string{inbox}},
 		}
 	}
-	perms := program.PermissionsGranted(record.Manifest, archives)
+	perms := program.PermissionsGranted(record.Manifest, domain, archives)
 	perms.Publish.Allow = append(perms.Publish.Allow, confirm)
 	return perms
 }

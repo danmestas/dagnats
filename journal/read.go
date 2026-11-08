@@ -56,9 +56,24 @@ func readSubject(
 	if js == nil {
 		panic("readSubject: js must not be nil")
 	}
+	// Each attempt of readLive reads from the start, so a retried read
+	// never holds records twice.
+	records, err := readLive(ctx, js, runID, stepID, tailSeq)
+	if err != nil {
+		return nil, err
+	}
+	return withArchived(ctx, js, runID, stepID, tailSeq, records)
+}
+
+// readLive is readSubject without the archive: the records JetStream
+// holds, up to tailSeq.
+func readLive(
+	ctx context.Context, js jetstream.JetStream, runID, stepID string, tailSeq uint64,
+) ([]Record, error) {
+	if tailSeq == 0 || js == nil {
+		panic("readLive: tailSeq and js must be set")
+	}
 	var records []Record
-	// Each attempt reads from the start, so a retried read never holds
-	// records twice.
 	err := retryTransient(ctx, func() error {
 		records = make([]Record, 0, readBatch)
 		return fetchUpTo(ctx, js, subjectRead{
@@ -71,10 +86,7 @@ func readSubject(
 				return nil
 			})
 	})
-	if err != nil {
-		return nil, err
-	}
-	return records, nil
+	return records, err
 }
 
 // subjectRead is one bounded read of a subject: from its start up to

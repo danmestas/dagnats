@@ -517,10 +517,43 @@ func (b *Bridge) journalIfAny(
 	}
 	runID, stepID := splitTaskID(taskID)
 	has, err := b.hasJournalRecords(ctx, runID, stepID)
+	if err == nil && !has {
+		has, err = b.hasPurgedJournal(ctx, taskID, msg)
+	}
 	if err != nil || !has {
 		return nil, err
 	}
 	return b.openJournal(ctx, taskID, tokenID, msg)
+}
+
+// hasPurgedJournal reports whether a step JetStream holds no record of
+// had its journal purged whole, by asking the archive for its first
+// record. Only a later iteration or a retry can have history, so a
+// first dispatch never asks. A later iteration the archive holds
+// nothing of fails: it must start from an earlier commit.
+func (b *Bridge) hasPurgedJournal(
+	ctx context.Context, taskID string, msg jetstream.Msg,
+) (bool, error) {
+	if taskID == "" || msg == nil {
+		panic("hasPurgedJournal: taskID and msg must be set")
+	}
+	task, err := journalTask(taskID, msg)
+	if err != nil {
+		return false, err
+	}
+	if task.Iteration == 0 && task.Attempt <= 1 {
+		return false, nil
+	}
+	subject := natsutil.JournalSubject(task.RunID, task.StepID)
+	archived, purged, err := journal.ArchivedFrom(ctx, b.js, subject, 1, 1)
+	if err != nil {
+		return false, fmt.Errorf("run %s step %s: %w", task.RunID, task.StepID, err)
+	}
+	if len(archived) == 0 && purged && task.Iteration > 0 {
+		return false, fmt.Errorf("%w: run %s step %s had history, but neither JetStream "+
+			"nor the archive holds a record of it", journal.ErrArchive, task.RunID, task.StepID)
+	}
+	return len(archived) > 0, nil
 }
 
 // hasJournalRecords reports whether the step's journal subject holds a

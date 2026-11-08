@@ -206,7 +206,8 @@ func (n *NATSAPI) relayJournalView(
 ) (relayResult, error) {
 	header := nats.Header(req.Headers())
 	subject := relaySubject(req)
-	if _, err := n.ownedJournal(ctx, prefix, subject, header.Get(journal.HeaderNonce)); err != nil {
+	owned, err := n.ownedJournal(ctx, prefix, subject, header.Get(journal.HeaderNonce))
+	if err != nil {
 		return relayResult{}, err
 	}
 	from, err := strconv.ParseUint(header.Get(natsutil.RelayFromSeqHeader), 10, 64)
@@ -223,21 +224,99 @@ func (n *NATSAPI) relayJournalView(
 	} else {
 		raw, err = stream.GetMsg(ctx, from, jetstream.WithGetMsgSubject(subject))
 	}
+	if errors.Is(err, jetstream.ErrMsgNotFound) && from > 0 {
+		return n.archivedOnly(ctx, subject, from, owned.state)
+	}
 	if errors.Is(err, jetstream.ErrMsgNotFound) {
-		empty := nats.Header{}
-		empty.Set(natsutil.RelayEmptyHeader, "true")
-		return relayResult{header: empty}, nil
+		return emptyView(), nil
 	}
 	if err != nil {
 		return relayResult{}, err
 	}
+	if owned.state.Iterations < 0 {
+		panic("relayJournalView: the step's iteration must not be negative")
+	}
+	// Open needs nothing before an earlier iteration's commit (the
+	// protected floor), so the archive is not asked below one.
+	if from > 0 && !journal.OpenNeedsNothingBefore(raw.Header, owned.state.Iterations) {
+		return n.archivedOrLive(ctx, subject, from, raw)
+	}
+	return viewResult(raw.Sequence, raw.Header, raw.Data, raw.Time), nil
+}
+
+// archivedOrLive answers a view from sequence from: live, the first
+// record JetStream holds at or after from, unless the record before it
+// was purged and is at or after from too. Then the engine reads that
+// one from the archive, as root and only after the ownership check: a
+// program never asks the archive itself.
+func (n *NATSAPI) archivedOrLive(
+	ctx context.Context, subject string, from uint64, live *jetstream.RawStreamMsg,
+) (relayResult, error) {
+	if live == nil || from == 0 {
+		panic("archivedOrLive: live and from must be set")
+	}
+	archived, err := journal.ArchivedBefore(ctx, n.svc.js, subject, from, live, 1)
+	if err != nil {
+		return relayResult{}, refuse(natsutil.RefusalArchive, err.Error())
+	}
+	if len(archived) > 1 {
+		panic("archivedOrLive: the archive read returned more than its limit")
+	}
+	if len(archived) == 1 {
+		m := archived[0]
+		return viewResult(m.Seq, nats.Header(m.Headers), m.Data, m.Time), nil
+	}
+	return viewResult(live.Sequence, live.Header, live.Data, live.Time), nil
+}
+
+// archivedOnly answers a view from sequence from that JetStream holds
+// nothing at or after: the archive's first record there, when the
+// stream was purged past from. A step the snapshot says ran a later
+// iteration starts from an earlier commit, so a view of it from the
+// start that the archive cannot answer is refused, not empty.
+func (n *NATSAPI) archivedOnly(
+	ctx context.Context, subject string, from uint64, state dag.StepState,
+) (relayResult, error) {
+	if from == 0 || subject == "" {
+		panic("archivedOnly: from and subject must be set")
+	}
+	archived, purged, err := journal.ArchivedFrom(ctx, n.svc.js, subject, from, 1)
+	if err != nil {
+		return relayResult{}, refuse(natsutil.RefusalArchive, err.Error())
+	}
+	if len(archived) > 1 {
+		panic("archivedOnly: the archive read returned more than its limit")
+	}
+	if len(archived) == 1 {
+		m := archived[0]
+		return viewResult(m.Seq, nats.Header(m.Headers), m.Data, m.Time), nil
+	}
+	if purged && from == 1 && state.Iterations > 0 {
+		return relayResult{}, refuse(natsutil.RefusalArchive, subject+
+			" had history, but neither JetStream nor the archive holds a record of it")
+	}
+	return emptyView(), nil
+}
+
+// emptyView is the journal.view reply for no record.
+func emptyView() relayResult {
+	empty := nats.Header{}
+	empty.Set(natsutil.RelayEmptyHeader, "true")
+	return relayResult{header: empty}
+}
+
+// viewResult is a journal.view reply carrying one stored record.
+func viewResult(seq uint64, header nats.Header, data []byte, at time.Time) relayResult {
+	if seq == 0 {
+		panic("viewResult: seq must be positive")
+	}
 	out := nats.Header{}
-	for key, values := range raw.Header {
+	for key, values := range header {
 		out[key] = append([]string(nil), values...)
 	}
-	out.Set(natsutil.RelaySeqHeader, strconv.FormatUint(raw.Sequence, 10))
-	out.Set(natsutil.RelayTimeHeader, raw.Time.UTC().Format(time.RFC3339Nano))
-	return relayResult{header: out, data: raw.Data}, nil
+	out.Set(natsutil.RelaySeqHeader, strconv.FormatUint(seq, 10))
+	out.Set(natsutil.RelayTimeHeader, at.UTC().Format(time.RFC3339Nano))
+	return relayResult{header: out, data: data}
 }
 
 // relayPublish publishes the admitted record and replies with its ack.

@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -141,6 +142,11 @@ type Record struct {
 	Index         int             `json:"index"`
 	Time          time.Time       `json:"time"`
 	Data          json.RawMessage `json:"data,omitempty"`
+	// prev is the subject's sequence before this record, as the
+	// server enforced it on append; hasPrev is false for a message
+	// without the header. CheckContinuity reads them.
+	prev    uint64
+	hasPrev bool
 }
 
 // sameClaim reports whether r was written by the claim for task: the
@@ -209,6 +215,10 @@ type Journal struct {
 	// index of its next record (the claim is 0).
 	seq  uint64
 	next int
+	// archivedTail is the last record Open read from the archive when
+	// JetStream held none of the step's; the first append names it
+	// (HeaderPrevSeq), so later reads find the chain.
+	archivedTail uint64
 	// fenced is set once a record from another claim is seen at the
 	// tail; done once this attempt's commit is stored or found.
 	fenced bool
@@ -539,6 +549,9 @@ func (j *Journal) append(
 	expected := j.seq
 	for try := 0; try < appendRetryMax; try++ {
 		msg := recordMessage(j.task, recordType, j.next, expected, data)
+		if expected == 0 && j.archivedTail > 0 {
+			msg.Header.Set(HeaderPrevSeq, strconv.FormatUint(j.archivedTail, 10))
+		}
 		ack, err := j.pub.JSPublishMsg(ctx, msg)
 		if err == nil {
 			return j.advance(ack.Sequence)
@@ -647,12 +660,74 @@ func (j *Journal) readUpTo(ctx context.Context, tailSeq uint64) ([]Record, error
 		panic("journal.readUpTo: js must not be nil")
 	}
 	if tailSeq == 0 {
-		return nil, nil
+		return j.readPurged(ctx)
 	}
 	if j.relayed() {
 		return j.relayedUpTo(ctx, tailSeq)
 	}
-	return readSubject(ctx, j.js, j.task.RunID, j.task.StepID, tailSeq)
+	live, err := readLive(ctx, j.js, j.task.RunID, j.task.StepID, tailSeq)
+	if err != nil {
+		return nil, err
+	}
+	if start := j.openStart(live); start > 0 {
+		if err := CheckContinuity(live, start); err != nil {
+			return nil, fmt.Errorf("run %s step %s: %w", j.task.RunID, j.task.StepID, err)
+		}
+		return live, nil
+	}
+	return withArchived(ctx, j.js, j.task.RunID, j.task.StepID, tailSeq, live)
+}
+
+// openStart is the sequence Open's history may start at: the first
+// record, when it is the commit of an earlier iteration (a journal
+// purged below the protected floor), since Open needs nothing older.
+// 0 when the read must start from the step's first record.
+func (j *Journal) openStart(records []Record) uint64 {
+	if len(records) > recordsMax {
+		panic("journal.openStart: records exceed the read bound")
+	}
+	if j.task.Iteration < 0 {
+		panic("journal.openStart: iteration must not be negative")
+	}
+	if len(records) == 0 {
+		return 0
+	}
+	first := records[0]
+	if first.Type == TypeCommit && first.Iteration >= 0 && first.Iteration < j.task.Iteration {
+		return first.Seq
+	}
+	return 0
+}
+
+// readPurged reads a step JetStream holds no record of. A first
+// dispatch (iteration 0, attempt 1) has no history, so it never asks
+// the archive. A later iteration or a retry may have had all its
+// records purged; then the archive holds them. A later iteration must
+// have some (it starts from the commit before it), so an archive with
+// none fails; a retry of iteration 0 may have failed before claiming.
+// The program relay applies the same rule from the run snapshot.
+func (j *Journal) readPurged(ctx context.Context) ([]Record, error) {
+	if ctx == nil || j.js == nil {
+		panic("journal.readPurged: ctx and js must be set")
+	}
+	if j.task.Iteration == 0 && j.task.Attempt <= 1 {
+		return nil, nil
+	}
+	var records []Record
+	var err error
+	if j.relayed() {
+		records, err = j.relayedUpTo(ctx, math.MaxUint64)
+	} else {
+		records, err = readPurgedSubject(ctx, j.js, j.task.RunID, j.task.StepID,
+			j.task.Iteration > 0)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if n := len(records); n > 0 {
+		j.archivedTail = records[n-1].Seq
+	}
+	return records, nil
 }
 
 // relayed reports whether this journal belongs to a program, whose
@@ -706,7 +781,7 @@ func (j *Journal) relayedUpTo(ctx context.Context, tailSeq uint64) ([]Record, er
 			return viewErr
 		})
 		if err != nil {
-			return nil, fmt.Errorf("journal: read: %w", err)
+			return nil, relayedReadError(j.task, err)
 		}
 		if !found || raw.Seq > tailSeq {
 			break
@@ -714,7 +789,27 @@ func (j *Journal) relayedUpTo(ctx context.Context, tailSeq uint64) ([]Record, er
 		records = append(records, decodeRecord(raw.Seq, raw.Header, raw.Data, raw.Time))
 		from = raw.Seq + 1
 	}
+	// The relay falls through to the archive for purged records, except
+	// below an earlier iteration's commit, which Open does not read; the
+	// chain proves it served every record from there.
+	if err := CheckContinuity(records, max(1, j.openStart(records))); err != nil {
+		return nil, fmt.Errorf("run %s step %s: %w", j.task.RunID, j.task.StepID, err)
+	}
 	return records, nil
+}
+
+// relayedReadError wraps a failed journal.view; the relay's archive
+// refusal is ErrArchive, so a program's journal fails closed the way a
+// direct read does.
+func relayedReadError(task Task, err error) error {
+	if err == nil {
+		panic("relayedReadError: err must not be nil")
+	}
+	var refusal *natsutil.RelayRefusal
+	if errors.As(err, &refusal) && refusal.Code == natsutil.RefusalArchive {
+		return fmt.Errorf("%w: run %s step %s: %w", ErrArchive, task.RunID, task.StepID, err)
+	}
+	return fmt.Errorf("journal: read: %w", err)
 }
 
 // rebuild derives the recovery view from the records before the
@@ -832,7 +927,9 @@ func decodeRecord(seq uint64, hdr nats.Header, data []byte, at time.Time) Record
 	if hdr == nil {
 		hdr = nats.Header{}
 	}
+	prev, hasPrev := predecessor(hdr)
 	return Record{
+		prev: prev, hasPrev: hasPrev,
 		Seq:           seq,
 		Type:          hdr.Get(HeaderType),
 		Iteration:     headerInt(hdr, HeaderIteration),

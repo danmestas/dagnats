@@ -4,6 +4,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/danmestas/dagnats/dagnatsext"
 	"github.com/danmestas/dagnats/internal/consumername"
 	"github.com/danmestas/dagnats/protocol"
 )
@@ -73,19 +74,63 @@ var engineEventSubjects = []string{"stream", "logs"}
 // pins the disclosure surfaces.
 //
 // PermissionsFor carries no operator grant, so no Archives rights: it is
-// PermissionsGranted(m, nil).
+// PermissionsGranted(m, "", nil).
 func PermissionsFor(m Manifest) Permissions {
-	return PermissionsGranted(m, nil)
+	return PermissionsGranted(m, "", nil)
 }
 
 // PermissionsGranted is PermissionsFor plus the archive rights
 // (archivePublish) on each stream in EffectiveArchives(m, archives):
 // archives is what the operator granted this program in dagnats.yaml
 // (policy.archives), so a stream the manifest declares but the operator
-// has not granted, or the reverse, yields nothing.
-func PermissionsGranted(m Manifest, archives []string) Permissions {
+// has not granted, or the reverse, yields nothing. domain is the
+// server's JetStream domain ("" for none), which names the range
+// subject an archiver answers on (archiveRange).
+//
+// Every program is denied publish under "lode.stream.>", whatever its
+// name or protocols grant: only dagnats itself asks an archive for
+// records, after its own ownership checks, and an archive's answer is
+// trusted as the journal's history.
+func PermissionsGranted(m Manifest, domain string, archives []string) Permissions {
 	if err := Validate(m); err != nil {
 		panic("program.PermissionsGranted: " + err.Error())
+	}
+	perms := permissionsGranted(m, archives)
+	return archiveRange(perms, domain, EffectiveArchives(m, archives))
+}
+
+// archiveRange adds the archive range protocol's rights: subscribe on
+// "lode.stream.<domain>.<stream>.range" for each effective archive, so
+// the archiver can answer dagnats' reads (replies go to the requester's
+// "_INBOX.>", which every program may publish), and a deny on publish
+// under "lode.stream.>" for everyone. A program with no effective
+// archive is also denied subscribe there, so it cannot pose as an
+// archive. One that has one keeps whatever its own name grants: the
+// operator trusted it with purge on those streams already.
+func archiveRange(perms Permissions, domain string, effective []string) Permissions {
+	if len(perms.Publish.Allow) == 0 || len(perms.Subscribe.Allow) == 0 {
+		panic("program.archiveRange: empty permission list")
+	}
+	all := dagnatsext.ArchiveSubjectPrefix + ">"
+	perms.Publish.Deny = append(perms.Publish.Deny, all)
+	for _, stream := range effective {
+		perms.Subscribe.Allow = append(perms.Subscribe.Allow,
+			dagnatsext.ArchiveRangeSubject(domain, stream))
+	}
+	if len(effective) == 0 {
+		perms.Subscribe.Deny = append(perms.Subscribe.Deny, all)
+	}
+	if !slices.Contains(perms.Publish.Deny, all) {
+		panic("program.archiveRange: publish under lode.stream.> must be denied")
+	}
+	return perms
+}
+
+// permissionsGranted is PermissionsGranted before the archive range
+// protocol: the manifest's own crossings plus its archive rights.
+func permissionsGranted(m Manifest, archives []string) Permissions {
+	if m.Name == "" {
+		panic("program.permissionsGranted: manifest must be validated")
 	}
 	var pub, sub []string
 	pub = append(pub, "$JS.API.INFO")
@@ -126,7 +171,7 @@ func PermissionsGranted(m Manifest, archives []string) Permissions {
 	sub = append(sub, microSubscribe(m.Name)...)
 	sub = append(sub, protocol.CancelSubjectPrefix+"*", InboxPrefix(m.Name)+".>")
 	if len(pub) == 0 || len(sub) == 0 {
-		panic("program.PermissionsGranted: empty permission list")
+		panic("program.permissionsGranted: empty permission list")
 	}
 	return Permissions{
 		Publish:   SubjectPermission{Allow: pub},

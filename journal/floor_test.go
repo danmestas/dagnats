@@ -120,12 +120,14 @@ func TestProtectedFloor_PurgeAboveTheFloorLosesTheState(t *testing.T) {
 		t.Fatalf("floor = %d, want %d", got, commit1)
 	}
 	purgeBelow(t, c, commit1+1)
-	j := open(t, c, task("r", 2, 1, 2))
-	if j.State() != nil {
-		t.Fatalf("state after over-purge = %q, want nil: the floor is tight", j.State())
-	}
-	if countType(j.Records(), TypeEntry) != 1 {
-		t.Fatalf("iteration 2's entry must survive, got %+v", j.Records())
+	// One record above the floor loses the commit Open starts from.
+	// Open sees its first record name a purged predecessor and, with no
+	// archive to read it from, fails instead of starting from nil state.
+	ctx, cancel := context.WithTimeout(context.Background(), caseTimeout)
+	defer cancel()
+	j, err := Open(ctx, c.js, c.pub, task("r", 2, 1, 2))
+	if !errors.Is(err, ErrArchive) || j != nil {
+		t.Fatalf("Open after over-purge = %v, %v; want ErrArchive: the floor is tight", j, err)
 	}
 }
 
