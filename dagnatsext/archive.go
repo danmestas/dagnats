@@ -61,8 +61,9 @@ type ArchiveRange struct {
 }
 
 // ArchivedMessage is one complete message, reassembled when the archive
-// split it across replies. Time has microsecond precision: never compare
-// it for equality with a live record's.
+// split it across replies. Time is exact for messages lode archived from
+// main-d047c52 on and has microsecond precision for earlier ones, so
+// never compare it for equality with a live record's.
 type ArchivedMessage struct {
 	Seq     uint64              `json:"seq"`
 	Subject string              `json:"subject"`
@@ -177,8 +178,9 @@ type ArchiveRangeReply struct {
 	Floor      uint64            `json:"floor,omitempty"`
 }
 
-// ArchiveTime formats a message time the way the protocol carries it:
-// RFC3339 in UTC with microseconds.
+// ArchiveTime formats a message time in the protocol's microsecond form:
+// RFC3339 in UTC. An archiver may send more digits; readers accept any
+// RFC3339 precision.
 func ArchiveTime(t time.Time) string {
 	return t.UTC().Format("2006-01-02T15:04:05.000000Z07:00")
 }

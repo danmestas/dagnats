@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The flat config parser no longer warns about `dagnats.yaml` sections.** `dagnats serve --config` reads the same file twice: the flat server keys (`http_addr`, `nats_port`, ...) and the configfile sections (`workflows`, `triggers`, `policy`). The flat parser logged every section line as an unknown key, so a node with `policy.archives` logged `unknown config key: policy`, `archives` and `lode` at each start. It now skips a section's top-level line and every indented or list line under it, and still warns about an unknown flat key. The section names come from `configfile.Sections()`, read from the file schema's yaml tags.
 
+### Changed
+
+- **Archived journal times are exact for rows lode archives from main-d047c52 on.** lode now stores each message's nanosecond timestamp and returns it from `lode.stream.<domain>.<stream>.range`. Rows archived before then keep microsecond precision, so `dagnatsext.ArchivedMessage.Time` is still documented as not comparable for equality with a live record's. The operations and journal SDK pages say the same.
+
 ## [0.0.60] - 2026-11-08
 
 ### Fixed
