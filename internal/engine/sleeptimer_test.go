@@ -308,9 +308,9 @@ func TestSleepTimerStartsLazilyOnSchedule(t *testing.T) {
 
 // TestSleepTimerRateRetryDerivesAttemptFromSnapshot is the #624 review
 // round-2 regression test: any re-dispatch through the rate/concurrency
-// retry path (fireRateRetry) must derive TaskPayload.Attempt from the
+// retry path (fireDeferral) must derive TaskPayload.Attempt from the
 // step's CURRENT run snapshot (via SnapshotStore), never hardcode or
-// drop it. Before this fix fireRateRetry omitted Attempt entirely
+// drop it. Before this fix the rate-retry path omitted Attempt entirely
 // (always resolving to the zero value), so every rate-retried task ran
 // as if it were attempt 1 (worker's resolveAttemptNumber NumDelivered
 // fallback) regardless of how many real attempts the step already had

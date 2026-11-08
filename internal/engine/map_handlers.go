@@ -194,6 +194,8 @@ func (o *Orchestrator) handleMapInstanceCompleted(
 	state.MapInstances[idx].Status = dag.StepStatusCompleted
 	state.MapInstances[idx].Output = evt.Payload
 	run.Steps[baseID] = state
+	// Each instance took a task slot of its own when it was admitted.
+	o.releaseTaskSlot(ctx, wfDef, run.RunID, evt.StepID)
 
 	if !allMapInstancesDone(state.MapInstances) {
 		return o.saveSnapshot(ctx, run, baseID)
@@ -276,6 +278,10 @@ func (o *Orchestrator) handleMapInstanceFailed(
 		state.MapInstances[idx].Error,
 	)
 	run.Steps[baseID] = state
+	// Fail-fast abandons the other instances, whose completions may
+	// never be handled once the run is terminal: free every instance's
+	// slot now (a release of a slot not held is a no-op).
+	o.releaseMapInstanceSlots(ctx, wfDef, run.RunID, baseID, state)
 
 	return o.failMapStep(ctx, wfDef, run, baseID, state)
 }

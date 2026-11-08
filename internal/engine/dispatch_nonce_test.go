@@ -133,11 +133,11 @@ func TestFireRateRetryStampsNonce(t *testing.T) {
 		Input:         []byte(`{}`),
 		DispatchNonce: "nonce-from-schedule",
 	}
-	st.fireRateRetry(tm)
+	st.fireDeferral(tm)
 
 	p := js.lastPayload(t)
 	if p.DispatchNonce != "nonce-from-schedule" {
-		t.Fatalf("fireRateRetry nonce = %q, want carried-through value",
+		t.Fatalf("fireDeferral nonce = %q, want carried-through value",
 			p.DispatchNonce)
 	}
 }
