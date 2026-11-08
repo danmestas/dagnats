@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.59] - 2026-11-08
+
 ### Changed
 
 - **`sdk/httpclient` is documented as a minimal example, not a reference client.** The #851 TypeScript client (`sdk/ts`) carries the whole bridge protocol; the Go client still lacks `failure_type`, heartbeat, journal actions and `inputs.place`, and maps every 409 to `ErrRunCancelled`. Its package comment says so and points Go workers at `worker` and other languages at `sdk/ts`.
