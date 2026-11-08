@@ -1,6 +1,10 @@
-// Package httpclient implements the DagNats worker protocol over HTTP.
-// This is the reference client for validating the bridge wire protocol
-// and serves as a template for other language SDKs.
+// Package httpclient is a minimal Go example of the DagNats worker protocol
+// over HTTP: connect, poll, complete, fail, continue, checkpoint and stream.
+// It is not a full client. It has no failure_type on fail, no heartbeat, no
+// journal actions and no inputs.place, and it maps every 409 to
+// ErrRunCancelled, so a fenced claim reads as a cancelled run. Go workers
+// should use the worker package. For a bridge client with the whole protocol
+// and the ADR-026 replay rules, see sdk/ts.
 package httpclient
 
 import (
@@ -23,7 +27,7 @@ const (
 )
 
 // Client implements the DagNats worker protocol over HTTP.
-// This is the reference implementation for other language SDKs.
+// It is a minimal example; see the package comment for what it leaves out.
 type Client struct {
 	baseURL    string
 	token      string
