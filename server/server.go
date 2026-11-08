@@ -538,6 +538,24 @@ func (s *Server) applyGrantPolicy(p *configfile.PolicyYAML) {
 		promote = p.ControlPlane.Promote
 	}
 	s.grantHolder.Store(engine.NewGrantPolicy(grant, promote))
+	s.applyArchiveGrants(p)
+}
+
+// applyArchiveGrants hands policy.archives to the program users, which
+// reload the NATS users when it changed. An absent section grants no
+// archives (deny-by-default). Without program users (startup has not
+// reached them) there is no program to grant anything to.
+func (s *Server) applyArchiveGrants(p *configfile.PolicyYAML) {
+	if s.programUsers == nil {
+		return
+	}
+	var archives map[string][]string
+	if p != nil {
+		archives = p.Archives
+	}
+	if err := s.programUsers.setArchives(archives); err != nil {
+		slog.Error("programs: archive grants not applied", "error", err)
+	}
 }
 
 // applyConfigFile drives the convert → diff → apply pipeline. Pulled

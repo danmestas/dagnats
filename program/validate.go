@@ -24,6 +24,8 @@ const (
 	protocolCountMax   = 16
 	discoverCountMax   = 16
 	discoverLenMax     = 64
+	archiveCountMax    = 32
+	streamNameLenMax   = 128
 	dottedLenMax       = 128
 	versionLenMax      = 64
 	consoleLabelLenMax = 64
@@ -59,6 +61,7 @@ func Validate(m Manifest) error {
 	errs = append(errs, validateReads(m.Name, m.Reads)...)
 	errs = append(errs, validateProtocols(m.Name, m.Protocols)...)
 	errs = append(errs, validateDiscovers(m.Discovers)...)
+	errs = append(errs, validateArchives(m.Archives)...)
 	errs = append(errs, validateLabels(m))
 	if len(errs) < 2 {
 		panic("program.Validate: every rule group must report")
@@ -134,6 +137,7 @@ func validateCounts(m Manifest) error {
 		{"reads", len(m.Reads), readCountMax},
 		{"protocols", len(m.Protocols), protocolCountMax},
 		{"discovers", len(m.Discovers), discoverCountMax},
+		{"archives", len(m.Archives), archiveCountMax},
 	}
 	var errs []error
 	for _, l := range limits {
@@ -291,6 +295,45 @@ func validateDiscovers(names []string) []error {
 		seen[name] = true
 	}
 	return errs
+}
+
+// validateArchives checks each archived stream is a stream name and
+// appears once.
+func validateArchives(streams []string) []error {
+	var errs []error
+	seen := map[string]bool{}
+	for _, stream := range streams {
+		if err := ValidateStreamName(stream); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if seen[stream] {
+			errs = append(errs, fmt.Errorf("archive stream %q listed twice", stream))
+		}
+		seen[stream] = true
+	}
+	if len(seen) > len(streams) {
+		panic("program.validateArchives: more streams seen than listed")
+	}
+	return errs
+}
+
+// ValidateStreamName checks an archived stream name: 1 to 128 of A-Z,
+// a-z, 0-9, _ or -. Narrower than JetStream's own rule, so the name is
+// always one literal subject token in the permissions it generates. The
+// operator's policy.archives grants are checked with it too.
+func ValidateStreamName(stream string) error {
+	ok := len(stream) > 0 && len(stream) <= streamNameLenMax
+	for i := 0; ok && i < len(stream); i++ {
+		c := stream[i]
+		ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+			c == '_' || c == '-'
+	}
+	if !ok {
+		return fmt.Errorf("archive stream %q must be 1 to %d of A-Z, a-z, 0-9, _ or -",
+			stream, streamNameLenMax)
+	}
+	return nil
 }
 
 func microServiceName(name string) bool {

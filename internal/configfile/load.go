@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/danmestas/dagnats/program"
 	"gopkg.in/yaml.v3"
 )
 
@@ -110,7 +111,13 @@ func Validate(cfg ConfigFile) error {
 // every promote entry present in grant (you cannot promote what you cannot
 // reach). A nil policy is valid — deny-by-default needs no declaration.
 func validatePolicy(p *PolicyYAML) error {
-	if p == nil || p.ControlPlane == nil {
+	if p == nil {
+		return nil
+	}
+	if err := validateArchiveGrants(p.Archives); err != nil {
+		return err
+	}
+	if p.ControlPlane == nil {
 		return nil
 	}
 	cp := p.ControlPlane
@@ -126,6 +133,40 @@ func validatePolicy(p *PolicyYAML) error {
 			return fmt.Errorf(
 				"policy.control_plane.promote %q not in grant", name,
 			)
+		}
+	}
+	return nil
+}
+
+// archiveStreamsMax bounds one program's archive grant; it matches the
+// bound on a manifest's Archives.
+const archiveStreamsMax = 32
+
+// validateArchiveGrants checks policy.archives: at most maxEntries
+// programs, each a valid program name with 1 to archiveStreamsMax
+// distinct stream names. The checks are program's own, so a grant the
+// file accepts is one PermissionsGranted can turn into subjects.
+func validateArchiveGrants(grants map[string][]string) error {
+	if len(grants) > maxEntries {
+		return fmt.Errorf("policy.archives exceeds max %d programs", maxEntries)
+	}
+	for name, streams := range grants {
+		if err := program.ValidateName(name); err != nil {
+			return fmt.Errorf("policy.archives: %w", err)
+		}
+		if len(streams) == 0 || len(streams) > archiveStreamsMax {
+			return fmt.Errorf("policy.archives.%s must list 1 to %d streams",
+				name, archiveStreamsMax)
+		}
+		seen := make(map[string]struct{}, len(streams))
+		for _, stream := range streams {
+			if err := program.ValidateStreamName(stream); err != nil {
+				return fmt.Errorf("policy.archives.%s: %w", name, err)
+			}
+			if _, dup := seen[stream]; dup {
+				return fmt.Errorf("policy.archives.%s duplicate stream %q", name, stream)
+			}
+			seen[stream] = struct{}{}
 		}
 	}
 	return nil

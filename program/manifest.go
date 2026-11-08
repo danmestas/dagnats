@@ -61,6 +61,15 @@ type Manifest struct {
 	// here it is a guardrail for a trusted program, not isolation
 	// (dagnats#909).
 	Discovers []string
+	// Archives are JetStream streams this program archives and evicts:
+	// on each it may drain through one named ephemeral consumer
+	// (ArchiveConsumer), read every consumer's info for ack floors, and
+	// purge. Declaring is not enough: the operator must also grant the
+	// stream to the program in dagnats.yaml (policy.archives), and only
+	// streams both declared and granted get rights (EffectiveArchives).
+	// A declared stream the operator has not granted registers fine and
+	// grants nothing; the server logs the mismatch.
+	Archives []string
 	// Console links the program from the dagnats console nav; nil for
 	// none.
 	Console *Link

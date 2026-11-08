@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"maps"
 	"slices"
 	"strings"
@@ -70,7 +71,7 @@ func applyAuth(opts *natsserver.Options, login, password string) {
 		})
 	}
 	opts.NoAuthUser = anonymous.Username
-	opts.Nkeys = programUsers(nil)
+	opts.Nkeys = programUsers(nil, nil)
 	system := natsserver.NewAccount(systemAccountName)
 	opts.Accounts = append(opts.Accounts, system)
 	opts.SystemAccount = systemAccountName
@@ -154,8 +155,11 @@ var placeholderNkey = func() string {
 }()
 
 // programUsers is one NKey user per registered program, with
-// PermissionsFor its manifest, in a stable order, plus the placeholder.
-func programUsers(records []programs.Record) []*natsserver.NkeyUser {
+// PermissionsGranted its manifest and its operator archive grant, in a
+// stable order, plus the placeholder.
+func programUsers(
+	records []programs.Record, archives map[string][]string,
+) []*natsserver.NkeyUser {
 	sorted := slices.Clone(records)
 	slices.SortFunc(sorted, func(a, b programs.Record) int {
 		return strings.Compare(a.Manifest.Name, b.Manifest.Name)
@@ -167,8 +171,10 @@ func programUsers(records []programs.Record) []*natsserver.NkeyUser {
 	})
 	for _, record := range sorted {
 		users = append(users, &natsserver.NkeyUser{
-			Nkey:                   record.PublicKey,
-			Permissions:            serverPermissions(programs.UserPermissions(record)),
+			Nkey: record.PublicKey,
+			Permissions: serverPermissions(
+				programs.UserPermissions(record, archives[record.Manifest.Name]),
+			),
 			AllowedConnectionTypes: clientConnectionTypes(),
 		})
 	}
@@ -242,6 +248,9 @@ type userSet struct {
 
 	mu      sync.Mutex
 	records map[string]programs.Record // program name -> record, as the server has it
+	// archives is the operator's policy.archives grant, program name ->
+	// streams; hot-reloaded from dagnats.yaml through setArchives.
+	archives map[string][]string
 	// dirty: the last reload failed, so the server may lag records.
 	dirty bool
 }
@@ -268,7 +277,8 @@ func (u *userSet) put(name string, record programs.Record, deleted bool) error {
 	if deleted && !exists {
 		return nil
 	}
-	if !deleted && exists && !u.dirty && sameUser(current, record) {
+	granted := u.archives[name]
+	if !deleted && exists && !u.dirty && sameUser(current, record, granted) {
 		return nil
 	}
 	// The change is committed only once the server took it: a failed
@@ -281,28 +291,85 @@ func (u *userSet) put(name string, record programs.Record, deleted bool) error {
 	} else {
 		next[name] = record
 	}
-	if err := u.reloadLocked(next); err != nil {
+	if err := u.reloadLocked(next, u.archives); err != nil {
 		u.dirty = true
 		return err
 	}
 	u.records, u.dirty = next, false
+	if !deleted {
+		logArchiveMismatch(record, granted)
+	}
 	return nil
+}
+
+// setArchives replaces the operator's archive grant and reloads when it
+// changed, so a dagnats.yaml edit adds or removes archive rights on
+// connected programs without a restart. Like put, a failed reload keeps
+// the old grant and marks the set dirty.
+func (u *userSet) setArchives(grants map[string][]string) error {
+	if len(grants) > programArchiveGrantsMax {
+		panic("userSet.setArchives: grant exceeds the policy bound")
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if !u.dirty && maps.EqualFunc(u.archives, grants, slices.Equal[[]string]) {
+		return nil
+	}
+	next := make(map[string][]string, len(grants))
+	for name, streams := range grants {
+		next[name] = slices.Clone(streams)
+	}
+	if err := u.reloadLocked(u.records, next); err != nil {
+		u.dirty = true
+		return err
+	}
+	u.archives, u.dirty = next, false
+	for name, record := range u.records {
+		logArchiveMismatch(record, next[name])
+	}
+	if len(u.archives) != len(grants) {
+		panic("userSet.setArchives: grant copy drifted")
+	}
+	return nil
+}
+
+// programArchiveGrantsMax mirrors configfile's bound on policy.archives
+// programs, so an unvalidated grant is a programmer error here.
+const programArchiveGrantsMax = 500
+
+// logArchiveMismatch makes a gap between what a confirmed program
+// declares in Archives and what the operator granted visible: either
+// side alone grants nothing, which would otherwise fail silently.
+func logArchiveMismatch(record programs.Record, granted []string) {
+	if record.Pending || (len(record.Manifest.Archives) == 0 && len(granted) == 0) {
+		return
+	}
+	effective := program.EffectiveArchives(record.Manifest, granted)
+	if len(effective) == len(record.Manifest.Archives) && len(effective) == len(granted) {
+		return
+	}
+	slog.Warn("programs: archive streams declared and granted differ; "+
+		"only streams in both get archive rights",
+		"program", record.Manifest.Name, "declared", record.Manifest.Archives,
+		"granted", granted, "effective", effective)
 }
 
 // sameUser reports whether two records give the same NATS user, so a
 // watch replay of a write this node already applied costs no reload.
-func sameUser(a, b programs.Record) bool {
+func sameUser(a, b programs.Record, archives []string) bool {
 	if a.PublicKey != b.PublicKey {
 		return false
 	}
-	pa, pb := programs.UserPermissions(a), programs.UserPermissions(b)
+	pa, pb := programs.UserPermissions(a, archives), programs.UserPermissions(b, archives)
 	return slices.Equal(pa.Publish.Allow, pb.Publish.Allow) &&
 		slices.Equal(pa.Publish.Deny, pb.Publish.Deny) &&
 		slices.Equal(pa.Subscribe.Allow, pb.Subscribe.Allow) &&
 		slices.Equal(pa.Subscribe.Deny, pb.Subscribe.Deny)
 }
 
-func (u *userSet) reloadLocked(set map[string]programs.Record) error {
+func (u *userSet) reloadLocked(
+	set map[string]programs.Record, archives map[string][]string,
+) error {
 	if set == nil {
 		panic("userSet.reloadLocked: set must not be nil")
 	}
@@ -315,7 +382,7 @@ func (u *userSet) reloadLocked(set map[string]programs.Record) error {
 	for _, record := range set {
 		records = append(records, record)
 	}
-	next.Nkeys = programUsers(records)
+	next.Nkeys = programUsers(records, archives)
 	if err := u.ns.ReloadOptions(next); err != nil {
 		return fmt.Errorf("reload NATS users: %w", err)
 	}

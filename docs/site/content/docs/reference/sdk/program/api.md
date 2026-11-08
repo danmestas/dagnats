@@ -37,13 +37,16 @@ Programs on a dagnats are trusted: today they are all the operator's own, the sa
 
 - [Constants](<#constants>)
 - [Variables](<#variables>)
+- [func ArchiveConsumer\(name string\) string](<#ArchiveConsumer>)
 - [func Attach\(ctx context.Context, nc \*nats.Conn, prog Program, g Grant\) \(stop func\(context.Context\) error, err error\)](<#Attach>)
 - [func ConfirmSubject\(publicKey string\) string](<#ConfirmSubject>)
+- [func EffectiveArchives\(m Manifest, granted \[\]string\) \[\]string](<#EffectiveArchives>)
 - [func InboxPrefix\(name string\) string](<#InboxPrefix>)
 - [func Provision\(ctx context.Context, js jetstream.JetStream, m Manifest, g Grant\) error](<#Provision>)
 - [func SplitRead\(read string\) \(domain, bucket string\)](<#SplitRead>)
 - [func Validate\(m Manifest\) error](<#Validate>)
 - [func ValidateName\(name string\) error](<#ValidateName>)
+- [func ValidateStreamName\(stream string\) error](<#ValidateStreamName>)
 - [type BucketSpec](<#BucketSpec>)
 - [type ErrRefused](<#ErrRefused>)
   - [func \(e \*ErrRefused\) Error\(\) string](<#ErrRefused.Error>)
@@ -63,6 +66,7 @@ Programs on a dagnats are trusted: today they are all the operator's own, the sa
   - [func OptionsFromEnv\(name string\) Options](<#OptionsFromEnv>)
 - [type Permissions](<#Permissions>)
   - [func PermissionsFor\(m Manifest\) Permissions](<#PermissionsFor>)
+  - [func PermissionsGranted\(m Manifest, archives \[\]string\) Permissions](<#PermissionsGranted>)
 - [type Program](<#Program>)
 - [type RegisterReply](<#RegisterReply>)
 - [type RegisterRequest](<#RegisterRequest>)
@@ -127,6 +131,15 @@ const ConfirmSubjectWildcard = confirmSubjectPrefix + "*"
 var ErrRelayUnavailable = natsutil.ErrRelayUnavailable
 ```
 
+<a name="ArchiveConsumer"></a>
+## func [ArchiveConsumer](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L218>)
+
+```go
+func ArchiveConsumer(name string) string
+```
+
+ArchiveConsumer is the one consumer name a program may use on a stream it archives: "\<name\>\_archive". A NATS wildcard matches only a whole token, so the grant cannot pin a name prefix \(nats.go's ordered consumer names "\<prefix\>\_\<serial\>", with a serial that grows on every fetch\); it pins this exact name instead. Drain with a plain named consumer, AckNone with an InactiveThreshold, not OrderedConsumer.
+
 <a name="Attach"></a>
 ## func [Attach](<https://github.com/danmestas/dagnats/blob/main/program/attach.go#L41-L43>)
 
@@ -149,8 +162,17 @@ func ConfirmSubject(publicKey string) string
 
 ConfirmSubject is the subject the program with publicKey confirms on.
 
+<a name="EffectiveArchives"></a>
+## func [EffectiveArchives](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L196>)
+
+```go
+func EffectiveArchives(m Manifest, granted []string) []string
+```
+
+EffectiveArchives is the intersection of the streams m declares in Archives and the streams the operator granted, in manifest order. Deny by default: a nil grant yields nothing.
+
 <a name="InboxPrefix"></a>
-## func [InboxPrefix](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L140>)
+## func [InboxPrefix](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L149>)
 
 ```go
 func InboxPrefix(name string) string
@@ -172,7 +194,7 @@ An existing stream or bucket keeps every field the manifest does not own \(Disca
 Those owned fields always come from the manifest and Grant, so a limit an operator tightened by hand \(MaxBytes, MaxAge, TTL, History, Replicas\) is undone by the next Provision. That stays within the Grant, so no data is lost. A bucket field KeyValueConfig cannot express, such as its stream's MaxMsgs, is reset to the KV default.
 
 <a name="SplitRead"></a>
-## func [SplitRead](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L364>)
+## func [SplitRead](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L407>)
 
 ```go
 func SplitRead(read string) (domain, bucket string)
@@ -181,7 +203,7 @@ func SplitRead(read string) (domain, bucket string)
 SplitRead splits a Reads entry into its JetStream domain and bucket: "eu:chat\_cards" is \("eu", "chat\_cards"\) and a bare "chat\_cards" is \("", "chat\_cards"\), the server's own domain. A bucket name cannot hold ':', so the first one splits. Pure; it does not validate.
 
 <a name="Validate"></a>
-## func [Validate](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L50>)
+## func [Validate](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L52>)
 
 ```go
 func Validate(m Manifest) error
@@ -190,7 +212,7 @@ func Validate(m Manifest) error
 Validate checks names, prefixes, sizes, and that Protocols are not under the program's own prefix or an engine root. Pure; used by registration, by Use, and by a program's own tests. Whether a protocol falls under another registered program's prefix needs the registry and is checked at registration.
 
 <a name="ValidateName"></a>
-## func [ValidateName](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L75>)
+## func [ValidateName](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L78>)
 
 ```go
 func ValidateName(name string) error
@@ -198,8 +220,17 @@ func ValidateName(name string) error
 
 ValidateName checks only a manifest's Name, the first rule Validate applies. Registration uses it to tell name\_invalid apart from the other manifest errors.
 
+<a name="ValidateStreamName"></a>
+## func [ValidateStreamName](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L325>)
+
+```go
+func ValidateStreamName(stream string) error
+```
+
+ValidateStreamName checks an archived stream name: 1 to 128 of A\-Z, a\-z, 0\-9, \_ or \-. Narrower than JetStream's own rule, so the name is always one literal subject token in the permissions it generates. The operator's policy.archives grants are checked with it too.
+
 <a name="BucketSpec"></a>
-## type [BucketSpec](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L85-L90>)
+## type [BucketSpec](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L94-L99>)
 
 BucketSpec declares one of the program's own KV buckets. The host creates it \(Provision\); the program reads and writes keys.
 
@@ -234,7 +265,7 @@ func (e *ErrRefused) Error() string
 
 
 <a name="Grant"></a>
-## type [Grant](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L100-L108>)
+## type [Grant](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L109-L117>)
 
 Grant is what attach returns. Sizes are absolute: the program never does budget arithmetic.
 
@@ -251,7 +282,7 @@ type Grant struct {
 ```
 
 <a name="HTTPHandler"></a>
-## type [HTTPHandler](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L135>)
+## type [HTTPHandler](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L144>)
 
 HTTPHandler is optional. The host decides the listener and prefix.
 
@@ -260,7 +291,7 @@ type HTTPHandler interface{ Handler() http.Handler }
 ```
 
 <a name="Host"></a>
-## type [Host](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L113-L121>)
+## type [Host](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L122-L130>)
 
 Host is what Start receives. It is data: the connection the program was attached with, its Grant, a logger tagged with its name, and Handle, which registers a task handler on the worker Attach runs.
 
@@ -345,7 +376,7 @@ func (k Key) String() string
 String prints the public key, so logging a Key cannot leak the seed.
 
 <a name="Link"></a>
-## type [Link](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L93-L96>)
+## type [Link](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L102-L105>)
 
 Link is a console navigation entry.
 
@@ -357,7 +388,7 @@ type Link struct {
 ```
 
 <a name="Manifest"></a>
-## type [Manifest](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L16-L67>)
+## type [Manifest](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L16-L76>)
 
 Manifest is everything dagnats needs to admit a program. Name is the prefix root: task types and workflow names "name.\*", subjects "name.\>", streams "NAME\_\*", buckets "name\_\*".
 
@@ -410,6 +441,15 @@ type Manifest struct {
     // here it is a guardrail for a trusted program, not isolation
     // (dagnats#909).
     Discovers []string
+    // Archives are JetStream streams this program archives and evicts:
+    // on each it may drain through one named ephemeral consumer
+    // (ArchiveConsumer), read every consumer's info for ack floors, and
+    // purge. Declaring is not enough: the operator must also grant the
+    // stream to the program in dagnats.yaml (policy.archives), and only
+    // streams both declared and granted get rights (EffectiveArchives).
+    // A declared stream the operator has not granted registers fine and
+    // grants nothing; the server logs the mismatch.
+    Archives []string
     // Console links the program from the dagnats console nav; nil for
     // none.
     Console *Link
@@ -456,7 +496,7 @@ func OptionsFromEnv(name string) Options
 OptionsFromEnv reads \<NAME\>\_DAGNATS\_URL, \<NAME\>\_SEED and \<NAME\>\_JOIN\_KEY, with NAME the program name in upper case: notify reads NOTIFY\_DAGNATS\_URL. The URL defaults to nats://127.0.0.1:4222 and the seed to ./\<name\>.seed.
 
 <a name="Permissions"></a>
-## type [Permissions](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L29-L32>)
+## type [Permissions](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L30-L33>)
 
 Permissions is a plain permission set for one program's NATS user. The server converts it to nats\-server's own type, so a program never links nats\-server.
 
@@ -470,7 +510,7 @@ type Permissions struct {
 ```
 
 <a name="PermissionsFor"></a>
-### func [PermissionsFor](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L73>)
+### func [PermissionsFor](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L77>)
 
 ```go
 func PermissionsFor(m Manifest) Permissions
@@ -482,8 +522,19 @@ These are guardrails against a trusted program's mistakes, not an isolation boun
 
 Residual: info, next, ack and create on a STICKY\_TASKS consumer are granted for any consumer name, so a program holding a sibling's name could pull, ack or reconfigure it. The names are unguessable and never disclosed \(stickyPublish\), and TestPermissions\_StickyConsumerNamesNotDisclosed pins the disclosure surfaces.
 
+PermissionsFor carries no operator grant, so no Archives rights: it is PermissionsGranted\(m, nil\).
+
+<a name="PermissionsGranted"></a>
+### func [PermissionsGranted](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L86>)
+
+```go
+func PermissionsGranted(m Manifest, archives []string) Permissions
+```
+
+PermissionsGranted is PermissionsFor plus the archive rights \(archivePublish\) on each stream in EffectiveArchives\(m, archives\): archives is what the operator granted this program in dagnats.yaml \(policy.archives\), so a stream the manifest declares but the operator has not granted, or the reverse, yields nothing.
+
 <a name="Program"></a>
-## type [Program](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L124-L132>)
+## type [Program](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L133-L141>)
 
 Program is a separately released binary's view of dagnats.
 
@@ -568,7 +619,7 @@ func (r *Running) Stop(ctx context.Context) error
 Stop drains the worker, calls prog.Stop and closes the connection. It makes no control\-plane request, so it works while dagnats is down. Later calls return the first result.
 
 <a name="StreamSpec"></a>
-## type [StreamSpec](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L73-L81>)
+## type [StreamSpec](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L82-L90>)
 
 StreamSpec declares one of the program's own JetStream streams. The host creates it \(Provision\); the program only reads and consumes it. Its MaxBytes is resolved by dagnats from the fraction and floor and handed back in Grant.StreamMaxBytes.
 
@@ -585,7 +636,7 @@ type StreamSpec struct {
 ```
 
 <a name="SubjectPermission"></a>
-## type [SubjectPermission](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L13-L16>)
+## type [SubjectPermission](<https://github.com/danmestas/dagnats/blob/main/program/permissions.go#L14-L17>)
 
 SubjectPermission is one direction's allow and deny subject lists, with NATS wildcard semantics. A subject is permitted when an Allow entry matches it and no Deny entry does.
 

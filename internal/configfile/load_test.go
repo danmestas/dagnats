@@ -69,6 +69,56 @@ func TestValidateRejectsPolicyEmptyString(t *testing.T) {
 	}
 }
 
+func TestLoadPolicyArchivesRoundTrips(t *testing.T) {
+	src := `
+policy:
+  archives:
+    lode: [AGENT_JOURNAL, WORKFLOW_HISTORY]
+`
+	cfg, err := Load(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Policy == nil || len(cfg.Policy.Archives["lode"]) != 2 {
+		t.Fatalf("policy.archives must round-trip, got %+v", cfg.Policy)
+	}
+	if got := cfg.Policy.Archives["lode"][1]; got != "WORKFLOW_HISTORY" {
+		t.Fatalf("archives[lode][1] = %q, want WORKFLOW_HISTORY", got)
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
+func TestValidateRejectsBadArchiveGrants(t *testing.T) {
+	tooMany := make([]string, 33)
+	for i := range tooMany {
+		tooMany[i] = "S" + strings.Repeat("X", i)
+	}
+	cases := map[string]map[string][]string{
+		"program name": {"Lode": {"AGENT_JOURNAL"}},
+		"stream name":  {"lode": {"AGENT.JOURNAL"}},
+		"wildcard":     {"lode": {">"}},
+		"duplicate":    {"lode": {"AGENT_JOURNAL", "AGENT_JOURNAL"}},
+		"too many":     {"lode": tooMany},
+		"empty list":   {"lode": {}},
+	}
+	for name, archives := range cases {
+		cfg := ConfigFile{Policy: &PolicyYAML{Archives: archives}}
+		err := Validate(cfg)
+		if err == nil || !strings.Contains(err.Error(), "policy.archives") {
+			t.Errorf("%s: Validate = %v, want a policy.archives error", name, err)
+		}
+	}
+	// Negative space: a well-formed grant validates.
+	ok := ConfigFile{Policy: &PolicyYAML{Archives: map[string][]string{
+		"lode": {"AGENT_JOURNAL"},
+	}}}
+	if err := Validate(ok); err != nil {
+		t.Fatalf("Validate(valid archives) = %v", err)
+	}
+}
+
 func TestLoadValidYAML(t *testing.T) {
 	src := `
 workflows:

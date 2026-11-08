@@ -225,7 +225,7 @@ dagnats' embedded NATS server always has these users:
 
 - **Anonymous.** A client that presents no credentials is root when `nats_user` is unset (open mode); one that presents credentials the server does not know (an unregistered NKey, a wrong login) is rejected in either mode. When `nats_user` is set (required mode), it is the join user, which may only publish `api.programs.register` and subscribe to `_JOIN.>`, so it can register a program and do nothing else.
 - **The operator login**, `nats_user`, when set. Unrestricted.
-- **One NKey user per registered program**, with the permissions its manifest derives (`program.PermissionsFor`). Every node builds them from the `programs` KV bucket at start and reloads them whenever the bucket changes. A program whose key is unchanged stays connected across a reload; a removed or replaced key is disconnected.
+- **One NKey user per registered program**, with the permissions its manifest derives (`program.PermissionsFor`, plus any `policy.archives` grant through `program.PermissionsGranted`). Every node builds them from the `programs` KV bucket at start and reloads them whenever the bucket changes. A program whose key is unchanged stays connected across a reload; a removed or replaced key is disconnected.
 - **A system-account user**, `_dagnats_system`, with a random password per start that is never handed out. Only dagnats dials it, in process, to move the JetStream meta leader when `preferred_leaders` is set and to remove a server listed in `retire_peers`. No client reaches the system account.
 
 > **Programs are trusted.** These permissions are guardrails against mistakes, not an isolation boundary. A program can still write arbitrary data into the account through JetStream reply reflection (nats-server does not check a JetStream reply subject against the requester's permissions), so run only trusted programs until per-program NATS accounts land ([#909](https://github.com/danmestas/dagnats/issues/909)).
@@ -235,6 +235,8 @@ dagnats' embedded NATS server always has these users:
 **Reading a bucket in another region.** A `Reads` entry may name the JetStream domain its bucket lives in, `<domain>:<bucket>` such as `eu:chat_cards` ([ADR-031](https://github.com/danmestas/dagnats/blob/main/docs/architecture/adr-031-supercluster-regions.md)). The program's user then gets the read crossings (stream info, direct get, consumer create, info and delete for a watch) as `$JS.<domain>.API.*`, which `jetstream.NewWithDomain(nc, "<domain>")` sends over the leaf link, instead of `$JS.API.*`, plus the same `$JS.FC.KV_<bucket>.>` flow-control grant; deliveries arrive on the program's own inbox. A bare entry reads the server's own domain. The domain must be one NATS token of at most 64 bytes; the bucket follows the bare rules, except that a domain-qualified read may name the program's own prefix, since its full access is local. `eu:chat_cards` and `chat_cards` are separate grants. The leaf link must carry `$JS.<domain>.API.>` and `$JS.FC.>`, as the region allow-list does.
 
 In required mode a program needs a join key to register. In open mode the key is optional, because anonymous is root anyway; that includes reading other clients' registration requests, so join keys protect only a required-mode server.
+
+**Archiving streams.** An `Archives` entry names a JetStream stream the program archives and purges. Declaring it grants nothing by itself: the operator must also grant it in `policy.archives` (see [Archive grants](#archive-grants)).
 
 **Updates.** A registered program's change is authenticated by its own key (the confirmation above), so a change within its own prefix (task types, workflows, its own streams and buckets) needs no join key: a short-lived, single-use key that admitted the program does not block its later releases, and revoking it does not either. A change that widens the program's reach, a new protocol, a new read of another program's bucket or a new micro service in `Discovers`, needs a join key in that request, usable and with names covering the program, every new protocol's root and every new read's owner, the bucket's `<program>_` prefix in whatever domain the read names (a discovered service needs nothing more than the program: discovery reads only service metadata); it spends a use, and without one it is refused `join_key_required_to_widen`, naming what widened. An open-mode server takes a keyless widening as it takes a keyless registration. Every update is still checked for protocol clashes, version range, budget and destructive changes. Like every program permission, this is a guardrail for trusted programs, not an isolation boundary: a program can already write elsewhere in the account through JetStream reply reflection, so run only trusted programs until per-program NATS accounts land ([#909](https://github.com/danmestas/dagnats/issues/909)).
 
@@ -255,6 +257,20 @@ policy:
 - `promote` — subset of `grant` that can spawn higher-privilege workflows; must be a subset
 
 See [Runtime-Generated Workflows]({{< ref "/docs/ai-patterns/runtime-generated-workflows" >}}) for agent-runtime patterns and [Service discovery]({{< ref "/docs/operations/service-discovery" >}}) for how the control plane is exposed.
+
+## Archive grants
+
+A program that archives JetStream streams (lode, which drains streams into object storage and evicts what it has archived) declares them in its manifest's `Archives`, and the operator grants them to it in `policy.archives`. A program gets archive rights on a stream only when both name it: a declared stream the operator has not granted registers fine and grants nothing, a granted stream the program does not declare grants nothing, and the server logs a warning naming the declared, granted and effective streams whenever they differ. Absent = deny-by-default. The section is hot-reloadable: editing it reloads the program NATS users, and a connected program gains or loses the rights without reconnecting.
+
+```yaml
+policy:
+  archives:
+    lode: [AGENT_JOURNAL, WORKFLOW_HISTORY]
+```
+
+Each key is a program name, each value 1 to 32 distinct stream names of `A-Z`, `a-z`, `0-9`, `_` or `-`. On each effective stream `<S>` the program's user gets exactly: `$JS.API.STREAM.INFO.<S>` and `$JS.API.STREAM.PURGE.<S>`; `$JS.API.CONSUMER.LIST.<S>`, `$JS.API.CONSUMER.NAMES.<S>` and `$JS.API.CONSUMER.INFO.<S>.*` (every consumer, for ack floors); and `$JS.API.CONSUMER.CREATE.<S>.<program>_archive` (and `.>` after it, the filtered form), `$JS.API.CONSUMER.MSG.NEXT.<S>.<program>_archive` and `$JS.API.CONSUMER.DELETE.<S>.<program>_archive`. The program drains through that one consumer name (`program.ArchiveConsumer`), a plain named consumer with `AckNone` and an inactive threshold: a NATS permission can pin a whole name but not a name prefix, so nats.go's ordered consumer, whose name gains a new serial on every fetch, cannot be granted. There is no ack grant, no legacy `DURABLE.CREATE`, no publish on the stream's subjects and no stream update or delete.
+
+> **Purge is powerful.** The purge request body (sequence, filter, keep) cannot be constrained by a subject, so an archive grant lets the program purge the whole stream, not only below the floors it read; the consumer create body likewise decides whether its one consumer is durable. Consumer info and list disclose every consumer on the stream, so never grant `STICKY_TASKS`, whose consumer names are capabilities. Grant only programs you trust with the stream's data. Like every program permission this is a guardrail, not isolation ([#909](https://github.com/danmestas/dagnats/issues/909)): the grant is declared so per-program accounts can enforce it later.
 
 ## Agent-runtime limits & retention
 

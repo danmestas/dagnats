@@ -90,6 +90,15 @@ func serverPermissions(p program.Permissions) *natsserver.Permissions {
 // dagnats streams and buckets provisioned by the admin connection.
 func startFixture(t *testing.T, manifests ...program.Manifest) *fixture {
 	t.Helper()
+	return startFixtureGranted(t, nil, manifests...)
+}
+
+// startFixtureGranted is startFixture with operator archive grants, by
+// program name, passed to program.PermissionsGranted.
+func startFixtureGranted(
+	t *testing.T, archives map[string][]string, manifests ...program.Manifest,
+) *fixture {
+	t.Helper()
 	f := &fixture{violations: &violationLog{}, keys: map[string]program.Key{}}
 	opts := &natsserver.Options{
 		Host:              "127.0.0.1",
@@ -108,7 +117,7 @@ func startFixture(t *testing.T, manifests ...program.Manifest) *fixture {
 		f.keys[m.Name] = key
 		opts.Nkeys = append(opts.Nkeys, &natsserver.NkeyUser{
 			Nkey:        key.PublicKey(),
-			Permissions: serverPermissions(program.PermissionsFor(m)),
+			Permissions: serverPermissions(program.PermissionsGranted(m, archives[m.Name])),
 		})
 	}
 	ns, err := natsserver.NewServer(opts)

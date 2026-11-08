@@ -1,6 +1,7 @@
 package program
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/danmestas/dagnats/internal/consumername"
@@ -70,9 +71,21 @@ var engineEventSubjects = []string{"stream", "logs"}
 // ack or reconfigure it. The names are unguessable and never disclosed
 // (stickyPublish), and TestPermissions_StickyConsumerNamesNotDisclosed
 // pins the disclosure surfaces.
+//
+// PermissionsFor carries no operator grant, so no Archives rights: it is
+// PermissionsGranted(m, nil).
 func PermissionsFor(m Manifest) Permissions {
+	return PermissionsGranted(m, nil)
+}
+
+// PermissionsGranted is PermissionsFor plus the archive rights
+// (archivePublish) on each stream in EffectiveArchives(m, archives):
+// archives is what the operator granted this program in dagnats.yaml
+// (policy.archives), so a stream the manifest declares but the operator
+// has not granted, or the reverse, yields nothing.
+func PermissionsGranted(m Manifest, archives []string) Permissions {
 	if err := Validate(m); err != nil {
-		panic("program.PermissionsFor: " + err.Error())
+		panic("program.PermissionsGranted: " + err.Error())
 	}
 	var pub, sub []string
 	pub = append(pub, "$JS.API.INFO")
@@ -103,6 +116,9 @@ func PermissionsFor(m Manifest) Permissions {
 	for _, read := range m.Reads {
 		pub = append(pub, readBucketPublish(SplitRead(read))...)
 	}
+	for _, stream := range EffectiveArchives(m, archives) {
+		pub = append(pub, archivePublish(m.Name, stream)...)
+	}
 	own := append([]string{m.Name + ".>"}, protocolSubjects(m.Protocols)...)
 	pub = append(pub, own...)
 	pub = append(pub, "_INBOX.>")
@@ -110,7 +126,7 @@ func PermissionsFor(m Manifest) Permissions {
 	sub = append(sub, microSubscribe(m.Name)...)
 	sub = append(sub, protocol.CancelSubjectPrefix+"*", InboxPrefix(m.Name)+".>")
 	if len(pub) == 0 || len(sub) == 0 {
-		panic("program.PermissionsFor: empty permission list")
+		panic("program.PermissionsGranted: empty permission list")
 	}
 	return Permissions{
 		Publish:   SubjectPermission{Allow: pub},
@@ -170,6 +186,89 @@ func stickyPublish(taskTypes []string) []string {
 	}
 	for _, t := range taskTypes {
 		out = append(out, "$JS.API.CONSUMER.CREATE.STICKY_TASKS.*.sticky."+t+".*.>")
+	}
+	return out
+}
+
+// EffectiveArchives is the intersection of the streams m declares in
+// Archives and the streams the operator granted, in manifest order.
+// Deny by default: a nil grant yields nothing.
+func EffectiveArchives(m Manifest, granted []string) []string {
+	if len(m.Archives) > archiveCountMax {
+		panic("program.EffectiveArchives: manifest exceeds the archive bound")
+	}
+	var out []string
+	for _, stream := range m.Archives {
+		if slices.Contains(granted, stream) {
+			out = append(out, stream)
+		}
+	}
+	if len(out) > len(m.Archives) {
+		panic("program.EffectiveArchives: more effective than declared")
+	}
+	return out
+}
+
+// ArchiveConsumer is the one consumer name a program may use on a stream
+// it archives: "<name>_archive". A NATS wildcard matches only a whole
+// token, so the grant cannot pin a name prefix (nats.go's ordered
+// consumer names "<prefix>_<serial>", with a serial that grows on every
+// fetch); it pins this exact name instead. Drain with a plain named
+// consumer, AckNone with an InactiveThreshold, not OrderedConsumer.
+func ArchiveConsumer(name string) string {
+	if err := validateName(name); err != nil {
+		panic("program.ArchiveConsumer: " + err.Error())
+	}
+	consumer := name + "_archive"
+	if strings.ContainsAny(consumer, ".*> ") {
+		panic("program.ArchiveConsumer: consumer must be one literal token")
+	}
+	return consumer
+}
+
+// archivePublish grants an archiver its rights on one stream it both
+// declares and the operator granted, and nothing wider:
+//
+//   - STREAM.INFO: the stream's sequence range, to plan a drain.
+//   - STREAM.PURGE: evict what the archive already holds. The request
+//     body carries the "seq" (and may carry a filter or keep), which no
+//     subject can constrain, so this is a whole-stream purge right.
+//   - CONSUMER.LIST, CONSUMER.NAMES and CONSUMER.INFO for any consumer:
+//     every durable's ack floor, so the program never purges under a
+//     consumer that has not read yet.
+//   - CONSUMER.CREATE, MSG.NEXT and DELETE for ArchiveConsumer only, so
+//     it drains through its own consumer and cannot pull, reconfigure or
+//     delete anyone else's. Both create forms: unfiltered and filtered.
+//
+// No "$JS.ACK.<stream>.>": the archiver drains with AckNone and keeps
+// its own position, so it never moves an ack floor. No DURABLE.CREATE,
+// no publish on the stream's subjects, no stream update or delete.
+//
+// Residual risk, accepted because the operator grant gates it: purge
+// deletes data outright, and a program holding it can purge the whole
+// stream, not only below the floors it read. CONSUMER.CREATE cannot tell
+// ephemeral from durable (that is in the body), so the program could
+// make its one consumer durable. INFO and LIST disclose every consumer's
+// name and config: never grant STICKY_TASKS, whose consumer names are
+// capabilities (stickyPublish).
+func archivePublish(name, stream string) []string {
+	if err := ValidateStreamName(stream); err != nil {
+		panic("program.archivePublish: " + err.Error())
+	}
+	consumer := ArchiveConsumer(name)
+	out := []string{
+		"$JS.API.STREAM.INFO." + stream,
+		"$JS.API.STREAM.PURGE." + stream,
+		"$JS.API.CONSUMER.LIST." + stream,
+		"$JS.API.CONSUMER.NAMES." + stream,
+		"$JS.API.CONSUMER.INFO." + stream + ".*",
+		"$JS.API.CONSUMER.CREATE." + stream + "." + consumer,
+		"$JS.API.CONSUMER.CREATE." + stream + "." + consumer + ".>",
+		"$JS.API.CONSUMER.MSG.NEXT." + stream + "." + consumer,
+		"$JS.API.CONSUMER.DELETE." + stream + "." + consumer,
+	}
+	if len(out) != 9 {
+		panic("program.archivePublish: entry count drifted")
 	}
 	return out
 }
