@@ -120,6 +120,27 @@ func freeTCPPorts(t *testing.T, n int) []int {
 	return ports
 }
 
+// portRaceAttempts bounds startWithFreshPorts.
+const portRaceAttempts = 4
+
+// startWithFreshPorts runs start with n freshly picked ports. A route
+// port is picked, released and only then bound by the server, so another
+// process can take it in between; the server then fails to start (its
+// bind error is not logged, only "not ready"). start must stop whatever
+// it started and return an error in that case; the pick is then repeated.
+// A run that never succeeds is fatal.
+func startWithFreshPorts(t *testing.T, n int, start func(ports []int) error) {
+	t.Helper()
+	var err error
+	for range portRaceAttempts {
+		if err = start(freeTCPPorts(t, n)); err == nil {
+			return
+		}
+		t.Logf("cluster start failed, retrying on new ports: %v", err)
+	}
+	t.Fatalf("cluster did not start in %d attempts: %v", portRaceAttempts, err)
+}
+
 // A domain-bearing server still answers plain $JS.API locally, so every
 // jetstream.New(nc) call site keeps working unchanged.
 func TestStartNATS_JetStreamDomainKeepsPlainAPI(t *testing.T) {

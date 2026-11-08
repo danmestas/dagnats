@@ -4,7 +4,8 @@
 // cluster name and JetStream domain. The listening region opens a leaf
 // listener on every node; every node of the dialing region lists all of
 // those listeners in leaf_remotes, which is one link that fails over
-// between them. Ports come from freeTCPPorts and every wait is bounded.
+// between them. Route ports come from freeTCPPorts, retried when another process takes one
+// before a node binds it; every wait is bounded.
 package server
 
 import (
@@ -68,19 +69,37 @@ func startTestRegion(t *testing.T, name string, opts regionOptions) *testRegion 
 	if opts.listen && len(opts.dial) > 0 {
 		panic("startTestRegion: a test region either listens or dials")
 	}
-	routePorts := freeTCPPorts(t, testRegionNodes)
+	var region *testRegion
+	startWithFreshPorts(t, testRegionNodes, func(routePorts []int) error {
+		var err error
+		region, err = tryStartTestRegion(t, name, routePorts, opts)
+		return err
+	})
+	waitRegionFormed(t, region)
+	return region
+}
+
+// tryStartTestRegion starts the region's nodes on routePorts. When a node
+// fails to start it stops the ones already running and returns the error,
+// so the caller can retry on other ports.
+func tryStartTestRegion(
+	t *testing.T, name string, routePorts []int, opts regionOptions,
+) (*testRegion, error) {
+	t.Helper()
 	region := &testRegion{
-		name: name, nodes: make([]*natsserver.Server, testRegionNodes),
-		configs: make([]Config, testRegionNodes),
+		name: name, nodes: make([]*natsserver.Server, 0, testRegionNodes),
+		configs: make([]Config, 0, testRegionNodes),
 	}
-	for i := range region.nodes {
+	for i := range testRegionNodes {
 		cfg := regionNodeConfig(t, name, i, routePorts, opts)
 		node, err := startNATS(cfg)
 		if err != nil {
-			t.Fatalf("start %s node %d: %v", name, i, err)
+			region.shutdown()
+			return nil, fmt.Errorf("start %s node %d: %w", name, i, err)
 		}
 		t.Cleanup(node.Shutdown)
-		region.nodes[i], region.configs[i] = node, cfg
+		region.nodes = append(region.nodes, node)
+		region.configs = append(region.configs, cfg)
 		if opts.listen {
 			varz, err := node.Varz(nil)
 			if err != nil || varz.LeafNode.Port <= 0 {
@@ -89,8 +108,7 @@ func startTestRegion(t *testing.T, name string, opts regionOptions) *testRegion 
 			region.leafPorts = append(region.leafPorts, varz.LeafNode.Port)
 		}
 	}
-	waitRegionFormed(t, region)
-	return region
+	return region, nil
 }
 
 // regionNodeConfig is node i's dagnats config in region name.
