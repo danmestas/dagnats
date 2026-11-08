@@ -44,11 +44,13 @@ type dispatchIdentityMode int
 
 const (
 	// dispatchNewAttempt is for every re-dispatch that starts a
-	// genuinely NEW attempt: initial dispatch, retry (rate/concurrency/
-	// backoff/retry-after), DLQ replay, on-fail compensation, a map
-	// instance's own dispatch. Attempt is projected as Attempts + 1,
-	// so a never-started step dispatches attempt 1 — see
-	// dispatchIdentity.
+	// genuinely NEW attempt: initial dispatch, retry (backoff/
+	// retry-after), DLQ replay, on-fail compensation, a map instance's
+	// own dispatch. Attempt is projected as Attempts + 1, so a
+	// never-started step dispatches attempt 1 — see dispatchIdentity.
+	// A rate, concurrency or soft-sticky deferral is not a new attempt:
+	// its timer re-sends the deferred dispatch's own attempt
+	// (redispatchAttempt).
 	dispatchNewAttempt dispatchIdentityMode = iota
 	// dispatchSameAttempt is for the agent-loop Continue re-enqueue
 	// ONLY: it is NOT a new attempt and must not consume retry budget

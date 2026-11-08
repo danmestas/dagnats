@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A cron trigger no longer starts two runs for one minute on a cluster.** `notify.health-verify-daily` (`17 6 * * *`) started runs at 06:17:02Z and 06:17:21Z from two nodes. Every node runs a cron scheduler, and the only cross-node guard was the `workflow.started` message id, which WORKFLOW_HISTORY remembers for 5 seconds, so ticks 19 seconds apart both fired. Before firing, the scheduler now claims the minute with an atomic create/update on a per-trigger `<id>.cron_claim` key in `trigger_state`; only the winner fires, and backfill uses the same claim. If the claim hits a KV error the tick is skipped and retried on the next tick, and the claim winner retries its own fire up to 3 times (same message id, inside the 5 s duplicate window). The claim is never released: if every retry fails the node logs an ERROR and keeps it, because a failed publish is ambiguous and a visible lost fire beats a silent double fire.
 
+- **A deferred dispatch no longer spends a retry.** When a rate limit, a task concurrency limit or a soft-sticky fallback deferred a task before any handler ran, the re-dispatch was stamped one attempt higher than the dispatch it replaced. The handler saw "attempt 2" on its first run, and the retry budget counted the deferral as a spent attempt, so a rate-limited step with `max_attempts: 3` ran 3 times instead of 4. The re-dispatch now carries the deferred dispatch's own attempt and dispatch nonce; retries after a handler failure still start a new attempt with a new nonce. A deferral timer left in SLEEP_TIMERS by an older binary re-sends the attempt the run snapshot already counts for the queued dispatch.
+
 ## [0.0.57] - 2026-11-07
 
 ### Added
