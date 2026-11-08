@@ -180,20 +180,10 @@ func (tp *TaskPublisher) publish(
 	}
 
 	// Check per-task-type concurrency before publishing.
-	if step.MaxTaskConcurrency > 0 &&
-		tp.admission.HasConcurrency() {
-		acquired, err := tp.admission.AcquireTask(
-			ctx, step.Task, step.MaxTaskConcurrency,
-			taskSlotHolder(runID, step.ID),
-		)
-		if err != nil {
-			return err
-		}
-		if !acquired {
-			tp.metrics.taskConcRejected.Add(ctx, 1)
-			return tp.scheduleConcurrencyRetry(ctx, step, runID, input, meta)
-		}
-		tp.metrics.taskConcAcquired.Add(ctx, 1)
+	if acquired, err := tp.acquireTaskSlot(ctx, step, runID); err != nil {
+		return err
+	} else if !acquired {
+		return tp.scheduleConcurrencyRetry(ctx, step, runID, input, meta)
 	}
 
 	// Check sticky binding — if a binding exists, route to the
@@ -245,76 +235,58 @@ func (tp *TaskPublisher) checkRateLimit(
 	ctx context.Context,
 	step dag.StepDef, runID string, input []byte, meta dispatchMeta,
 ) (bool, error) {
+	if runID == "" {
+		panic("TaskPublisher.checkRateLimit: runID must not be empty")
+	}
+	allowed, retryAfter, err := tp.rateAllows(ctx, step, input)
+	if err != nil || allowed {
+		return false, err
+	}
+	return true, tp.scheduleRateRetry(ctx, step, runID, input, retryAfter, meta)
+}
+
+// rateAllows takes the step's rate-limit tokens for one dispatch, or
+// reports how long until they refill. A step without a rate limit, or
+// a publisher without a limiter, is always allowed.
+func (tp *TaskPublisher) rateAllows(
+	ctx context.Context, step dag.StepDef, input []byte,
+) (allowed bool, retryAfter time.Duration, err error) {
 	if tp.rateLimiter == nil {
-		return false, nil
+		return true, 0, nil
 	}
 	if step.Task == "" {
-		panic(
-			"TaskPublisher.checkRateLimit: " +
-				"step.Task must not be empty",
-		)
+		panic("TaskPublisher.rateAllows: step.Task must not be empty")
 	}
 	if step.RateLimit != nil {
-		return tp.applyGlobalRateLimit(ctx, step, runID, input, meta)
+		rl := step.RateLimit
+		allowed, retryAfter, err = tp.rateLimiter.Allow(
+			ctx, step.Task, "_global", rl.Limit, rl.Period, 1,
+		)
+		if err != nil {
+			return false, 0, fmt.Errorf("rate limit check: %w", err)
+		}
+		return allowed, retryAfter, nil
 	}
 	if step.KeyedRateLimit != nil {
-		return tp.applyKeyedRateLimit(ctx, step, runID, input, meta)
+		return tp.keyedRateAllows(ctx, step, input)
 	}
-	return false, nil
+	return true, 0, nil
 }
 
-// applyGlobalRateLimit checks the global rate limit for this
-// task type and schedules a retry if tokens are exhausted.
-func (tp *TaskPublisher) applyGlobalRateLimit(
-	ctx context.Context,
-	step dag.StepDef, runID string, input []byte, meta dispatchMeta,
-) (bool, error) {
-	if step.RateLimit == nil {
-		panic(
-			"applyGlobalRateLimit: RateLimit must not be nil",
-		)
-	}
-	if runID == "" {
-		panic(
-			"applyGlobalRateLimit: runID must not be empty",
-		)
-	}
-	rl := step.RateLimit
-	allowed, retryAfter, err := tp.rateLimiter.Allow(
-		ctx, step.Task, "_global", rl.Limit, rl.Period, 1,
-	)
-	if err != nil {
-		return false, fmt.Errorf("rate limit check: %w", err)
-	}
-	if allowed {
-		return false, nil
-	}
-	return true, tp.scheduleRateRetry(
-		ctx, step, runID, input, retryAfter, meta,
-	)
-}
-
-// applyKeyedRateLimit checks the per-key rate limit for this
-// task and schedules a retry if tokens are exhausted.
-func (tp *TaskPublisher) applyKeyedRateLimit(
-	ctx context.Context,
-	step dag.StepDef, runID string, input []byte, meta dispatchMeta,
-) (bool, error) {
+// keyedRateAllows is rateAllows for a per-key rate limit.
+func (tp *TaskPublisher) keyedRateAllows(
+	ctx context.Context, step dag.StepDef, input []byte,
+) (bool, time.Duration, error) {
 	if step.KeyedRateLimit == nil {
-		panic(
-			"applyKeyedRateLimit: " +
-				"KeyedRateLimit must not be nil",
-		)
+		panic("keyedRateAllows: KeyedRateLimit must not be nil")
 	}
-	if runID == "" {
-		panic(
-			"applyKeyedRateLimit: runID must not be empty",
-		)
+	if tp.rateLimiter == nil {
+		panic("keyedRateAllows: rateLimiter must not be nil")
 	}
 	krl := step.KeyedRateLimit
 	keyVal, err := dag.ExtractDotPath(krl.Key, input)
 	if err != nil {
-		return false, fmt.Errorf(
+		return false, 0, fmt.Errorf(
 			"extract rate limit key %q: %w", krl.Key, err,
 		)
 	}
@@ -324,14 +296,129 @@ func (tp *TaskPublisher) applyKeyedRateLimit(
 		krl.Limit, krl.Period, krl.Units,
 	)
 	if err != nil {
-		return false, fmt.Errorf("keyed rate limit: %w", err)
+		return false, 0, fmt.Errorf("keyed rate limit: %w", err)
 	}
-	if allowed {
+	return allowed, retryAfter, nil
+}
+
+// acquireTaskSlot takes the step's task concurrency slot for runID.
+// Taking a slot the holder already has succeeds without a second one
+// (AcquireTask), so a deferred dispatch's every fire may ask again. A
+// step without a limit, or an engine without concurrency, always gets
+// one.
+func (tp *TaskPublisher) acquireTaskSlot(
+	ctx context.Context, step dag.StepDef, runID string,
+) (bool, error) {
+	if runID == "" {
+		panic("acquireTaskSlot: runID must not be empty")
+	}
+	if step.ID == "" {
+		panic("acquireTaskSlot: step.ID must not be empty")
+	}
+	if step.MaxTaskConcurrency <= 0 || !tp.admission.HasConcurrency() {
+		return true, nil
+	}
+	acquired, err := tp.admission.AcquireTask(
+		ctx, step.Task, step.MaxTaskConcurrency, taskSlotHolder(runID, step.ID),
+	)
+	if err != nil {
+		return false, err
+	}
+	if !acquired {
+		tp.metrics.taskConcRejected.Add(ctx, 1)
 		return false, nil
 	}
-	return true, tp.scheduleRateRetry(
-		ctx, step, runID, input, retryAfter, meta,
-	)
+	tp.metrics.taskConcAcquired.Add(ctx, 1)
+	return true, nil
+}
+
+// concurrencyRetryDelay is how often a dispatch waiting for a task
+// concurrency slot asks for one again.
+const concurrencyRetryDelay = time.Second
+
+// readmitDeferred is the DeferralAdmitter: the admission a deferral
+// timer's dispatch must pass again before it is re-sent, from the stage
+// that deferred it. A rate deferral asks the limiter again and, once
+// allowed, goes on to the concurrency slot as a fresh dispatch does; a
+// concurrency deferral asks for the slot only, since it already spent
+// its rate tokens. A rate_retry timer that is not RateDeferred is a
+// soft-sticky fallback, which passed admission before its sticky send
+// (or a rate timer from an older binary): it is not charged tokens
+// again, but its slot is still asked for, which costs a fallback
+// nothing as its holder already has it.
+func (tp *TaskPublisher) readmitDeferred(
+	ctx context.Context, tm TimerMessage,
+) (send bool, refireAfter time.Duration, err error) {
+	if !deferralAction(tm.Action) {
+		panic("readmitDeferred: timer must be a deferral")
+	}
+	if tm.RunID == "" {
+		panic("readmitDeferred: RunID must not be empty")
+	}
+	step, found, err := tp.deferredStep(ctx, tm)
+	if err != nil {
+		return false, 0, err
+	}
+	if !found {
+		return true, 0, nil
+	}
+	if tm.Action == TimerActionRateRetry && tm.RateDeferred {
+		allowed, retryAfter, err := tp.rateAllows(ctx, step, tm.Input)
+		if err != nil || !allowed {
+			return false, max(retryAfter, 100*time.Millisecond), err
+		}
+	}
+	acquired, err := tp.acquireTaskSlot(ctx, step, tm.RunID)
+	if err != nil || acquired {
+		return acquired, 0, err
+	}
+	if tm.Action == TimerActionTaskConcurRetry {
+		return false, concurrencyRetryDelay, nil
+	}
+	// Past the limiter but not the slot: the wait from here is a
+	// concurrency deferral's, so a timer of that kind takes it over and
+	// the limiter is not asked again.
+	meta := dispatchMeta{
+		workflowName: tm.WorkflowName, nonce: tm.DispatchNonce,
+		attempt: max(tm.Attempt, firstDispatchAttempt),
+	}
+	return false, 0, tp.scheduleConcurrencyRetry(ctx, step, tm.RunID, tm.Input, meta)
+}
+
+// deferredStep is the step a deferral timer re-sends, as the run's
+// workflow def has it; a map instance is its map step under the
+// instance's ID, the shape publishMapTasks dispatched. found is false
+// when the def no longer names the step: there is no limit left to
+// honour, so the dispatch is re-sent.
+func (tp *TaskPublisher) deferredStep(
+	ctx context.Context, tm TimerMessage,
+) (dag.StepDef, bool, error) {
+	if tm.StepID == "" {
+		panic("deferredStep: StepID must not be empty")
+	}
+	if tp.loadRunAndDef == nil {
+		panic("deferredStep: loadRunAndDef must not be nil")
+	}
+	wfDef, _, err := tp.loadRunAndDef(ctx, tm.RunID)
+	if err != nil {
+		return dag.StepDef{}, false, fmt.Errorf("load run %q: %w", tm.RunID, err)
+	}
+	instance := isMapInstanceID(tm.StepID)
+	defID := tm.StepID
+	if instance {
+		defID, _ = parseMapInstanceID(tm.StepID)
+	}
+	step, found := findStepDef(wfDef, defID)
+	if !found {
+		return dag.StepDef{}, false, nil
+	}
+	step.ID = tm.StepID
+	if instance {
+		// As publishMapTasks does (#513): a timer scheduled for an
+		// instance must never carry the control-plane capability.
+		step.RequiredCapabilities = stripControlPlaneCapability(step.RequiredCapabilities)
+	}
+	return step, true, nil
 }
 
 // scheduleRateRetry schedules a timer to re-attempt task dispatch
@@ -360,6 +447,7 @@ func (tp *TaskPublisher) scheduleRateRetry(
 		RunID:         runID,
 		StepID:        step.ID,
 		DurationMs:    durationMs,
+		RateDeferred:  true,
 		TaskType:      step.Task,
 		Subject:       tp.StepSubject(step, runID),
 		Metadata:      step.Metadata,
@@ -401,7 +489,7 @@ func (tp *TaskPublisher) scheduleConcurrencyRetry(
 		Action:        TimerActionTaskConcurRetry,
 		RunID:         runID,
 		StepID:        step.ID,
-		DurationMs:    1000,
+		DurationMs:    concurrencyRetryDelay.Milliseconds(),
 		TaskType:      step.Task,
 		Subject:       tp.StepSubject(step, runID),
 		Metadata:      step.Metadata,

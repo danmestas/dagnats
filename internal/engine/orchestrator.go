@@ -439,6 +439,9 @@ func (o *Orchestrator) wireDependentSubsystems(
 	// checks against live run state before publishing a synthetic
 	// step.failed.
 	o.sleepTimer.OnStepTimeout(o.fireStepTimeout)
+	// A deferred dispatch passes the publisher's admission again when
+	// its timer fires, so the timer's re-send cannot exceed a limit.
+	o.sleepTimer.OnDeferral(publisher.readmitDeferred)
 }
 
 // Start subscribes to history.> on the WORKFLOW_HISTORY stream using
@@ -2246,7 +2249,7 @@ func (o *Orchestrator) releaseCancelledWithoutDef(
 	holders := make([]string, 0, len(run.Steps))
 	for id, state := range run.Steps {
 		if state.Status == dag.StepStatusCancelled {
-			holders = append(holders, taskSlotHolder(run.RunID, id))
+			holders = append(holders, taskSlotHolders(run.RunID, id, state)...)
 		}
 	}
 	if err := o.admission.ReleaseTaskHolders(ctx, holders); err != nil {
@@ -3081,10 +3084,19 @@ func (o *Orchestrator) releaseTaskSlot(
 	if runID == "" {
 		panic("releaseTaskSlot: runID must not be empty")
 	}
+	if stepID == "" {
+		panic("releaseTaskSlot: stepID must not be empty")
+	}
 	if !o.admission.HasConcurrency() {
 		return
 	}
-	stepDef, found := findStepDef(wfDef, stepID)
+	// A map instance holds a slot of its own under its instance ID,
+	// limited by its map step's def.
+	defID := stepID
+	if isMapInstanceID(stepID) {
+		defID, _ = parseMapInstanceID(stepID)
+	}
+	stepDef, found := findStepDef(wfDef, defID)
 	if !found || stepDef.MaxTaskConcurrency <= 0 {
 		return
 	}
@@ -3112,20 +3124,42 @@ func (o *Orchestrator) releaseCancelledTaskSlots(
 		if state.Status != dag.StepStatusCancelled {
 			continue
 		}
-		stepDef, found := findStepDef(wfDef, id)
-		if !found || stepDef.MaxTaskConcurrency <= 0 {
-			continue
-		}
-		if err := o.admission.ReleaseTask(
-			ctx, stepDef.Task, taskSlotHolder(run.RunID, id),
-		); err != nil {
-			slog.ErrorContext(ctx,
-				"release cancelled task slot failed",
-				"error", err,
-				"step_id", id,
-			)
-		}
+		o.releaseTaskSlot(ctx, wfDef, run.RunID, id)
+		o.releaseMapInstanceSlots(ctx, wfDef, run.RunID, id, state)
 	}
+}
+
+// releaseMapInstanceSlots releases the task slots a map step's
+// instances hold: each instance's dispatch takes one of its own. A
+// step that is not a map has no instances and releases nothing.
+func (o *Orchestrator) releaseMapInstanceSlots(
+	ctx context.Context, wfDef dag.WorkflowDef, runID, stepID string, state dag.StepState,
+) {
+	if runID == "" {
+		panic("releaseMapInstanceSlots: runID must not be empty")
+	}
+	if isMapInstanceID(stepID) {
+		panic("releaseMapInstanceSlots: stepID must be the map step's own")
+	}
+	for index := range state.MapInstances {
+		o.releaseTaskSlot(ctx, wfDef, runID, mapInstanceID(stepID, index))
+	}
+}
+
+// taskSlotHolders is every task-slot holder a step of runID may hold:
+// the step's own, and one per instance when it is a map step.
+func taskSlotHolders(runID, stepID string, state dag.StepState) []string {
+	if runID == "" {
+		panic("taskSlotHolders: runID must not be empty")
+	}
+	if stepID == "" {
+		panic("taskSlotHolders: stepID must not be empty")
+	}
+	holders := []string{taskSlotHolder(runID, stepID)}
+	for index := range state.MapInstances {
+		holders = append(holders, taskSlotHolder(runID, mapInstanceID(stepID, index)))
+	}
+	return holders
 }
 
 // countActiveSteps counts steps that are currently queued or running.

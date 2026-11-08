@@ -101,6 +101,12 @@ type TimerMessage struct {
 	// for (#801). It scopes the timer's msg-id (every iteration of a
 	// loop shares one attempt) and the staleness check at fire time.
 	Iteration int `json:"iteration,omitempty"`
+	// RateDeferred marks a rate_retry timer the rate limiter scheduled,
+	// whose fire must ask the limiter again before it re-sends. The
+	// soft-sticky fallback rides rate_retry too but already passed
+	// admission, so it leaves this false; so does a rate timer from an
+	// older binary, which cannot be told from a fallback.
+	RateDeferred bool `json:"rate_deferred,omitempty"`
 }
 
 // dispatchSubject returns the subject a dispatch timer re-publishes
@@ -164,6 +170,9 @@ type SleepTimer struct {
 	// loopStateMaxBytes is stamped on every re-published TaskPayload
 	// (#801), mirroring TaskPublisher.
 	loopStateMaxBytes int
+	// admitDeferral re-runs a deferred dispatch's admission when its
+	// timer fires (OnDeferral); nil re-sends without it.
+	admitDeferral DeferralAdmitter
 }
 
 // NewSleepTimer creates a SleepTimer bound to the given connection.
@@ -216,6 +225,9 @@ func (st *SleepTimer) identityForRedispatch(
 	if err != nil {
 		return fallback
 	}
+	if isMapInstanceID(tm.StepID) {
+		return mapInstanceRedispatch(tm, run)
+	}
 	state := run.Steps[tm.StepID]
 	attempt, iteration := redispatchAttempt(tm, run)
 	nonce := state.DispatchNonce
@@ -226,6 +238,54 @@ func (st *SleepTimer) identityForRedispatch(
 		attempt: attempt, iteration: iteration, loopState: state.LoopState, nonce: nonce,
 		stale: redispatchStale(tm, state),
 	}
+}
+
+// mapInstanceRedispatch is the identity a map instance's deferral timer
+// re-sends. An instance has no StepState of its own: the snapshot
+// tracks it as one MapInstanceState of its map step, and its dispatch
+// identity (attempt 1, the nonce publishMapTasks minted) lives only on
+// the task and the timer, so the timer's identity is the instance's.
+// Instances are never retried and never loop.
+func mapInstanceRedispatch(tm TimerMessage, run dag.WorkflowRun) redispatch {
+	if !isMapInstanceID(tm.StepID) {
+		panic("mapInstanceRedispatch: StepID must be a map instance ID")
+	}
+	if tm.Attempt < 0 {
+		panic("mapInstanceRedispatch: timer attempt must not be negative")
+	}
+	return redispatch{
+		attempt: max(tm.Attempt, firstDispatchAttempt),
+		nonce:   nonceOrMint(tm.DispatchNonce),
+		stale:   mapInstanceStale(tm, run),
+	}
+}
+
+// mapInstanceStale reports why a map instance's deferral timer no
+// longer belongs to a waiting instance, or "" when it may fire. The
+// instance waits while its map step runs and the instance is still
+// Queued: it leaves Queued only when it completes or fails.
+func mapInstanceStale(tm TimerMessage, run dag.WorkflowRun) string {
+	if tm.RunID == "" {
+		panic("mapInstanceStale: RunID must not be empty")
+	}
+	if !deferralAction(tm.Action) {
+		return "map instances are not retried"
+	}
+	baseID, index := parseMapInstanceID(tm.StepID)
+	state, ok := run.Steps[baseID]
+	if !ok {
+		return "map step not in run"
+	}
+	if state.Status != dag.StepStatusRunning {
+		return "map step not running"
+	}
+	if index < 0 || index >= len(state.MapInstances) {
+		return "no such map instance"
+	}
+	if state.MapInstances[index].Status != dag.StepStatusQueued {
+		return "map instance already finished"
+	}
+	return ""
 }
 
 // redispatchAttempt is the (attempt, iteration) a dispatch timer
@@ -280,10 +340,10 @@ type redispatch struct {
 // on the attempt the timer was scheduled for, with the retry's
 // dispatch time still pending (startAttemptClock clears it once the
 // retry starts). A rate, concurrency or sticky-fallback timer belongs
-// to a deferred send still waiting: the step not yet started (Queued,
-// or Pending for a map instance the snapshot has no entry for), on the
+// to a deferred send still waiting: the step not yet started, on the
 // dispatch the timer was scheduled for, whose attempt the snapshot has
-// not passed. Firing a stale timer would
+// not passed (mapInstanceStale judges a map instance's timer instead).
+// Firing a stale timer would
 // publish a second task whose events the live nonce from the snapshot
 // would let through the event fence.
 func redispatchStale(tm TimerMessage, state dag.StepState) string {
@@ -528,8 +588,11 @@ func (st *SleepTimer) handleTimerJS(msg jetstream.Msg) {
 	switch tm.Action {
 	case TimerActionSleepComplete:
 		st.fireSleepComplete(tm)
-	case TimerActionRateRetry:
-		st.fireRateRetry(tm)
+	case TimerActionRateRetry, TimerActionTaskConcurRetry:
+		if refireAfter := st.fireDeferral(tm); refireAfter > 0 {
+			msg.NakWithDelay(refireAfter)
+			return
+		}
 	case TimerActionWaitTimeout:
 		st.fireWaitTimeout(tm)
 	case TimerActionRetryAfter:
@@ -538,8 +601,6 @@ func (st *SleepTimer) handleTimerJS(msg jetstream.Msg) {
 		st.fireRetryBackoff(tm)
 	case TimerActionApprovalTimeout:
 		st.fireApprovalTimeout(tm)
-	case TimerActionTaskConcurRetry:
-		st.fireRateRetry(tm) // Same re-publish logic as rate retry
 	case TimerActionDebounce:
 		if st.onDebounce != nil {
 			st.onDebounce(tm, meta.Sequence.Stream)
@@ -644,32 +705,96 @@ func (st *SleepTimer) fireApprovalTimeout(tm TimerMessage) {
 	)
 }
 
-// fireRateRetry re-publishes a rate-limited task to the task queue.
-// The orchestrator scheduled this timer when the token bucket was
-// exhausted, so the task gets another chance at dispatch.
-func (st *SleepTimer) fireRateRetry(tm TimerMessage) {
+// DeferralAdmitter re-runs, when a deferral timer fires, the admission
+// its dispatch was deferred by. send reports the dispatch may go out
+// now; otherwise refireAfter is when the timer must fire again, or 0
+// when the admitter handed the dispatch on to a timer of its own. tm
+// carries the identity the dispatch is re-sent under.
+type DeferralAdmitter func(
+	ctx context.Context, tm TimerMessage,
+) (send bool, refireAfter time.Duration, err error)
+
+// deferralRefireOnError is how long a deferral timer waits to fire
+// again when its admission check or its send failed.
+const deferralRefireOnError = time.Second
+
+// OnDeferral sets the admission a deferral timer's dispatch must pass
+// again before it is re-sent. Must be called before Start. Without
+// one, a deferral re-sends at once.
+func (st *SleepTimer) OnDeferral(fn DeferralAdmitter) {
+	if fn == nil {
+		panic("OnDeferral: fn must not be nil")
+	}
+	if st.admitDeferral != nil {
+		panic("OnDeferral: admission already set")
+	}
+	st.admitDeferral = fn
+}
+
+// fireDeferral re-sends a deferred dispatch (rate limit, task
+// concurrency limit, soft-sticky fallback) once it passes the admission
+// that deferred it, under the identity it was deferred with. It returns
+// when the timer must fire again — still over its limit, or its check
+// or send failed — or 0 once the timer is done. Re-checking at fire
+// time is what keeps the limit: the timer's delay is only when the
+// limit might allow it, and every dispatch deferred together shares it.
+func (st *SleepTimer) fireDeferral(tm TimerMessage) time.Duration {
 	if tm.RunID == "" {
-		panic("fireRateRetry: RunID must not be empty")
+		panic("fireDeferral: RunID must not be empty")
 	}
-	if tm.TaskType == "" {
-		panic("fireRateRetry: TaskType must not be empty")
+	if !deferralAction(tm.Action) {
+		panic("fireDeferral: timer must be a deferral")
 	}
-	ctx, cancel := context.WithTimeout(
-		context.Background(), 5*time.Second,
-	)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	subject := tm.dispatchSubject()
-	// #624 review round 2/4: fireRateRetry used to omit Attempt
-	// entirely (zero value), so every rate-retried task ran as if
-	// attempt 1 (worker's NumDelivered fallback) regardless of the
-	// step's real attempt count; round 4 fixed the same gap for
-	// Iteration. Both are validated against the live snapshot; the
-	// attempt is the deferred dispatch's own (redispatchAttempt).
 	rd := st.identityForRedispatch(ctx, tm)
 	if rd.stale != "" {
 		dropStaleTimer(ctx, tm, rd.stale)
-		return
+		return 0
 	}
+	tm.Attempt, tm.DispatchNonce = rd.attempt, rd.nonce
+	if st.admitDeferral != nil {
+		send, refireAfter, err := st.admitDeferral(ctx, tm)
+		if err != nil {
+			warnDeferralRefire(ctx, tm, "admission check failed", err)
+			return deferralRefireOnError
+		}
+		if !send {
+			return refireAfter
+		}
+	}
+	if err := st.sendDeferred(ctx, tm, rd); err != nil {
+		warnDeferralRefire(ctx, tm, "send failed", err)
+		return deferralRefireOnError
+	}
+	return 0
+}
+
+func warnDeferralRefire(ctx context.Context, tm TimerMessage, what string, err error) {
+	if err == nil {
+		panic("warnDeferralRefire: err must not be nil")
+	}
+	if what == "" {
+		panic("warnDeferralRefire: what must not be empty")
+	}
+	slog.WarnContext(ctx, "deferred dispatch "+what+"; its timer fires again",
+		"action", string(tm.Action), "run_id", tm.RunID, "step_id", tm.StepID,
+		"error", err)
+}
+
+// sendDeferred publishes the task a deferral timer re-sends.
+func (st *SleepTimer) sendDeferred(
+	ctx context.Context, tm TimerMessage, rd redispatch,
+) error {
+	if tm.TaskType == "" {
+		panic("sendDeferred: TaskType must not be empty")
+	}
+	if rd.stale != "" {
+		panic("sendDeferred: a stale timer must not send")
+	}
+	// #624 review round 2/4: this path used to omit Attempt and then
+	// Iteration; both now come from identityForRedispatch, validated
+	// against the live snapshot (redispatchAttempt).
 	payload := protocol.TaskPayload{
 		TaskID:       tm.RunID + "." + tm.StepID,
 		RunID:        tm.RunID,
@@ -689,17 +814,17 @@ func (st *SleepTimer) fireRateRetry(tm TimerMessage) {
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return
+		return fmt.Errorf("marshal TaskPayload: %w", err)
 	}
-	msgID := fmt.Sprintf(
-		"%s.%s.rate_retry", tm.RunID, tm.StepID,
-	)
 	msg := &nats.Msg{
-		Subject: subject,
+		Subject: tm.dispatchSubject(),
 		Data:    data,
-		Header:  nats.Header{"Nats-Msg-Id": {msgID}},
+		Header: nats.Header{"Nats-Msg-Id": {
+			fmt.Sprintf("%s.%s.rate_retry", tm.RunID, tm.StepID),
+		}},
 	}
-	st.tp.JSPublishMsg(ctx, msg)
+	_, err = st.tp.JSPublishMsg(ctx, msg)
+	return err
 }
 
 // fireRetryAfter re-publishes a task after a worker-requested retry
@@ -749,7 +874,7 @@ func (st *SleepTimer) fireRetryBackoff(tm TimerMessage) {
 // though a retried loop step's Steps[stepID].Iterations is never
 // reset — dispatchIdentity now derives both together so this cannot
 // drift apart again. Deriving fresh here means a re-dispatch can never
-// regress to a stale or dropped value the way fireRateRetry's omission
+// regress to a stale or dropped value the way the deferral path's omission
 // once did, and the MsgId always reflects the SAME attempt number the
 // payload carries.
 func (st *SleepTimer) republishTask(

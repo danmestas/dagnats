@@ -74,8 +74,8 @@ func newDeferralFixture(t *testing.T, step dag.StepDef) deferralFixture {
 
 // startDeferred starts the burn run, waits for its task so it holds
 // the step's only slot, then starts deferralRunID, whose dispatch the
-// engine must defer.
-func (fx deferralFixture) startDeferred(t *testing.T) {
+// engine must defer. It returns the burn run's task.
+func (fx deferralFixture) startDeferred(t *testing.T) protocol.TaskPayload {
 	t.Helper()
 	burn, err := fx.js.PullSubscribe("task."+deferralTask+"."+deferralBurnID, "",
 		nats.BindStream("TASK_QUEUES"))
@@ -84,7 +84,8 @@ func (fx deferralFixture) startDeferred(t *testing.T) {
 	}
 	fx.publish(t, protocol.NewWorkflowEvent(
 		protocol.EventWorkflowStarted, deferralBurnID, fx.def))
-	if _, err := burn.Fetch(1, nats.MaxWait(5*time.Second)); err != nil {
+	msgs, err := burn.Fetch(1, nats.MaxWait(5*time.Second))
+	if err != nil {
 		t.Fatalf("burn run's task never dispatched: %v", err)
 	}
 	fx.publish(t, protocol.NewWorkflowEvent(
@@ -92,6 +93,7 @@ func (fx deferralFixture) startDeferred(t *testing.T) {
 	if task, ok := fx.take(t, 300*time.Millisecond); ok {
 		t.Fatalf("dispatch was not deferred: got task %+v at once", task)
 	}
+	return decodeTask(t, msgs[0].Data)
 }
 
 func (fx deferralFixture) publish(t *testing.T, evt protocol.Event) {
@@ -179,7 +181,10 @@ func TestDeferral_ConcurrencyLimitedFirstDispatchRunsAsAttemptOne(t *testing.T) 
 		ID: deferralStepID, Task: deferralTask, Type: dag.StepTypeNormal,
 		MaxTaskConcurrency: 1,
 	})
-	fx.startDeferred(t)
+	burn := fx.startDeferred(t)
+	// The deferred dispatch waits for the slot: the burn run frees it.
+	fx.publish(t, startedFor(burn))
+	fx.publish(t, identityEvent(protocol.EventStepCompleted, burn, burn.Attempt, nil))
 	assertDeferredRunsAsAttemptOne(t, fx)
 }
 
