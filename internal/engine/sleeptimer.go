@@ -188,15 +188,15 @@ func NewSleepTimer(
 	}
 }
 
-// identityForRedispatch loads the CURRENT run snapshot and returns
-// dispatchIdentity(run, stepID, dispatchNewAttempt) — the authoritative
-// (attempt, iteration) pair every fire-* re-dispatch path in this file
-// must use (#624 review round 4: renamed from attemptForRedispatch,
-// which returned only attempt and left every caller to set Iteration
-// by hand — the exact bug this round fixes) — with the step's committed
-// loop state and dispatch nonce (#801), so a retry resumes from the
-// last iteration the engine accepted and answers under the nonce the
-// snapshot will check. Falls back to the timer's own nonce (minted if
+// identityForRedispatch loads the CURRENT run snapshot and returns the
+// authoritative (attempt, iteration) pair every fire-* re-dispatch path
+// in this file must use (#624 review round 4: renamed from
+// attemptForRedispatch, which returned only attempt and left every
+// caller to set Iteration by hand — the exact bug this round fixes) —
+// with the step's committed loop state and dispatch nonce (#801), so a
+// retry resumes from the last iteration the engine accepted and
+// answers under the nonce the snapshot will check. The attempt is
+// redispatchAttempt's. Falls back to the timer's own nonce (minted if
 // empty) and (0, 0, nil) numbering on any lookup failure: a
 // missing/unreadable snapshot must never block a retry from firing.
 func (st *SleepTimer) identityForRedispatch(
@@ -217,7 +217,7 @@ func (st *SleepTimer) identityForRedispatch(
 		return fallback
 	}
 	state := run.Steps[tm.StepID]
-	attempt, iteration := dispatchIdentity(run, tm.StepID, dispatchNewAttempt)
+	attempt, iteration := redispatchAttempt(tm, run)
 	nonce := state.DispatchNonce
 	if nonce == "" {
 		nonce = fallback.nonce
@@ -226,6 +226,42 @@ func (st *SleepTimer) identityForRedispatch(
 		attempt: attempt, iteration: iteration, loopState: state.LoopState, nonce: nonce,
 		stale: redispatchStale(tm, state),
 	}
+}
+
+// redispatchAttempt is the (attempt, iteration) a dispatch timer
+// re-sends. A retry timer (retry_after, retry_backoff) sends a new
+// attempt: dispatchNewAttempt, one past the failed attempt the snapshot
+// counts. A deferral timer (rate, concurrency, soft-sticky fallback)
+// re-sends a dispatch that never reached a handler, which is not an
+// attempt: it carries the attempt it was scheduled with, which
+// redispatchStale has checked against the snapshot. A deferral timer
+// from an older binary carries none; it gets the attempt the snapshot
+// already counts for the unstarted dispatch (floored at the first),
+// never one past it, so an upgrade cannot spend budget either. The
+// iteration is always the snapshot's: no Continue advances it while a
+// dispatch is unstarted.
+func redispatchAttempt(tm TimerMessage, run dag.WorkflowRun) (attempt, iteration int) {
+	if tm.StepID == "" {
+		panic("redispatchAttempt: StepID must not be empty")
+	}
+	if tm.Attempt < 0 {
+		panic("redispatchAttempt: timer attempt must not be negative")
+	}
+	if !deferralAction(tm.Action) {
+		return dispatchIdentity(run, tm.StepID, dispatchNewAttempt)
+	}
+	attempt, iteration = dispatchIdentity(run, tm.StepID, dispatchFirstAttempt)
+	if tm.Attempt > 0 {
+		attempt = tm.Attempt
+	}
+	return attempt, iteration
+}
+
+// deferralAction reports whether a timer re-sends a deferred dispatch
+// rather than starting a new attempt. The soft-sticky fallback rides
+// TimerActionRateRetry.
+func deferralAction(action TimerAction) bool {
+	return action == TimerActionRateRetry || action == TimerActionTaskConcurRetry
 }
 
 // redispatch is what a timer-fired re-publish stamps on its payload.
@@ -244,9 +280,10 @@ type redispatch struct {
 // on the attempt the timer was scheduled for, with the retry's
 // dispatch time still pending (startAttemptClock clears it once the
 // retry starts). A rate, concurrency or sticky-fallback timer belongs
-// to a first send still waiting: the step not yet started (Queued, or
-// Pending for a map instance the snapshot has no entry for), on the
-// dispatch the timer was scheduled for. Firing a stale timer would
+// to a deferred send still waiting: the step not yet started (Queued,
+// or Pending for a map instance the snapshot has no entry for), on the
+// dispatch the timer was scheduled for, whose attempt the snapshot has
+// not passed. Firing a stale timer would
 // publish a second task whose events the live nonce from the snapshot
 // would let through the event fence.
 func redispatchStale(tm TimerMessage, state dag.StepState) string {
@@ -276,6 +313,9 @@ func redispatchStale(tm TimerMessage, state dag.StepState) string {
 		}
 		if tm.DispatchNonce != "" && tm.DispatchNonce != state.DispatchNonce {
 			return "dispatch moved on"
+		}
+		if tm.Attempt > 0 && tm.Attempt < state.Attempts {
+			return "attempt moved on"
 		}
 	}
 	return ""
@@ -623,8 +663,8 @@ func (st *SleepTimer) fireRateRetry(tm TimerMessage) {
 	// entirely (zero value), so every rate-retried task ran as if
 	// attempt 1 (worker's NumDelivered fallback) regardless of the
 	// step's real attempt count; round 4 fixed the same gap for
-	// Iteration, which was still omitted even after round 2 — both
-	// now come from the live snapshot via dispatchIdentity.
+	// Iteration. Both are validated against the live snapshot; the
+	// attempt is the deferred dispatch's own (redispatchAttempt).
 	rd := st.identityForRedispatch(ctx, tm)
 	if rd.stale != "" {
 		dropStaleTimer(ctx, tm, rd.stale)

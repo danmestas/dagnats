@@ -166,11 +166,14 @@ func (tp *TaskPublisher) publish(
 		panic("TaskPublisher.Publish: run.RunID must match runID")
 	}
 
+	// A deferral is not an attempt: the timer carries the identity this
+	// dispatch would have sent, and the fire path re-sends it unchanged.
+	attempt, _ := dispatchIdentity(run, step.ID, mode)
+	meta := dispatchMeta{workflowName: workflowName, nonce: dispatchNonce, attempt: attempt}
+
 	// Check rate limit before concurrency acquisition so we
 	// don't hold a concurrency slot while waiting for tokens.
-	if delayed, err := tp.checkRateLimit(
-		ctx, step, runID, input, workflowName, dispatchNonce,
-	); err != nil {
+	if delayed, err := tp.checkRateLimit(ctx, step, runID, input, meta); err != nil {
 		return err
 	} else if delayed {
 		return nil
@@ -188,9 +191,7 @@ func (tp *TaskPublisher) publish(
 		}
 		if !acquired {
 			tp.metrics.taskConcRejected.Add(ctx, 1)
-			return tp.scheduleConcurrencyRetry(
-				ctx, step, runID, input, workflowName, dispatchNonce,
-			)
+			return tp.scheduleConcurrencyRetry(ctx, step, runID, input, meta)
 		}
 		tp.metrics.taskConcAcquired.Add(ctx, 1)
 	}
@@ -218,10 +219,13 @@ func (tp *TaskPublisher) publish(
 // rate-limit / concurrency retry-scheduling chain so the timer fire can
 // re-publish a TaskPayload that still honors the grant policy. nonce is the
 // run-binding token; caps are the ALREADY-STRIPPED effective capabilities
-// (effectiveCapabilities applied once at the dispatch call site).
+// (effectiveCapabilities applied once at the dispatch call site). attempt
+// is the attempt the deferred dispatch carries, so its re-send carries it
+// too: a deferral never reached a handler and spends no retry budget.
 type dispatchMeta struct {
 	workflowName string
 	nonce        string
+	attempt      int
 }
 
 // nonceOrMint returns the given nonce, or a fresh one when it is empty. It
@@ -239,8 +243,7 @@ func nonceOrMint(nonce string) string {
 // delayed=true if the task was deferred via SleepTimer.
 func (tp *TaskPublisher) checkRateLimit(
 	ctx context.Context,
-	step dag.StepDef, runID string, input []byte,
-	workflowName, nonce string,
+	step dag.StepDef, runID string, input []byte, meta dispatchMeta,
 ) (bool, error) {
 	if tp.rateLimiter == nil {
 		return false, nil
@@ -251,7 +254,6 @@ func (tp *TaskPublisher) checkRateLimit(
 				"step.Task must not be empty",
 		)
 	}
-	meta := dispatchMeta{workflowName: workflowName, nonce: nonce}
 	if step.RateLimit != nil {
 		return tp.applyGlobalRateLimit(ctx, step, runID, input, meta)
 	}
@@ -346,6 +348,9 @@ func (tp *TaskPublisher) scheduleRateRetry(
 	if step.ID == "" {
 		panic("scheduleRateRetry: step.ID must not be empty")
 	}
+	if meta.attempt < firstDispatchAttempt {
+		panic("scheduleRateRetry: meta.attempt must be a dispatch's attempt")
+	}
 	durationMs := retryAfter.Milliseconds()
 	if durationMs <= 0 {
 		durationMs = 100
@@ -361,6 +366,7 @@ func (tp *TaskPublisher) scheduleRateRetry(
 		Input:         input,
 		WorkflowName:  meta.workflowName,
 		DispatchNonce: meta.nonce,
+		Attempt:       meta.attempt,
 		RequiredCapabilities: effectiveCapabilities(
 			step.RequiredCapabilities, meta.workflowName,
 			tp.grantPolicy.Load(),
@@ -374,8 +380,7 @@ func (tp *TaskPublisher) scheduleRateRetry(
 // the timer fire re-publishes a policy-honoring, run-bound TaskPayload (#380).
 func (tp *TaskPublisher) scheduleConcurrencyRetry(
 	ctx context.Context,
-	step dag.StepDef, runID string, input []byte,
-	workflowName, nonce string,
+	step dag.StepDef, runID string, input []byte, meta dispatchMeta,
 ) error {
 	if runID == "" {
 		panic(
@@ -389,6 +394,9 @@ func (tp *TaskPublisher) scheduleConcurrencyRetry(
 				"step.ID must not be empty",
 		)
 	}
+	if meta.attempt < firstDispatchAttempt {
+		panic("scheduleConcurrencyRetry: meta.attempt must be a dispatch's attempt")
+	}
 	return tp.sleepTimer.Schedule(ctx, TimerMessage{
 		Action:        TimerActionTaskConcurRetry,
 		RunID:         runID,
@@ -398,10 +406,11 @@ func (tp *TaskPublisher) scheduleConcurrencyRetry(
 		Subject:       tp.StepSubject(step, runID),
 		Metadata:      step.Metadata,
 		Input:         input,
-		WorkflowName:  workflowName,
-		DispatchNonce: nonce,
+		WorkflowName:  meta.workflowName,
+		DispatchNonce: meta.nonce,
+		Attempt:       meta.attempt,
 		RequiredCapabilities: effectiveCapabilities(
-			step.RequiredCapabilities, workflowName, tp.grantPolicy.Load(),
+			step.RequiredCapabilities, meta.workflowName, tp.grantPolicy.Load(),
 		),
 	})
 }

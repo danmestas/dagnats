@@ -316,6 +316,13 @@ func TestSleepTimerStartsLazilyOnSchedule(t *testing.T) {
 // fallback) regardless of how many real attempts the step already had
 // — colliding with a genuine attempt 1's BUILD_LOGS subject and never
 // matching the default `?attempt=` a consumer would look at.
+//
+// The expected value changed when a deferral stopped counting as an
+// attempt: it used to be Attempts + 1, which made every deferred
+// dispatch spend a retry. The timer below carries no attempt (one
+// scheduled by an older binary), so the attempt still comes from the
+// snapshot, and is the attempt the snapshot already counts for the
+// queued, unstarted dispatch the timer re-sends: 3, not 4.
 func TestSleepTimerRateRetryDerivesAttemptFromSnapshot(t *testing.T) {
 	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
@@ -330,9 +337,9 @@ func TestSleepTimerRateRetryDerivesAttemptFromSnapshot(t *testing.T) {
 		t.Fatalf("jetstream.New: %v", err)
 	}
 
-	// Seed a run snapshot whose step has already completed 3 attempts —
-	// the rate-retry fire below must read THIS value, not trust
-	// whatever (if anything) the TimerMessage itself carries.
+	// Seed a run snapshot whose step is queued on its third attempt —
+	// the rate-retry fire below must read THIS value, since the
+	// TimerMessage itself carries none.
 	store := NewSnapshotStore(js)
 	seedRun := dag.WorkflowRun{
 		RunID: "run-rate-attempt",
@@ -379,10 +386,9 @@ func TestSleepTimerRateRetryDerivesAttemptFromSnapshot(t *testing.T) {
 	if err := json.Unmarshal(msg.Data, &payload); err != nil {
 		t.Fatalf("unmarshal payload failed: %v", err)
 	}
-	// Positive: Attempts(3) + 1 — the snapshot tallies COMPLETED
-	// attempts, so the next dispatch is one past that.
-	if payload.Attempt != 4 {
-		t.Fatalf("payload.Attempt = %d, want 4 (snapshot Attempts=3 + 1)",
+	// Positive: the snapshot's attempt for the deferred dispatch.
+	if payload.Attempt != 3 {
+		t.Fatalf("payload.Attempt = %d, want 3 (the queued dispatch's own)",
 			payload.Attempt)
 	}
 	// Negative: must not be the old hardcoded/dropped value.
