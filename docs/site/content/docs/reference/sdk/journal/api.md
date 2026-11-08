@@ -6,6 +6,12 @@
 import "github.com/danmestas/dagnats/journal"
 ```
 
+journal/floor.go The protected floor: the lowest AGENT\_JOURNAL sequence that a later Open of a live step still reads. An archiver that purges the journal below what it has archived must also stay below this floor, because agent steps read their journal on every delivery \(Open replays the iteration's model and tool calls\), and those reads hold no consumer ack floor an archiver could see.
+
+What Open reads \(rebuild\): the state of the newest commit of an earlier iteration, and every record of the iteration it claims. So a step on iteration N needs iteration N\-1's last commit and N's records, and nothing older; a parked chat run does not pin the journal from its first turn. A step with no earlier commit, or whose records carry no iteration, is protected from its first record. A fork is protected from its first record too, and so is every parent journal of its chain, which Open reads up to the fork point.
+
+Placements of earlier iterations \(input.placed\) fall below the floor. Open keeps them to refuse placing a request twice, but a placement is settled done in the submissions bucket when its iteration commits, and a done submission is never placed again.
+
 journal/fork.go Forks \(\#810\). A forked step's journal starts with one fork record naming a parent journal and a sequence in it. Open then treats the parent's records up to and including that sequence as this step's history: the parent's committed state before the forked iteration is the state, and the forked iteration's records up to the point are replayed by position as the forked step's iteration 0, so model responses and tool results recorded before the point are reused and execution diverges after it. The parent journal is only read.
 
 The parent's records must still be in AGENT\_JOURNAL: a fork cannot read records archived out of the stream.
@@ -21,6 +27,7 @@ A Journal is one claim on one dispatch of a step. Open reads the tail from the s
 - [Constants](<#constants>)
 - [Variables](<#variables>)
 - [func MsgID\(task Task, index int\) string](<#MsgID>)
+- [func ProtectedFloor\(ctx context.Context, js jetstream.JetStream, listRuns func\(context.Context\) \(\[\]string, error\)\) \(uint64, error\)](<#ProtectedFloor>)
 - [func WriteFork\(ctx context.Context, js jetstream.JetStream, pub \*natsutil.TracingPublisher, runID string, fork Fork\) \(uint64, error\)](<#WriteFork>)
 - [type Claim](<#Claim>)
 - [type Commit](<#Commit>)
@@ -164,6 +171,12 @@ var (
 )
 ```
 
+<a name="ErrFloorOverBudget"></a>ErrFloorOverBudget: the live journals hold more runs, subjects or records than one floor pass reads. No floor is computed; a caller that publishes it leaves the published one to go stale.
+
+```go
+var ErrFloorOverBudget = errors.New("journal: protected floor pass is over its budget")
+```
+
 <a name="ErrReplayMismatch"></a>ErrReplayMismatch: the call at this position was recorded with another name or input. The handler is not replaying the sequence of calls it recorded; nothing is reused or written.
 
 ```go
@@ -178,6 +191,15 @@ func MsgID(task Task, index int) string
 ```
 
 MsgID is the stable dedup key of a record: \{run\}.\{step\}.\{attempt\}.\{iteration\}.\{stream\_seq\}.\{delivered\}.\{index\}. The delivery count keeps a redelivery's records distinct from the stalled delivery's inside the dedup window; the stream sequence does the same for a resend, which restarts the count. Without them the successor's claim would be answered with the old claim's sequence.
+
+<a name="ProtectedFloor"></a>
+## func [ProtectedFloor](<https://github.com/danmestas/dagnats/blob/main/journal/floor.go#L62-L65>)
+
+```go
+func ProtectedFloor(ctx context.Context, js jetstream.JetStream, listRuns func(context.Context) ([]string, error)) (uint64, error)
+```
+
+ProtectedFloor returns the lowest AGENT\_JOURNAL sequence a later Open of a step of a live run still reads: the minimum over every journal of the runs listRuns names. With no such journal it is the stream's LastSeq\+1, protecting nothing. listRuns is called after the stream's LastSeq is read, so a run that goes live after the list writes only above the returned floor.
 
 <a name="WriteFork"></a>
 ## func [WriteFork](<https://github.com/danmestas/dagnats/blob/main/journal/fork.go#L74-L77>)
@@ -489,7 +511,7 @@ type Record struct {
 ```
 
 <a name="DecodeMsg"></a>
-### func [DecodeMsg](<https://github.com/danmestas/dagnats/blob/main/journal/read.go#L204>)
+### func [DecodeMsg](<https://github.com/danmestas/dagnats/blob/main/journal/read.go#L217>)
 
 ```go
 func DecodeMsg(msg jetstream.Msg) (Record, error)

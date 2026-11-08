@@ -331,6 +331,26 @@ subject, so a forked step run by a program's worker cannot open its
 journal. Forking is admin only: the endpoints are on the global control
 plane, which a program's `api.p.<name>.*` permissions do not reach.
 
+### Archiving and the protected floor
+
+*Added 2026-11-08.* An archiver that purges `AGENT_JOURNAL` must not
+remove what a live step's next `Open` reads, and those reads hold no
+ack floor. The engine on the JetStream meta leader publishes
+`dagnats.protected_floor` (and `dagnats.protected_floor_at`) as stream
+metadata, from `journal.ProtectedFloor` over the runactive index. What
+`Open` reads decides the floor: `rebuild` takes its state from the
+newest commit of an earlier iteration and its history from the current
+iteration's records, so a step on iteration N needs N-1's commit and
+N's records. The current iteration is the highest one recorded, read
+headers-only from the step's subject. Anything that cannot be told is
+protected from the step's first record, and a fork also protects its
+parent chain. Earlier placements (`input.placed`) fall below the floor;
+they are settled done in the submissions bucket when their iteration
+commits, and a done submission is never placed again. Writes are at
+most once a minute and at least every 5 minutes; an archiver treats a
+missing, malformed, future or 10-minute-old floor as 0. See
+production.md, "Purging the agent journal".
+
 ### Checker
 
 `journal.Check` and the `dagnats journal check <run>` command audit a run.

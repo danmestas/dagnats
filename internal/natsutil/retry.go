@@ -233,15 +233,14 @@ func ensureStream(
 		panic("ensureStream: stream name must not be empty")
 	}
 	if cfg.Replicas <= 1 {
-		replicas, err := keepExistingReplicas(ctx, js, cfg.Name, cfg.Replicas)
-		if err != nil {
+		if err := keepExisting(ctx, js, &cfg); err != nil {
 			return err
 		}
-		if replicas <= 1 {
+		var err error
+		if cfg.Replicas <= 1 {
 			_, err = js.CreateOrUpdateStream(ctx, cfg)
 			return err
 		}
-		cfg.Replicas = replicas
 		_, err = js.UpdateStream(ctx, cfg)
 		return err
 	}
@@ -249,12 +248,35 @@ func ensureStream(
 	if !errors.Is(err, jetstream.ErrStreamNameAlreadyInUse) {
 		return err
 	}
-	cfg.Replicas, err = keepExistingReplicas(ctx, js, cfg.Name, cfg.Replicas)
-	if err != nil {
+	if err := keepExisting(ctx, js, &cfg); err != nil {
 		return err
 	}
 	_, err = js.UpdateStream(ctx, cfg)
 	return err
+}
+
+// keepExisting carries into cfg what an update must not undo on an
+// existing stream: a higher replica count (keepExistingReplicas) and
+// metadata provisioning did not set, such as the journal's protected
+// floor (mergeKeptMetadata). A missing stream leaves cfg as it is.
+func keepExisting(ctx context.Context, js jetstream.JetStream, cfg *jetstream.StreamConfig) error {
+	if cfg == nil || cfg.Name == "" {
+		panic("keepExisting: cfg must name a stream")
+	}
+	if cfg.Replicas < 0 {
+		panic("keepExisting: replicas must not be negative")
+	}
+	stream, err := js.Stream(ctx, cfg.Name)
+	if errors.Is(err, jetstream.ErrStreamNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	existing := stream.CachedInfo().Config
+	cfg.Replicas = higherReplicas(cfg.Name, existing.Replicas, cfg.Replicas)
+	cfg.Metadata = mergeKeptMetadata(cfg.Metadata, existing.Metadata)
+	return nil
 }
 
 // ensureKeyValue is ensureStream for a KV bucket (CreateOrUpdateKeyValue
@@ -316,15 +338,25 @@ func keepExistingReplicas(
 	if err != nil {
 		return 0, err
 	}
-	existing := stream.CachedInfo().Config.Replicas
+	return higherReplicas(streamName, stream.CachedInfo().Config.Replicas, requested), nil
+}
+
+// higherReplicas is requested, or existing when that is higher.
+func higherReplicas(streamName string, existing, requested int) int {
+	if streamName == "" {
+		panic("higherReplicas: streamName must not be empty")
+	}
+	if requested < 0 || existing < 0 {
+		panic("higherReplicas: replica counts must not be negative")
+	}
 	if existing <= max(requested, 1) {
-		return requested, nil
+		return requested
 	}
 	slog.Warn("natsutil: keeping existing replica count; provisioning "+
 		"never scales a stream down",
 		"stream", streamName, "existing_replicas", existing,
 		"requested_replicas", requested)
-	return existing, nil
+	return existing
 }
 
 // provisionWithRetry runs create with per-attempt timeouts inside parent,

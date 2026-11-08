@@ -221,7 +221,7 @@ The constraint `promote ⊆ grant` is enforced at config load.
 
 ### Archive grants
 
-The `policy.archives` block grants, by program name, the JetStream streams a program may archive and purge. A program gets the rights on a stream only when its manifest's `Archives` also declares it; either side alone grants nothing and the server logs the mismatch. Absent = deny-by-default. No environment variable override; hot-reloadable.
+The `policy.archives` block grants, by program name, the JetStream streams a program may archive and purge. A program gets the rights on a stream only when its manifest's `Archives` also declares it; either side alone grants nothing and the server logs the mismatch. Absent = deny-by-default. No environment variable override; hot-reloadable. An archiver of `AGENT_JOURNAL` must also stay below the stream's `dagnats.protected_floor` metadata, and purge nothing when it is missing or older than 10 minutes; see "Purging the agent journal" in [production.md](production.md).
 
 ```yaml
 policy:

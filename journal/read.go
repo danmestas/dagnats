@@ -61,8 +61,10 @@ func readSubject(
 	// records twice.
 	err := retryTransient(ctx, func() error {
 		records = make([]Record, 0, readBatch)
-		return fetchUpTo(ctx, js, natsutil.AgentJournalStream,
-			natsutil.JournalSubject(runID, stepID), tailSeq, recordsMax,
+		return fetchUpTo(ctx, js, subjectRead{
+			stream: natsutil.AgentJournalStream, subject: natsutil.JournalSubject(runID, stepID),
+			tailSeq: tailSeq, limit: recordsMax,
+		},
 			func(seq uint64, msg jetstream.Msg, meta *jetstream.MsgMetadata) error {
 				records = append(records,
 					decodeRecord(seq, msg.Headers(), msg.Data(), meta.Timestamp))
@@ -75,24 +77,35 @@ func readSubject(
 	return records, nil
 }
 
+// subjectRead is one bounded read of a subject: from its start up to
+// and including tailSeq, at most limit messages, bodies dropped when
+// headersOnly.
+type subjectRead struct {
+	stream, subject string
+	tailSeq         uint64
+	limit           int
+	headersOnly     bool
+}
+
 // fetchUpTo reads a subject from the start up to and including tailSeq
 // through a bounded ordered consumer and hands each message to visit.
 // Every fetch is bounded by readWait, the whole read by limit messages
 // and the caller's ctx. Knowing the tail is what lets the read end
 // without waiting a fetch window on an idle subject.
 func fetchUpTo(
-	ctx context.Context, js jetstream.JetStream, stream, subject string,
-	tailSeq uint64, limit int,
+	ctx context.Context, js jetstream.JetStream, read subjectRead,
 	visit func(seq uint64, msg jetstream.Msg, meta *jetstream.MsgMetadata) error,
 ) error {
-	if tailSeq == 0 || limit <= 0 {
+	if read.tailSeq == 0 || read.limit <= 0 {
 		panic("fetchUpTo: tailSeq and limit must be positive")
 	}
 	if visit == nil {
 		panic("fetchUpTo: visit must not be nil")
 	}
+	stream, subject, tailSeq, limit := read.stream, read.subject, read.tailSeq, read.limit
 	consumer, err := natsutil.OpenConsumer(ctx, js, stream, natsutil.OrderedConsumerSpec{
 		FilterSubjects: []string{subject}, DeliverPolicy: jetstream.DeliverAllPolicy,
+		HeadersOnly: read.headersOnly,
 	})
 	if err != nil {
 		return fmt.Errorf("journal: open reader on %s: %w", subject, err)
