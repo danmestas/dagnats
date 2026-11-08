@@ -24,6 +24,17 @@ func TestSchemaValidate_RefusesReservedColumnNames(t *testing.T) {
 	}
 }
 
+func TestSchemaValidate_AcceptsBytesColumn(t *testing.T) {
+	ok := Schema{Version: 1, PayloadBytes: true, Columns: []Column{{Name: "blob", Type: TypeBytes}}}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("bytes column: %v", err)
+	}
+	bad := Schema{Version: 1, Columns: []Column{{Name: "blob", Type: "binary"}}}
+	if err := bad.Validate(); err == nil {
+		t.Fatal("unknown type binary accepted")
+	}
+}
+
 func TestSchemaValidate_RefusesBadShapes(t *testing.T) {
 	cases := map[string]Schema{
 		"version zero":   {Version: 0},

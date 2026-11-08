@@ -97,8 +97,11 @@ type Row struct {
 	EventID   string
 	EventTime time.Time // UTC date of this time picks the dt partition
 	StreamSeq int64
-	Payload   string // the full event as JSON
-	Values    map[string]any
+	Payload   string // the full event as JSON; empty when Schema.PayloadBytes
+	// PayloadBytes is the raw payload of a table whose Schema.PayloadBytes is set, and must be
+	// nil otherwise. It is the whole event in whatever encoding the program chose.
+	PayloadBytes []byte
+	Values       map[string]any
 }
 
 // Writer buffers rows per event date and writes them as parts named by a digest of the batch's
@@ -148,7 +151,8 @@ func New(store Store, program string, cfg Config) (*Writer, error) {
 		declared[column.Name] = column.Type
 	}
 	return &Writer{
-		store: store, program: program, cfg: cfg, enc: newEncoder(cfg.Schema.Columns),
+		store: store, program: program, cfg: cfg,
+		enc:      newEncoder(cfg.Schema.Columns, cfg.Schema.PayloadBytes),
 		declared: declared, buffers: map[string][]Row{}, now: time.Now,
 		partBytesMax: PartBytesMax,
 	}, nil
@@ -167,6 +171,11 @@ func (w *Writer) Append(row Row) error {
 		if _, ok := projectValue(columnType, value); !ok {
 			return fmt.Errorf("lake: row %s column %q (%s): got %T", row.EventID, name, columnType, value)
 		}
+	}
+	if (w.cfg.Schema.PayloadBytes && row.Payload != "") ||
+		(!w.cfg.Schema.PayloadBytes && row.PayloadBytes != nil) {
+		return fmt.Errorf("lake: row %s: payload kind does not match Schema.PayloadBytes=%t",
+			row.EventID, w.cfg.Schema.PayloadBytes)
 	}
 	if w.buffered >= w.cfg.BufferedRowsMax {
 		return ErrBufferFull
@@ -226,10 +235,13 @@ func (w *Writer) checkRowFits(row Row) error {
 	if w.partBytesMax < 1 || row.EventID == "" {
 		panic("lake: checkRowFits on an unvalidated writer or row")
 	}
-	raw := len(row.EventID) + len(row.Payload) + 3*8 // event_time, stream_seq, schema_version
+	// 3*8 covers event_time, stream_seq and schema_version.
+	raw := len(row.EventID) + len(row.Payload) + len(row.PayloadBytes) + 3*8
 	for _, value := range row.Values {
 		if text, ok := value.(string); ok {
 			raw += len(text)
+		} else if blob, ok := value.([]byte); ok {
+			raw += len(blob)
 		} else {
 			raw += 8
 		}
@@ -273,10 +285,18 @@ func (w *Writer) batchDigest(dt string, rows []Row) [sha256.Size]byte {
 	} {
 		put(field)
 	}
+	if w.cfg.Schema.PayloadBytes {
+		// Only a bytes table adds this, so every string table keeps the names it already has.
+		put("payload:bytes")
+	}
 	for _, row := range rows {
 		put(strconv.FormatInt(row.StreamSeq, 10))
 		put(row.EventID)
-		put(row.Payload)
+		if w.cfg.Schema.PayloadBytes {
+			put(string(row.PayloadBytes))
+		} else {
+			put(row.Payload)
+		}
 	}
 	var sum [sha256.Size]byte
 	copy(sum[:], hash.Sum(nil))

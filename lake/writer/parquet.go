@@ -16,20 +16,25 @@ const RowGroupRowsMax = 64 << 10
 // encoder turns rows into the bytes of one Parquet part. Every column is nullable; payload is
 // ZSTD, the rest take the library default.
 type encoder struct {
-	schema  *parquet.Schema
-	columns []lake.Column
+	payloadBytes bool
+	schema       *parquet.Schema
+	columns      []lake.Column
 	// index maps a column name to its leaf position, because parquet.Group orders fields by name.
 	index map[string]int
 }
 
-func newEncoder(declared []lake.Column) *encoder {
+func newEncoder(declared []lake.Column, payloadBytes bool) *encoder {
 	group := parquet.Group{
 		"event_id":       parquet.Optional(parquet.String()),
 		"event_time":     parquet.Optional(parquet.Timestamp(parquet.Microsecond)),
 		"stream_seq":     parquet.Optional(parquet.Int(64)),
 		"schema_version": parquet.Optional(parquet.Int(64)),
-		"payload":        parquet.Optional(parquet.Compressed(parquet.String(), &zstd.Codec{})),
 	}
+	payloadNode := parquet.String()
+	if payloadBytes {
+		payloadNode = parquet.Leaf(parquet.ByteArrayType)
+	}
+	group["payload"] = parquet.Optional(parquet.Compressed(payloadNode, &zstd.Codec{}))
 	for _, column := range declared {
 		group[column.Name] = parquet.Optional(columnNode(column.Type))
 	}
@@ -42,7 +47,7 @@ func newEncoder(declared []lake.Column) *encoder {
 		}
 		index[name] = leaf.ColumnIndex
 	}
-	return &encoder{schema: schema, columns: declared, index: index}
+	return &encoder{schema: schema, columns: declared, index: index, payloadBytes: payloadBytes}
 }
 
 func columnNode(columnType lake.ColumnType) parquet.Node {
@@ -57,6 +62,8 @@ func columnNode(columnType lake.ColumnType) parquet.Node {
 		return parquet.Leaf(parquet.BooleanType)
 	case lake.TypeTimestamp:
 		return parquet.Timestamp(parquet.Microsecond)
+	case lake.TypeBytes:
+		return parquet.Leaf(parquet.ByteArrayType)
 	}
 	panic("lake: unvalidated column type " + string(columnType))
 }
@@ -100,7 +107,11 @@ func (e *encoder) encodeRow(row Row, schemaVersion int) parquet.Row {
 	set("event_time", parquet.Int64Value(row.EventTime.UnixMicro()))
 	set("stream_seq", parquet.Int64Value(row.StreamSeq))
 	set("schema_version", parquet.Int64Value(int64(schemaVersion)))
-	set("payload", parquet.ByteArrayValue([]byte(row.Payload)))
+	if e.payloadBytes {
+		set("payload", parquet.ByteArrayValue(row.PayloadBytes))
+	} else {
+		set("payload", parquet.ByteArrayValue([]byte(row.Payload)))
+	}
 	for _, column := range e.columns {
 		position := e.index[column.Name]
 		value, ok := projectValue(column.Type, row.Values[column.Name])
@@ -127,6 +138,14 @@ func projectValue(columnType lake.ColumnType, value any) (parquet.Value, bool) {
 		if columnType == lake.TypeString {
 			return parquet.ByteArrayValue([]byte(typed)), true
 		}
+	case []byte:
+		if columnType != lake.TypeBytes {
+			break
+		}
+		if typed == nil {
+			return parquet.Value{}, true
+		}
+		return parquet.ByteArrayValue(typed), true
 	case int:
 		if columnType == lake.TypeInt64 {
 			return parquet.Int64Value(int64(typed)), true
