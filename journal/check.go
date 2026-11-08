@@ -97,7 +97,7 @@ func Check(ctx context.Context, nc *nats.Conn, runID string) (Report, error) {
 	}
 	sort.Strings(stepIDs)
 	for _, stepID := range stepIDs {
-		base, records, err := readForCheck(ctx, js, runID, stepID)
+		base, records, err := readForCheck(ctx, js, runID, stepID, run.Steps[stepID])
 		if err != nil {
 			return Report{}, err
 		}
@@ -212,7 +212,7 @@ func readHistoryEvents(
 // answers pair with base, while every other invariant is the forked
 // step's own.
 func readForCheck(
-	ctx context.Context, js jetstream.JetStream, runID, stepID string,
+	ctx context.Context, js jetstream.JetStream, runID, stepID string, state dag.StepState,
 ) ([]Record, []Record, error) {
 	if ctx == nil || js == nil {
 		panic("readForCheck: ctx and js must not be nil")
@@ -223,6 +223,14 @@ func readForCheck(
 	records, err := Read(ctx, js, runID, stepID)
 	if err != nil {
 		return nil, nil, err
+	}
+	// A step JetStream holds nothing of may have been purged whole: a
+	// later iteration or a retry is read from the archive, as Open does.
+	if len(records) == 0 && (state.Iterations > 0 || state.Attempts > 1) {
+		records, err = readPurgedSubject(ctx, js, runID, stepID, state.Iterations > 0)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 	base, forked, err := forkBaseFor(ctx, js, records)
 	if err != nil || !forked {

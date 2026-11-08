@@ -274,3 +274,56 @@ func TestArchiveRead_ReplyOutsideRangeIsAProtocolError(t *testing.T) {
 		t.Errorf("a failed read returned %d messages", len(got.Messages))
 	}
 }
+
+func TestArchiveRead_EmptyPagesAreNotTheEnd(t *testing.T) {
+	_, nc := natstest.StartServer(t)
+	all := []dagnatsext.ArchivedMessage{
+		{Seq: 10, Subject: "s", Data: []byte("a")}, {Seq: 11, Subject: "s", Data: []byte("b")},
+	}
+	fake := archivetest.Serve(t, nc, testDomain, testStream, testEpoch, all)
+	fake.EmptyPages = 3
+	got, err := read(t, nc, dagnatsext.ArchiveRange{Epoch: testEpoch, FromSeq: 1, ToSeq: 12})
+	if err != nil {
+		t.Fatalf("ReadRange over empty pages: %v", err)
+	}
+	if len(got.Messages) != 2 || got.Messages[0].Seq != 10 || fake.Requests.Load() != 4 {
+		t.Fatalf("got %d messages over %d requests, want seq 10 and 11 after 3 empty pages",
+			len(got.Messages), fake.Requests.Load())
+	}
+}
+
+func TestArchiveRead_StalledNextSeqFails(t *testing.T) {
+	_, nc := natstest.StartServer(t)
+	// An empty page that does not move next_seq would page forever.
+	rawArchive(t, nc, `{"messages":[],"next_seq":1,"next_offset":0,"more":false,"done":false}`)
+	got, err := read(t, nc, dagnatsext.ArchiveRange{Epoch: 1, FromSeq: 1, ToSeq: 9})
+	if !errors.Is(err, dagnatsext.ErrArchiveProtocol) {
+		t.Fatalf("stalled next_seq: err = %v, want ErrArchiveProtocol", err)
+	}
+	if len(got.Messages) != 0 {
+		t.Errorf("a stalled read returned %d messages", len(got.Messages))
+	}
+}
+
+func TestArchiveRead_NotIndexedAndUnknownCodesFailWithoutRetry(t *testing.T) {
+	_, nc := natstest.StartServer(t)
+	fake := archivetest.Serve(t, nc, testDomain, testStream, testEpoch, messages("s", 2))
+	for _, code := range []string{dagnatsext.ArchiveCodeNotIndexed, "no_such_code"} {
+		fake.Requests.Store(0)
+		fake.Code = code
+		_, err := read(t, nc, dagnatsext.ArchiveRange{Epoch: testEpoch, FromSeq: 1, ToSeq: 3})
+		var archiveErr *dagnatsext.ArchiveError
+		if !errors.As(err, &archiveErr) || archiveErr.Code != code ||
+			!strings.Contains(err.Error(), code) {
+			t.Errorf("%s: err = %v, want an ArchiveError naming the code", code, err)
+		}
+		if n := fake.Requests.Load(); n != 1 {
+			t.Errorf("%s: %d requests, want 1 (no retry)", code, n)
+		}
+	}
+	fake.Code = dagnatsext.ArchiveCodeNotIndexed
+	_, err := read(t, nc, dagnatsext.ArchiveRange{Epoch: testEpoch, FromSeq: 1, ToSeq: 3})
+	if !errors.Is(err, dagnatsext.ErrArchiveNotIndexed) || errors.Is(err, dagnatsext.ErrArchiveBusy) {
+		t.Errorf("not_indexed: err = %v, want ErrArchiveNotIndexed and not busy", err)
+	}
+}

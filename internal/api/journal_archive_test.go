@@ -33,6 +33,15 @@ import (
 func relayedPurge(t *testing.T) (*nats.Conn, jetstream.JetStream, journal.Task,
 	*natsutil.TracingPublisher, []string, func() *archivetest.Responder) {
 	t.Helper()
+	return relayedPurgeAt(t, false)
+}
+
+// relayedPurgeAt is relayedPurge; with whole, every record of the step
+// is purged (another run's record lands after them) and the task that
+// reopens it is the step's retry, attempt 2.
+func relayedPurgeAt(t *testing.T, whole bool) (*nats.Conn, jetstream.JetStream, journal.Task,
+	*natsutil.TracingPublisher, []string, func() *archivetest.Responder) {
+	t.Helper()
 	nc := startScopedAPI(t)
 	runID, nonce := dispatchedStep(t, nc)
 	notify := relayClient(t, nc, "notify")
@@ -60,6 +69,15 @@ func relayedPurge(t *testing.T) (*nats.Conn, jetstream.JetStream, journal.Task,
 		if i == 2 {
 			cut = seq
 		}
+	}
+	if whole {
+		other, err := journal.Open(ctx, js, natsutil.NewTracingPublisher(nc, js), journal.Task{
+			RunID: runID + "x", StepID: "work", Attempt: 1, DispatchNonce: "nx", Delivered: 1,
+		})
+		if err != nil {
+			t.Fatalf("open other run: %v", err)
+		}
+		cut, task.Attempt = other.Seq(), 2
 	}
 	before := archivetest.Snapshot(t, js, natsutil.AgentJournalStream, cut)
 	epoch, _ := archivetest.PurgeBelow(t, js, natsutil.AgentJournalStream, cut)
@@ -162,5 +180,26 @@ func TestJournalFollow_ServesPurgedRecordsFirst(t *testing.T) {
 	}
 	if !strings.Contains(data[1], `"one"`) || !strings.Contains(data[2], `"two"`) {
 		t.Errorf("purged entries = %v, %v; want one, two", data[1], data[2])
+	}
+}
+
+func TestRelayedJournalReplaysAWhollyPurgedStepOnRetry(t *testing.T) {
+	_, js, task, notify, bodies, serve := relayedPurgeAt(t, true)
+	fake := serve()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	retry, err := journal.Open(ctx, js, notify, task)
+	if err != nil {
+		t.Fatalf("retry claim after the whole step was purged: %v", err)
+	}
+	var got []string
+	for _, r := range retry.Records() {
+		if r.Type == journal.TypeEntry {
+			got = append(got, string(r.Data))
+		}
+	}
+	if strings.Join(got, ",") != strings.Join(bodies, ",") || fake.Requests.Load() == 0 {
+		t.Fatalf("retry replayed %v after %d archive requests, want %v from the archive",
+			got, fake.Requests.Load(), bodies)
 	}
 }

@@ -98,6 +98,9 @@ const (
 	ArchiveCodeUnknownEpoch = "unknown_epoch"
 	ArchiveCodeNotArchived  = "not_archived"
 	ArchiveCodeBusy         = "busy"
+	// ArchiveCodeNotIndexed: the archive's subject index is still being
+	// built. Not retried like busy: the read fails.
+	ArchiveCodeNotIndexed = "not_indexed"
 )
 
 // Sentinels an *ArchiveError matches with errors.Is.
@@ -109,13 +112,16 @@ var (
 	ErrArchiveNotArchived = errors.New("archive: range not archived")
 	// ErrArchiveBusy: the archive stayed busy through every retry.
 	ErrArchiveBusy = errors.New("archive: busy")
+	// ErrArchiveNotIndexed: the archive cannot filter by subject yet.
+	ErrArchiveNotIndexed = errors.New("archive: subject index not built")
 	// ErrArchiveUnavailable: no archive answers the range subject.
 	ErrArchiveUnavailable = errors.New("archive: no archive responder")
 	// ErrArchiveProtocol: a reply broke the range protocol.
 	ErrArchiveProtocol = errors.New("archive: protocol violation")
 )
 
-// ArchiveError is an error reply from the archive.
+// ArchiveError is an error reply from the archive. Any code fails the
+// read; only busy is retried first.
 type ArchiveError struct {
 	Code    string
 	Message string
@@ -139,6 +145,8 @@ func (e *ArchiveError) Is(target error) bool {
 		return target == ErrArchiveNotArchived
 	case ArchiveCodeBusy:
 		return target == ErrArchiveBusy
+	case ArchiveCodeNotIndexed:
+		return target == ErrArchiveNotIndexed
 	}
 	return false
 }

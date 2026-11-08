@@ -253,18 +253,7 @@ func readForkPoint(ctx context.Context, js jetstream.JetStream, fork Fork) ([]Re
 	if fork.ParentRunID == "" || fork.ParentStepID == "" {
 		panic("readForkPoint: fork must name its parent")
 	}
-	tail, err := subjectTail(ctx, js, fork.ParentRunID, fork.ParentStepID)
-	if err != nil {
-		return nil, err
-	}
-	if tail == 0 {
-		return nil, fmt.Errorf("%w: %s", ErrForkNoJournal, fork.ParentRunID+"/"+fork.ParentStepID)
-	}
-	if fork.ParentSeq == 0 || fork.ParentSeq > tail {
-		return nil, fmt.Errorf("%w: seq %d is outside the journal (tail %d)",
-			ErrForkPoint, fork.ParentSeq, tail)
-	}
-	records, err := readSubject(ctx, js, fork.ParentRunID, fork.ParentStepID, fork.ParentSeq)
+	records, err := readParentUpTo(ctx, js, fork)
 	if err != nil {
 		return nil, err
 	}
@@ -280,6 +269,46 @@ func readForkPoint(ctx context.Context, js jetstream.JetStream, fork Fork) ([]Re
 		return nil, fmt.Errorf("%w: seq %d carries no claim identity", ErrForkPoint, fork.ParentSeq)
 	}
 	return records, nil
+}
+
+// readParentUpTo reads the parent journal up to the fork point. A
+// parent JetStream holds no record of was purged whole, or never had a
+// journal: the fork names a record, so the archive must hold it.
+func readParentUpTo(ctx context.Context, js jetstream.JetStream, fork Fork) ([]Record, error) {
+	if ctx == nil || js == nil {
+		panic("readParentUpTo: ctx and js must not be nil")
+	}
+	if fork.ParentRunID == "" || fork.ParentStepID == "" {
+		panic("readParentUpTo: fork must name its parent")
+	}
+	parent := fork.ParentRunID + "/" + fork.ParentStepID
+	tail, err := subjectTail(ctx, js, fork.ParentRunID, fork.ParentStepID)
+	if err != nil {
+		return nil, err
+	}
+	var records []Record
+	if tail == 0 {
+		records, err = readPurgedSubject(ctx, js, fork.ParentRunID, fork.ParentStepID, true)
+		if err != nil {
+			return nil, err
+		}
+		if len(records) == 0 {
+			return nil, fmt.Errorf("%w: %s", ErrForkNoJournal, parent)
+		}
+		tail = records[len(records)-1].Seq
+	}
+	if fork.ParentSeq == 0 || fork.ParentSeq > tail {
+		return nil, fmt.Errorf("%w: seq %d is outside the journal (tail %d)",
+			ErrForkPoint, fork.ParentSeq, tail)
+	}
+	if records == nil {
+		return readSubject(ctx, js, fork.ParentRunID, fork.ParentStepID, fork.ParentSeq)
+	}
+	end := len(records)
+	for end > 0 && records[end-1].Seq > fork.ParentSeq {
+		end--
+	}
+	return records[:end], nil
 }
 
 // subjectTail is the sequence of the newest record of the step's

@@ -90,6 +90,18 @@ func writeStep(t *testing.T, c client, nc *nats.Conn, runID string, big []byte) 
 // fourth record (inside iteration 0), keeping a snapshot of the rest.
 func newPurgedStep(t *testing.T, big []byte) purgedStep {
 	t.Helper()
+	return newPurgedStepCut(t, big, 3)
+}
+
+// newPurgedStepAt is newPurgedStep purged below the step's record at
+// index cut (4 is iteration 0's commit).
+func newPurgedStepAt(t *testing.T, cut int) purgedStep {
+	t.Helper()
+	return newPurgedStepCut(t, []byte(`{"n":2}`), cut)
+}
+
+func newPurgedStepCut(t *testing.T, big []byte, index int) purgedStep {
+	t.Helper()
 	_, nc := natstest.StartServer(t)
 	if err := natsutil.SetupAll(nc); err != nil {
 		t.Fatalf("SetupAll: %v", err)
@@ -97,7 +109,7 @@ func newPurgedStep(t *testing.T, big []byte) purgedStep {
 	c := newClient(t, nc)
 	runID := natsutil.SubjectToken(strings.ReplaceAll(t.Name(), "/", "-"))
 	want := writeStep(t, c, nc, runID, big)
-	cut := want[3].Seq
+	cut := want[index].Seq
 	before := archivetest.Snapshot(t, c.js, natsutil.AgentJournalStream, cut)
 	epoch, first := archivetest.PurgeBelow(t, c.js, natsutil.AgentJournalStream, cut)
 	if first != cut {
@@ -131,7 +143,7 @@ func sameRecords(t *testing.T, got, want []Record) {
 	}
 }
 
-func lastSeq(t *testing.T, p purgedStep) uint64 {
+func streamLastSeq(t *testing.T, p purgedStep) uint64 {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), caseTimeout)
 	defer cancel()
@@ -230,13 +242,17 @@ func TestArchive_FailsClosed(t *testing.T) {
 		}},
 		{"timeout", func(t *testing.T, p purgedStep) { p.serve(t).Silent = true }},
 		{"busy forever", func(t *testing.T, p purgedStep) { p.serve(t).BusyFor = 1 << 40 }},
+		{"not indexed", func(t *testing.T, p purgedStep) {
+			p.serve(t).Code = dagnatsext.ArchiveCodeNotIndexed
+		}},
+		{"unknown code", func(t *testing.T, p purgedStep) { p.serve(t).Code = "no_such_code" }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			fastArchive(t)
 			p := newPurgedStep(t, []byte(`{"n":2}`))
 			tc.setup(t, p)
-			last := lastSeq(t, p)
+			last := streamLastSeq(t, p)
 			_, err := readStep(t, p)
 			if !errors.Is(err, ErrArchive) || !strings.Contains(err.Error(), p.runID) {
 				t.Fatalf("Read: err = %v, want ErrArchive naming run %s", err, p.runID)
@@ -247,7 +263,7 @@ func TestArchive_FailsClosed(t *testing.T) {
 			if !errors.Is(err, ErrArchive) || j != nil {
 				t.Fatalf("Open: err = %v, want ErrArchive and no journal", err)
 			}
-			if got := lastSeq(t, p); got != last {
+			if got := streamLastSeq(t, p); got != last {
 				t.Errorf("a failed Open wrote: last seq %d, was %d", got, last)
 			}
 		})

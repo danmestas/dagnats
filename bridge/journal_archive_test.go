@@ -33,6 +33,16 @@ func purgedBridgeStep(
 	t *testing.T, runID string,
 ) (*httptest.Server, string, func() *archivetest.Responder) {
 	t.Helper()
+	return purgedBridgeStepAt(t, runID, false)
+}
+
+// purgedBridgeStepAt is purgedBridgeStep; with whole, every record of
+// the step is purged (another run's record lands after them) and the
+// task is the step's retry, attempt 2.
+func purgedBridgeStepAt(
+	t *testing.T, runID string, whole bool,
+) (*httptest.Server, string, func() *archivetest.Responder) {
+	t.Helper()
 	rig := newJournalRig(t)
 	_, ts := rig.front(t)
 	ctx := context.Background()
@@ -52,9 +62,19 @@ func purgedBridgeStep(
 	if err != nil {
 		t.Fatalf("append entry: %v", err)
 	}
+	attempt := 1
+	if whole {
+		other, err := journal.Open(ctx, rig.js, pub, journal.Task{
+			RunID: runID + "x", StepID: "s", Attempt: 1, DispatchNonce: "nx", Delivered: 1,
+		})
+		if err != nil {
+			t.Fatalf("open other run: %v", err)
+		}
+		cut, attempt = other.Seq(), 2
+	}
 	before := archivetest.Snapshot(t, rig.js, natsutil.AgentJournalStream, cut)
 	epoch, _ := archivetest.PurgeBelow(t, rig.js, natsutil.AgentJournalStream, cut)
-	rig.publish(t, protocol.TaskPayload{RunID: runID, StepID: "s", Attempt: 1,
+	rig.publish(t, protocol.TaskPayload{RunID: runID, StepID: "s", Attempt: attempt,
 		DispatchNonce: "n1"})
 	items := postPoll(t, ts, "echo", 1, 3000)
 	if len(items) != 1 {
@@ -97,5 +117,19 @@ func TestBridgeJournalViewFailsClosedWithoutArchive(t *testing.T) {
 	}
 	if status, body := resolveBody(t, ts, taskID, `{"action":"journal.read"}`); status == 200 {
 		t.Fatalf("journal.read with no archive = 200 %s, want a failure", body)
+	}
+}
+
+func TestBridgeJournalViewReplaysAWhollyPurgedStepOnRetry(t *testing.T) {
+	ts, taskID, serve := purgedBridgeStepAt(t, "run-jarchive-whole", true)
+	fake := serve()
+	status, raw := resolveBody(t, ts, taskID, `{"action":"journal.read"}`)
+	var read journalReadResponse
+	if status != 200 || json.Unmarshal([]byte(raw), &read) != nil || len(read.Records) != 4 {
+		t.Fatalf("journal.read: %d %s, want the 3 archived records and this claim", status, raw)
+	}
+	if read.Records[1].Type != journal.TypeToolIntent || fake.Requests.Load() == 0 {
+		t.Errorf("records %+v after %d archive requests, want the archived intent",
+			read.Records, fake.Requests.Load())
 	}
 }

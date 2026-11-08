@@ -95,11 +95,14 @@ func handleGetStepJournal(svc *Service, w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// A later iteration or a retry may have had every record purged,
+	// so only then does a step with nothing in JetStream ask the archive.
+	history := state.Iterations > 0 || state.Attempts > 1
 	if r.URL.Query().Get("follow") == "1" {
-		serveJournalFollow(svc, w, r, runID, stepID, from)
+		serveJournalFollow(svc, w, r, runID, stepID, from, history)
 		return
 	}
-	serveJournalPage(svc, w, r, runID, stepID, from, stepTerminal(state.Status))
+	serveJournalPage(svc, w, r, runID, stepID, from, stepTerminal(state.Status), history)
 }
 
 // journalFrom is the first sequence to deliver (0 = the start). A
@@ -150,13 +153,14 @@ func journalConsumerSpec(runID, stepID string, from uint64) natsutil.OrderedCons
 // serveJournalPage answers one bounded page starting at from.
 func serveJournalPage(
 	svc *Service, w http.ResponseWriter, r *http.Request,
-	runID, stepID string, from uint64, stepDone bool,
+	runID, stepID string, from uint64, stepDone, history bool,
 ) {
 	ctx, cancel := context.WithTimeout(r.Context(), runLookupTimeout)
 	defer cancel()
 	// Records purged below FirstSeq come from the archive first; the
 	// consumer then starts at the first record JetStream still holds.
-	records, err := journal.ArchivedPrefix(ctx, svc.js, runID, stepID, from, journalPageMax)
+	records, err := journal.ArchivedPrefix(ctx, svc.js, runID, stepID, from, journalPageMax,
+		history)
 	if err != nil {
 		writeJournalReadError(w, err)
 		return
@@ -237,7 +241,7 @@ func writeJournalReadError(w http.ResponseWriter, cause error) {
 // followDurationMax passes.
 func serveJournalFollow(
 	svc *Service, w http.ResponseWriter, r *http.Request,
-	runID, stepID string, from uint64,
+	runID, stepID string, from uint64, history bool,
 ) {
 	release, flusher, ok := beginFollow(
 		w, &journalFollowActive, journalFollowConcurrentMax,
@@ -249,7 +253,7 @@ func serveJournalFollow(
 	defer release()
 	ctx, cancel := context.WithTimeout(r.Context(), followDurationMax)
 	defer cancel()
-	archived, err := journal.ArchivedPrefix(ctx, svc.js, runID, stepID, from, 0)
+	archived, err := journal.ArchivedPrefix(ctx, svc.js, runID, stepID, from, 0, history)
 	if err != nil {
 		writeJournalReadError(w, err)
 		return

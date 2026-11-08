@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 
 	"github.com/danmestas/dagnats/dagnatsext"
@@ -33,6 +34,16 @@ var (
 	ErrDiscontinuous = errors.New("journal: record chain is broken")
 )
 
+// HeaderPrevSeq names a record's predecessor where
+// Nats-Expected-Last-Subject-Sequence cannot: the first record written
+// after every earlier record of the step was purged must expect 0 of
+// the server, yet follows the archived tail. Only that record carries it.
+const HeaderPrevSeq = "Dagnats-Journal-Prev-Seq"
+
+// errNothingPurged: the stream holds every sequence the archive read
+// would cover, so there is nothing to ask the archive for.
+var errNothingPurged = errors.New("journal: nothing purged there")
+
 // archiveOptions tunes the archive reader; zero takes its defaults. A
 // var so tests can shorten the timeouts.
 var archiveOptions = archivenats.Options{}
@@ -44,7 +55,10 @@ func predecessor(hdr nats.Header) (uint64, bool) {
 	if hdr == nil {
 		return 0, false
 	}
-	value := hdr.Get(headerExpectedLastSeq)
+	value := hdr.Get(HeaderPrevSeq)
+	if value == "" {
+		value = hdr.Get(headerExpectedLastSeq)
+	}
 	if value == "" {
 		return 0, false
 	}
@@ -122,6 +136,10 @@ func archivedBefore(
 		limit = recordsMax + 1
 	}
 	msgs, err := readArchive(ctx, js, subject, from, liveSeq, limit)
+	if errors.Is(err, errNothingPurged) {
+		return nil, fmt.Errorf("%w: %s seq %d follows seq %d, which the stream does not hold "+
+			"and was never purged", ErrDiscontinuous, subject, liveSeq, prev)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -168,8 +186,7 @@ func readArchive(
 	}
 	to := min(before, info.State.FirstSeq)
 	if to <= from {
-		return nil, fmt.Errorf("%w: %s needs seq %d, below seq %d, but the stream starts at %d",
-			ErrDiscontinuous, subject, from, before, info.State.FirstSeq)
+		return nil, errNothingPurged
 	}
 	reader := archivenats.NewReader(js.Conn(), domain, natsutil.AgentJournalStream,
 		archiveOptions)
@@ -259,14 +276,124 @@ func withArchived(
 	return all[:end], nil
 }
 
+// OpenNeedsNothingBefore reports whether a record with these headers is
+// the commit of an iteration before iteration. Open of that iteration
+// starts from the newest such commit and reads nothing older (#980's
+// protected floor sits at it), so a journal purged below it opens
+// without the archive. The engine relay applies the same rule.
+func OpenNeedsNothingBefore(hdr nats.Header, iteration int) bool {
+	if hdr == nil {
+		return false
+	}
+	if iteration < 0 {
+		panic("journal.OpenNeedsNothingBefore: iteration must not be negative")
+	}
+	recordIteration := headerInt(hdr, HeaderIteration)
+	return hdr.Get(HeaderType) == TypeCommit && recordIteration >= 0 &&
+		recordIteration < iteration
+}
+
+// ArchivedFrom reads up to limit archived messages of subject from
+// sequence from, for a read that found nothing in JetStream at or after
+// from. purged is false, and nothing is asked, when the stream was
+// never purged at or after from.
+func ArchivedFrom(
+	ctx context.Context, js jetstream.JetStream, subject string, from uint64, limit int,
+) (msgs []dagnatsext.ArchivedMessage, purged bool, err error) {
+	if ctx == nil || js == nil || subject == "" {
+		panic("journal.ArchivedFrom: ctx, js and subject must be set")
+	}
+	if from == 0 || limit <= 0 || limit > recordsMax+1 {
+		panic("journal.ArchivedFrom: from and limit out of range")
+	}
+	msgs, err = readArchive(ctx, js, subject, from, math.MaxUint64, limit)
+	if errors.Is(err, errNothingPurged) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, true, err
+	}
+	return msgs, true, nil
+}
+
+// readPurgedSubject reads a step whose records JetStream holds none
+// of. With required (the step must have had history) an archive that
+// holds nothing either fails the read; a stream never purged means the
+// step truly has no records, which is no failure.
+func readPurgedSubject(
+	ctx context.Context, js jetstream.JetStream, runID, stepID string, required bool,
+) ([]Record, error) {
+	if ctx == nil || js == nil {
+		panic("journal.readPurgedSubject: ctx and js must not be nil")
+	}
+	if runID == "" || stepID == "" {
+		panic("journal.readPurgedSubject: run and step must not be empty")
+	}
+	subject := natsutil.JournalSubject(runID, stepID)
+	msgs, purged, err := ArchivedFrom(ctx, js, subject, 1, recordsMax+1)
+	if err != nil {
+		return nil, fmt.Errorf("run %s step %s: %w", runID, stepID, err)
+	}
+	if len(msgs) > recordsMax {
+		return nil, fmt.Errorf("journal: more than %d archived records on %s", recordsMax, subject)
+	}
+	if len(msgs) == 0 && purged && required {
+		return nil, fmt.Errorf("%w: run %s step %s had history, but neither JetStream nor "+
+			"the archive holds a record of it", ErrArchive, runID, stepID)
+	}
+	records := make([]Record, 0, len(msgs))
+	for _, m := range msgs {
+		records = append(records, archivedRecord(m))
+	}
+	if err := CheckContinuity(records, 1); err != nil {
+		return nil, fmt.Errorf("run %s step %s: archive: %w", runID, stepID, err)
+	}
+	return records, nil
+}
+
+// archivedOnly is ArchivedPrefix for a step JetStream holds nothing
+// of at or after from.
+func archivedOnly(
+	ctx context.Context, js jetstream.JetStream, runID, stepID string, from uint64, limit int,
+	history bool,
+) ([]Record, error) {
+	if from == 0 || limit < 0 {
+		panic("journal.archivedOnly: from and limit out of range")
+	}
+	if !history {
+		return nil, nil
+	}
+	if limit == 0 || limit > recordsMax {
+		limit = recordsMax + 1
+	}
+	msgs, _, err := ArchivedFrom(ctx, js, natsutil.JournalSubject(runID, stepID), from, limit)
+	if err != nil {
+		return nil, fmt.Errorf("run %s step %s: %w", runID, stepID, err)
+	}
+	if len(msgs) > recordsMax {
+		return nil, fmt.Errorf("journal: more than %d archived records", recordsMax)
+	}
+	records := make([]Record, 0, len(msgs))
+	for _, m := range msgs {
+		records = append(records, archivedRecord(m))
+	}
+	if err := CheckContinuity(records, from); err != nil {
+		return nil, fmt.Errorf("run %s step %s: archive: %w", runID, stepID, err)
+	}
+	return records, nil
+}
+
 // ArchivedPrefix returns the step's records from sequence from that are
 // only in the archive: empty when the first record at or after from is
 // still in JetStream with no purged predecessor at or after from, or
 // when JetStream holds nothing there. At most limit records (0:
 // recordsMax). The client journal read (GET .../journal) serves them
-// before its JetStream page.
+// before its JetStream page. history says the step may have had
+// records (a later iteration or a retry): only then is a step
+// JetStream holds nothing of at or after from read from the archive.
 func ArchivedPrefix(
 	ctx context.Context, js jetstream.JetStream, runID, stepID string, from uint64, limit int,
+	history bool,
 ) ([]Record, error) {
 	if ctx == nil || js == nil {
 		panic("journal.ArchivedPrefix: ctx and js must not be nil")
@@ -287,7 +414,7 @@ func ArchivedPrefix(
 		return getErr
 	})
 	if errors.Is(err, jetstream.ErrMsgNotFound) {
-		return nil, nil
+		return archivedOnly(ctx, js, runID, stepID, from, limit, history)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("journal: read %s from %d: %w", subject, from, err)

@@ -52,6 +52,10 @@ type Responder struct {
 	Drop uint64
 	// Silent never replies, so requests time out.
 	Silent bool
+	// EmptyPages answers the first EmptyPages requests with no messages,
+	// done false and next_seq one past from_seq, as lode does when a
+	// sparse subject's page runs out of time before it finds a message.
+	EmptyPages int64
 }
 
 // Serve subscribes a Responder on stream's range subject in domain,
@@ -112,6 +116,10 @@ func (r *Responder) answer(body []byte, count int64) dagnatsext.ArchiveRangeRepl
 		return dagnatsext.ArchiveRangeReply{Error: "busy", Code: dagnatsext.ArchiveCodeBusy}
 	case r.Code != "":
 		return dagnatsext.ArchiveRangeReply{Error: r.Code, Code: r.Code, Floor: r.Floor}
+	case count <= r.EmptyPages:
+		return dagnatsext.ArchiveRangeReply{
+			Messages: []dagnatsext.ArchivedMessage{}, NextSeq: req.FromSeq + 1,
+		}
 	case req.Epoch != r.epoch:
 		return dagnatsext.ArchiveRangeReply{
 			Error: "no such epoch", Code: dagnatsext.ArchiveCodeUnknownEpoch,
