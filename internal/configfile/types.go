@@ -35,11 +35,15 @@ type ConfigFile struct {
 	Policy    *PolicyYAML    `yaml:"policy,omitempty"`
 }
 
-// PolicyYAML carries the declarative authorization policy. Currently only
-// the control-plane grant is modeled; the wrapper leaves room for future
-// policy domains (e.g. trigger authorization) without reshaping ConfigFile.
+// PolicyYAML carries the declarative authorization policy: the
+// control-plane grant and the archive grant.
 type PolicyYAML struct {
 	ControlPlane *ControlPlaneGrantYAML `yaml:"control_plane,omitempty"`
+	// Archives grants, by program name, the JetStream streams that
+	// program may archive and purge. A program gets archive rights on a
+	// stream only when its manifest also declares it (program.Manifest
+	// Archives). Deny-by-default: an absent program or stream gets none.
+	Archives map[string][]string `yaml:"archives,omitempty"`
 }
 
 // ControlPlaneGrantYAML lists the workflows allowed to receive a

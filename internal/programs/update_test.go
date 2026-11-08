@@ -85,7 +85,7 @@ func TestUpdate_AdditionsAreAdmittedAndProvisioned(t *testing.T) {
 		record.Grant.StoreBudgetBytes != grant.StoreBudgetBytes {
 		t.Fatalf("record not updated: %+v", record)
 	}
-	if perms := UserPermissions(record); !strings.Contains(fmt.Sprint(perms), "notify.send") {
+	if perms := UserPermissions(record, nil); !strings.Contains(fmt.Sprint(perms), "notify.send") {
 		t.Fatalf("permissions do not cover the new task type: %+v", perms)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

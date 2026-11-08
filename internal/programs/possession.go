@@ -57,7 +57,10 @@ var errConfirmRequired = errors.New("program change must be confirmed with its k
 // for a pending registration only its confirm subject (and replies on
 // its own inbox), and for a confirmed one PermissionsFor its manifest
 // plus its confirm subject, so it can confirm a later manifest change.
-func UserPermissions(record Record) program.Permissions {
+// archives is what the operator granted the program in policy.archives;
+// it adds rights only to a confirmed record, and only on streams the
+// manifest also declares (program.PermissionsGranted).
+func UserPermissions(record Record, archives []string) program.Permissions {
 	if record.PublicKey == "" || record.Manifest.Name == "" {
 		panic("programs.UserPermissions: record must name its key and program")
 	}
@@ -69,7 +72,7 @@ func UserPermissions(record Record) program.Permissions {
 			Subscribe: program.SubjectPermission{Allow: []string{inbox}},
 		}
 	}
-	perms := program.PermissionsFor(record.Manifest)
+	perms := program.PermissionsGranted(record.Manifest, archives)
 	perms.Publish.Allow = append(perms.Publish.Allow, confirm)
 	return perms
 }

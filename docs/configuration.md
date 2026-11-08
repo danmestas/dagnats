@@ -219,6 +219,18 @@ policy:
 
 The constraint `promote ⊆ grant` is enforced at config load.
 
+### Archive grants
+
+The `policy.archives` block grants, by program name, the JetStream streams a program may archive and purge. A program gets the rights on a stream only when its manifest's `Archives` also declares it; either side alone grants nothing and the server logs the mismatch. Absent = deny-by-default. No environment variable override; hot-reloadable.
+
+```yaml
+policy:
+  archives:
+    lode: [AGENT_JOURNAL, WORKFLOW_HISTORY]
+```
+
+On each effective stream `<S>` the program gets: `$JS.API.STREAM.INFO.<S>` and `$JS.API.STREAM.PURGE.<S>`; `$JS.API.CONSUMER.LIST.<S>`, `$JS.API.CONSUMER.NAMES.<S>` and `$JS.API.CONSUMER.INFO.<S>.*` (every consumer, for ack floors); and `$JS.API.CONSUMER.CREATE.<S>.<program>_archive` (and `.>` after it, the filtered form), `$JS.API.CONSUMER.MSG.NEXT.<S>.<program>_archive` and `$JS.API.CONSUMER.DELETE.<S>.<program>_archive`. Nothing wider: no acks, no publish on the stream's subjects. The purge right covers the whole stream (its body is not checkable by subject), so grant it only to a program you trust with the stream's data.
+
 ### Console, bridge, and logs
 
 | Variable | Default | Notes |
