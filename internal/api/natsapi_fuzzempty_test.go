@@ -27,7 +27,7 @@ func TestNATSAPIEndpointsSurviveEmptyBodies(t *testing.T) {
 	natsAPI.Start()
 	defer natsAPI.Stop()
 	subjects := []string{
-		"api.workflows.register", "api.runs.start", "api.runs.get",
+		"api.workflows.register", "api.runs.start", "api.runs.get", "api.runs.fork",
 		"api.runtimes.register", "api.runs.spawn", "api.runtimes.budget",
 		"api.inputs.submit", "api.inputs.get", "api.inputs.withdraw",
 		"api.leases.acquire", "api.leases.renew", "api.leases.release",

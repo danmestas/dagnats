@@ -451,6 +451,56 @@ POST /runs/{id}/cancel
 curl -X POST http://localhost:8080/runs/a1b2c3d4.../cancel
 ```
 
+### Fork Run
+
+Fork an agent run at a point in one step's journal (#810). The new run
+is the parent's workflow, at the def version the parent is pinned to,
+with the parent's input and labels. Parent steps that finished and do not
+depend on the forked step are reused, not executed again; the forked step
+replays the parent's journal up to `seq` (recorded model responses and
+tool results are reused) and then runs on, and its dependents run
+afresh. The parent run and its journal are not changed. The new run's
+`forked_from` is `{"run_id","step_id","journal_seq"}`. See "Forks" under
+"Agent journal" in the wire protocol for the replay rules.
+
+```
+POST /runs/{id}/fork
+```
+
+```json
+{"step": "agent", "seq": 42}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `step` | string | Yes | The parent step to fork; it must have a journal |
+| `seq` | uint64 | Yes | The `seq` of the last parent journal record the fork replays (from the step journal endpoint). Not a `commit` or `fork` record: to fork after an iteration, use the next iteration's `claim` |
+
+**Response:** `201 Created`
+
+```json
+{"run_id": "e5f6a7b8...", "parent_run_id": "a1b2c3d4...", "step": "agent", "seq": 42}
+```
+
+| Status | Condition |
+|--------|-----------|
+| `201` | Fork record written and the run started |
+| `400` | Invalid JSON, missing `step` or `seq`, a step without a journal, or a `seq` that is not a fork point of that step's journal |
+| `404` | Run not found, or `step` unknown |
+| `405` | Method other than `POST` |
+| `500` | Journal or publish failure |
+
+Limits: the parent's journal records must still be in the `AGENT_JOURNAL`
+stream (a fork cannot read records archived out of it); a forked step run
+by a program's worker cannot read its parent's journal through the relay.
+The endpoint is on the admin control plane; programs cannot fork runs.
+
+**curl:**
+```bash
+curl -X POST http://localhost:8080/runs/a1b2c3d4.../fork \
+  -H 'Content-Type: application/json' -d '{"step":"agent","seq":42}'
+```
+
 ### Send Signal
 
 Write a named signal with arbitrary data to a running workflow via the `signals` KV bucket.

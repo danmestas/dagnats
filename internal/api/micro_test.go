@@ -73,13 +73,14 @@ func TestMicroInfoListsExactlyTwentyFourEndpointSubjects(t *testing.T) {
 	// the three input endpoints (ADR-027), the four program-scoped
 	// endpoints, the three program relay endpoints and the three
 	// program store relays (#885), and the two program trigger endpoints
-	// (#957).
+	// (#957), and run forks (#810).
 	want := map[string]bool{
 		"api.workflows.register": true,
 		"api.runs.start":         true,
 		"api.runs.get":           true,
 		"api.runtimes.register":  true,
 		"api.runs.spawn":         true,
+		"api.runs.fork":          true, // forks of agent runs (#810)
 		"api.runtimes.budget":    true,
 		// Coordination leases (ADR-024).
 		"api.leases.acquire": true,

@@ -119,6 +119,7 @@ func (n *NATSAPI) Start() {
 		{"register", "api.workflows.register", n.handleRegister, ""},
 		{"start", "api.runs.start", n.handleStartRun, ""},
 		{"get", "api.runs.get", n.handleGetRun, ""},
+		{"runs-fork", "api.runs.fork", n.handleForkRunNATS, ""},
 		// Additive control-plane endpoints (#376). Existing subjects
 		// above are unchanged.
 		{"runtimes-register", "api.runtimes.register",
@@ -129,8 +130,7 @@ func (n *NATSAPI) Start() {
 		{"runtimes-budget", "api.runtimes.budget",
 			n.handleRuntimesBudget, ""},
 	}, n.leaseEndpoints()...)
-	endpoints = append(endpoints, n.inputEndpoints()...)
-	endpoints = append(endpoints, n.programEndpoints()...)
+	endpoints = append(append(endpoints, n.inputEndpoints()...), n.programEndpoints()...)
 	endpoints = append(endpoints, n.relayEndpoints()...)
 	endpoints = append(endpoints, n.storeEndpoints()...)
 	for _, e := range endpoints {

@@ -6,6 +6,10 @@
 import "github.com/danmestas/dagnats/journal"
 ```
 
+journal/fork.go Forks \(\#810\). A forked step's journal starts with one fork record naming a parent journal and a sequence in it. Open then treats the parent's records up to and including that sequence as this step's history: the parent's committed state before the forked iteration is the state, and the forked iteration's records up to the point are replayed by position as the forked step's iteration 0, so model responses and tool results recorded before the point are reused and execution diverges after it. The parent journal is only read.
+
+The parent's records must still be in AGENT\_JOURNAL: a fork cannot read records archived out of the stream.
+
 journal/inputs.go Placement records \(ADR\-027\). An input moves from the submissions bucket into the conversation by one input.placed record; the record is the truth about placement, so a journal knows every request\_id placed in any iteration and a successor never places one twice.
 
 Package journal is the agent journal of ADR\-026: one append\-only JetStream subject per step, journal.\{run\}.\{step\}, where an agent step's SDK records what it did so a successor can take over without repeating a turn. Every append is fenced on the journal tail its writer last saw, so a worker that lost the tail \(stalled past its AckWait, superseded by a redelivery\) cannot write, and is told so.
@@ -17,8 +21,10 @@ A Journal is one claim on one dispatch of a step. Open reads the tail from the s
 - [Constants](<#constants>)
 - [Variables](<#variables>)
 - [func MsgID\(task Task, index int\) string](<#MsgID>)
+- [func WriteFork\(ctx context.Context, js jetstream.JetStream, pub \*natsutil.TracingPublisher, runID string, fork Fork\) \(uint64, error\)](<#WriteFork>)
 - [type Claim](<#Claim>)
 - [type Commit](<#Commit>)
+- [type Fork](<#Fork>)
 - [type InputPlaced](<#InputPlaced>)
 - [type Journal](<#Journal>)
   - [func Open\(ctx context.Context, js jetstream.JetStream, pub \*natsutil.TracingPublisher, task Task\) \(\*Journal, error\)](<#Open>)
@@ -109,7 +115,29 @@ const (
 const ErrInterrupted = "interrupted"
 ```
 
+<a name="TypeFork"></a>TypeFork is the first record of a forked step's journal.
+
+```go
+const TypeFork = "fork"
+```
+
 ## Variables
+
+<a name="ErrForkNoJournal"></a>Fork errors.
+
+```go
+var (
+    // ErrForkNoJournal: the parent step has no journal, so it is not
+    // an agent step there is anything to fork from.
+    ErrForkNoJournal = errors.New("journal: the parent step has no journal")
+    // ErrForkPoint: the sequence is not a record of the parent step's
+    // journal that a fork may start from (a commit or fork record is
+    // not one), or the record is no longer in the stream.
+    ErrForkPoint = errors.New("journal: the sequence is not a fork point in the parent journal")
+    // ErrForkExists: the forked step's journal already holds records.
+    ErrForkExists = errors.New("journal: the forked step's journal is not empty")
+)
+```
 
 <a name="ErrStale"></a>Sentinel errors a handler is expected to check.
 
@@ -151,6 +179,15 @@ func MsgID(task Task, index int) string
 
 MsgID is the stable dedup key of a record: \{run\}.\{step\}.\{attempt\}.\{iteration\}.\{stream\_seq\}.\{delivered\}.\{index\}. The delivery count keeps a redelivery's records distinct from the stalled delivery's inside the dedup window; the stream sequence does the same for a resend, which restarts the count. Without them the successor's claim would be answered with the old claim's sequence.
 
+<a name="WriteFork"></a>
+## func [WriteFork](<https://github.com/danmestas/dagnats/blob/main/journal/fork.go#L74-L77>)
+
+```go
+func WriteFork(ctx context.Context, js jetstream.JetStream, pub *natsutil.TracingPublisher, runID string, fork Fork) (uint64, error)
+```
+
+WriteFork checks that fork names a fork point in a parent journal, then writes the fork record as the first record of runID's journal for the parent's step. It returns the record's sequence.
+
 <a name="Claim"></a>
 ## type [Claim](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L169-L175>)
 
@@ -182,6 +219,20 @@ type Commit struct {
     // Wait is the durable wait a continue asked for (ADR-027), so a
     // republished step.continue carries the same one.
     Wait *protocol.ContinueWait `json:"wait,omitempty"`
+}
+```
+
+<a name="Fork"></a>
+## type [Fork](<https://github.com/danmestas/dagnats/blob/main/journal/fork.go#L53-L58>)
+
+Fork is the body of a fork record: the parent journal and the sequence, in AGENT\_JOURNAL, of the last parent record the fork replays. A forked step keeps the parent's step ID.
+
+```go
+type Fork struct {
+    ParentRunID   string `json:"parent_run_id"`
+    ParentStepID  string `json:"parent_step_id"`
+    ParentSubject string `json:"parent_subject"`
+    ParentSeq     uint64 `json:"parent_seq"`
 }
 ```
 
@@ -221,7 +272,7 @@ func Open(ctx context.Context, js jetstream.JetStream, pub *natsutil.TracingPubl
 Open claims task's dispatch. It returns ErrStale when the tail belongs to a later iteration \(nothing written\), ErrFenced when a rival claim for the same iteration won, and a journal whose Committed reports this attempt's own commit when the previous holder crashed between committing and publishing \(no claim is appended then\).
 
 <a name="Journal.Append"></a>
-### func \(\*Journal\) [Append](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L458-L460>)
+### func \(\*Journal\) [Append](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L460-L462>)
 
 ```go
 func (j *Journal) Append(ctx context.Context, recordType string, data []byte) (uint64, error)
@@ -230,7 +281,7 @@ func (j *Journal) Append(ctx context.Context, recordType string, data []byte) (u
 Append writes a record of recordType with data as its body.
 
 <a name="Journal.Commit"></a>
-### func \(\*Journal\) [Commit](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L494>)
+### func \(\*Journal\) [Commit](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L496>)
 
 ```go
 func (j *Journal) Commit(ctx context.Context, c Commit) (uint64, error)
@@ -239,7 +290,7 @@ func (j *Journal) Commit(ctx context.Context, c Commit) (uint64, error)
 Commit ends the iteration with one record: the action its lifecycle event will carry and the state the next iteration starts from. One message, not an atomic batch \(ADR\-026\). After it nothing more may be appended under this claim.
 
 <a name="Journal.Committed"></a>
-### func \(\*Journal\) [Committed](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L432>)
+### func \(\*Journal\) [Committed](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L434>)
 
 ```go
 func (j *Journal) Committed() (Commit, bool)
@@ -248,7 +299,7 @@ func (j *Journal) Committed() (Commit, bool)
 Committed returns this attempt's own commit: the one Open found, or the one Commit stored.
 
 <a name="Journal.CommittedSeq"></a>
-### func \(\*Journal\) [CommittedSeq](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L441>)
+### func \(\*Journal\) [CommittedSeq](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L443>)
 
 ```go
 func (j *Journal) CommittedSeq() uint64
@@ -284,7 +335,7 @@ func (j *Journal) Model(ctx context.Context, fn ModelFunc) ([]byte, error)
 Model requests one model response durably: the response a previous holder of this attempt recorded for the call at this position is returned without calling fn; otherwise fn runs and its response is appended as model.response. A request that fails records nothing and leaves the position free, and a new attempt of the iteration requests afresh. Streaming tokens are not the journal's business: PutStream is a non\-durable preview, and a crash mid\-stream re\-sends the request on the next delivery. Model must be called from the goroutine that owns the handle.
 
 <a name="Journal.Pause"></a>
-### func \(\*Journal\) [Pause](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L473-L475>)
+### func \(\*Journal\) [Pause](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L475-L477>)
 
 ```go
 func (j *Journal) Pause(ctx context.Context, name string, duration time.Duration) (uint64, error)
@@ -311,16 +362,16 @@ func (j *Journal) PlacedInputs() []InputPlaced
 PlacedInputs returns every placement in journal order, with the iteration each joined.
 
 <a name="Journal.Records"></a>
-### func \(\*Journal\) [Records](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L428>)
+### func \(\*Journal\) [Records](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L430>)
 
 ```go
 func (j *Journal) Records() []Record
 ```
 
-Records returns this iteration's records written before this claim, in journal order: what a recovering attempt may reuse.
+Records returns this iteration's records written before this claim, in journal order: what a recovering attempt may reuse. A forked journal's iteration 0 starts with the records it inherits from its parent \(see Fork\).
 
 <a name="Journal.Restarts"></a>
-### func \(\*Journal\) [Restarts](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L455>)
+### func \(\*Journal\) [Restarts](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L457>)
 
 ```go
 func (j *Journal) Restarts() int
@@ -329,7 +380,7 @@ func (j *Journal) Restarts() int
 Restarts returns how many claims on this iteration sat at the tail before this claim with nothing between them: deliveries that claimed and then made no progress. A pause, an entry, a tool or model record, or a commit resets the count; a claim after a commit \(a retry\) starts from 0. Feeds the worker's restart limit \(ADR\-028\).
 
 <a name="Journal.Resume"></a>
-### func \(\*Journal\) [Resume](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L445>)
+### func \(\*Journal\) [Resume](<https://github.com/danmestas/dagnats/blob/main/journal/journal.go#L447>)
 
 ```go
 func (j *Journal) Resume() (string, bool)
