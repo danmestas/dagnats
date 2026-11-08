@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/internal/api"
+	"github.com/danmestas/dagnats/internal/configfile"
 	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/protocol"
@@ -1084,13 +1085,18 @@ func loadConfigFile(path string, cfg *Config) error {
 
 	scanner := bufio.NewScanner(f)
 	lineNum := 0
+	inSection := false
 
 	for scanner.Scan() && lineNum < maxConfigFileLines {
 		lineNum++
-		line := strings.TrimSpace(scanner.Text())
+		raw := scanner.Text()
+		line := strings.TrimSpace(raw)
 
 		// Skip empty lines and comments
 		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if skipSectionLine(raw, &inSection) {
 			continue
 		}
 
@@ -1122,6 +1128,26 @@ func loadConfigFile(path string, cfg *Config) error {
 	}
 
 	return nil
+}
+
+// skipSectionLine reports whether raw belongs to a dagnats.yaml section
+// the configfile loader owns (workflows, triggers, policy): the
+// section's own top-level line, or an indented or list line under it.
+// Any other top-level line ends the section. raw must not be blank.
+func skipSectionLine(raw string, inSection *bool) bool {
+	if inSection == nil {
+		panic("skipSectionLine: inSection must not be nil")
+	}
+	if strings.TrimSpace(raw) == "" {
+		panic("skipSectionLine: raw must not be blank")
+	}
+	nested := raw[0] == ' ' || raw[0] == '\t' || raw[0] == '-'
+	if nested {
+		return *inSection
+	}
+	key, _, _ := strings.Cut(raw, ":")
+	*inSection = slices.Contains(configfile.Sections(), strings.TrimSpace(key))
+	return *inSection
 }
 
 // applyConfigValue applies a single config key-value pair to cfg.

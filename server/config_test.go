@@ -6,6 +6,7 @@ package server
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -993,5 +994,53 @@ func TestEngineSetting(t *testing.T) {
 	// Positive: the env var turns it off.
 	if err := applyEngineEnv(&cfg); err != nil || !cfg.ReplicaOnly {
 		t.Fatalf("DAGNATS_ENGINE=false = %v, ReplicaOnly %v", err, cfg.ReplicaOnly)
+	}
+}
+
+// dagnats.yaml carries the flat server keys and the configfile sections
+// (workflows, triggers, policy) in one file. The flat parser must skip
+// a section and everything nested under it rather than warn about each
+// line as an unknown key (every mesh node logged policy, archives and
+// lode at startup). Positive: flat keys on either side of the sections
+// still apply, with no warning. Negative: an unknown flat key after a
+// section still warns.
+func TestLoadConfigFile_SkipsConfigfileSections(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "dagnats.yaml")
+	body := strings.Join([]string{
+		"http_addr: 127.0.0.1:9999",
+		"policy:",
+		"  archives:",
+		"    lode: [AGENT_JOURNAL]",
+		"workflows:",
+		"- name: hello",
+		"  steps:",
+		"    - id: a",
+		"      task: echo",
+		"triggers: []",
+		"nats_port: 4333",
+		"no_such_flat_key: 1",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	var logged strings.Builder
+	log.SetOutput(&logged)
+	defer log.SetOutput(os.Stderr)
+	cfg := DefaultConfig()
+	if err := loadConfigFile(path, &cfg); err != nil {
+		t.Fatalf("loadConfigFile: %v", err)
+	}
+	if cfg.HTTPAddr != "127.0.0.1:9999" || cfg.NATSPort != 4333 {
+		t.Fatalf("flat keys around the sections: http_addr %q nats_port %d",
+			cfg.HTTPAddr, cfg.NATSPort)
+	}
+	for _, section := range []string{"policy", "archives", "lode", "workflows", "- name",
+		"steps", "triggers"} {
+		if strings.Contains(logged.String(), "unknown config key: "+section) {
+			t.Fatalf("warned about section line %q:\n%s", section, logged.String())
+		}
+	}
+	if !strings.Contains(logged.String(), "unknown config key: no_such_flat_key") {
+		t.Fatalf("unknown flat key after the sections did not warn:\n%s", logged.String())
 	}
 }
