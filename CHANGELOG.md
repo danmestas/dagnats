@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A program's first registration no longer fails with "confirmation still pending" on a cluster.** The registrar read program records with a KV direct get, which any replica of the R3 `programs` bucket may answer. Right after a confirm promoted a pending record, the reply's re-read could come from a replica that had not applied the promotion, so the reply asked for another confirmation and `program.Run` failed (lode's first start on the eu mesh; systemd's restart then succeeded). Every registrar record read now goes through the stream leader (`natsutil.KVGetLeader`), which has applied every acknowledged write; that also covers the compare-and-set reads behind promotions, updates and expiry.
+
 ## [0.0.60] - 2026-11-08
 
 ### Fixed

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/natsutil"
 	"github.com/danmestas/dagnats/program"
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -93,7 +94,7 @@ func (r *Registrar) commitUpdate(
 	if err != nil || !changed {
 		return pendingUpdate{grant: grant}, err
 	}
-	pending := pendingUpdate{grant: record.Grant, previous: entry.Value()}
+	pending := pendingUpdate{grant: record.Grant, previous: entry.Value}
 	if !versionOnly(record.Manifest, req.Manifest) {
 		var keyID string
 		keyID, err = r.reserveWidening(ctx, req, widened(record.Manifest, req.Manifest))
@@ -115,7 +116,7 @@ func (r *Registrar) commitUpdate(
 		pending.provision = true
 	}
 	record.Manifest, record.Grant = req.Manifest, pending.grant
-	pending.revision, err = r.writeRecord(ctx, record, entry.Revision())
+	pending.revision, err = r.writeRecord(ctx, record, entry.Revision)
 	if err != nil {
 		return pendingUpdate{}, err
 	}
@@ -154,23 +155,17 @@ func (r *Registrar) readmit(
 	return grant, nil
 }
 
-// lookupEntry reads a record with its KV entry, for a compare-and-set.
+// lookupEntry reads a record with its KV entry, for a compare-and-set,
+// through the stream leader (readRecord).
 func (r *Registrar) lookupEntry(
 	ctx context.Context, name string,
-) (jetstream.KeyValueEntry, Record, error) {
-	entry, err := r.kv.Get(ctx, name)
+) (natsutil.KVLeaderEntry, Record, error) {
+	entry, record, err := r.readRecord(ctx, name)
 	if errors.Is(err, jetstream.ErrKeyNotFound) {
-		return nil, Record{}, refused(program.RefusedManifestChanged,
+		return natsutil.KVLeaderEntry{}, Record{}, refused(program.RefusedManifestChanged,
 			"program %q was removed while this registration ran; register again", name)
 	}
-	if err != nil {
-		return nil, Record{}, fmt.Errorf("read program %q: %w", name, err)
-	}
-	var record Record
-	if err := json.Unmarshal(entry.Value(), &record); err != nil {
-		return nil, Record{}, fmt.Errorf("decode program %q: %w", name, err)
-	}
-	return entry, record, nil
+	return entry, record, err
 }
 
 // writeRecord replaces the record if it is still at revision.

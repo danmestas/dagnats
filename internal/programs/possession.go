@@ -110,7 +110,7 @@ func (r *Registrar) Confirm(
 			"program %q is taken", req.Manifest.Name)
 	}
 	if record.Pending {
-		return r.promote(ctx, entry.Revision(), record, req)
+		return r.promote(ctx, entry.Revision, record, req)
 	}
 	if sameManifest(record.Manifest, req.Manifest) {
 		return record.Grant, nil
@@ -193,7 +193,7 @@ func (r *Registrar) expireIfStale(ctx context.Context, name string) (bool, error
 	if err != nil || !record.expired(r.now()) {
 		return false, nil
 	}
-	err = r.kv.Delete(ctx, name, jetstream.LastRevision(entry.Revision()))
+	err = r.kv.Delete(ctx, name, jetstream.LastRevision(entry.Revision))
 	if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 		return false, nil
 	}

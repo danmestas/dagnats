@@ -319,18 +319,44 @@ func (r *Registrar) refund(keyID, name string) {
 
 // lookup reads one record straight from KV.
 func (r *Registrar) lookup(ctx context.Context, name string) (Record, bool, error) {
-	entry, err := r.kv.Get(ctx, name)
+	_, record, err := r.readRecord(ctx, name)
 	if errors.Is(err, jetstream.ErrKeyNotFound) {
 		return Record{}, false, nil
 	}
 	if err != nil {
-		return Record{}, false, fmt.Errorf("read program %q: %w", name, err)
-	}
-	var record Record
-	if err := json.Unmarshal(entry.Value(), &record); err != nil {
-		return Record{}, false, fmt.Errorf("%w: %q: %w", errUndecodable, name, err)
+		return Record{}, false, err
 	}
 	return record, true, nil
+}
+
+// readRecord reads name's record through the bucket's stream leader. A
+// KeyValue.Get is a direct get any replica may answer, and one that has
+// not applied the confirm's promotion yet still says Pending, which sent
+// program.Run "confirmation still pending" on a three-node cluster. The
+// leader has applied every acknowledged write. jetstream.ErrKeyNotFound
+// means no record.
+func (r *Registrar) readRecord(
+	ctx context.Context, name string,
+) (natsutil.KVLeaderEntry, Record, error) {
+	if r.js == nil {
+		panic("programs.readRecord: registrar not constructed")
+	}
+	if name == "" {
+		panic("programs.readRecord: name must not be empty")
+	}
+	entry, err := natsutil.KVGetLeader(ctx, r.js.Conn(), BucketName, name)
+	if errors.Is(err, jetstream.ErrKeyNotFound) {
+		return natsutil.KVLeaderEntry{}, Record{}, err
+	}
+	if err != nil {
+		return natsutil.KVLeaderEntry{}, Record{}, fmt.Errorf("read program %q: %w", name, err)
+	}
+	var record Record
+	if err := json.Unmarshal(entry.Value, &record); err != nil {
+		return natsutil.KVLeaderEntry{}, Record{},
+			fmt.Errorf("%w: %q: %w", errUndecodable, name, err)
+	}
+	return entry, record, nil
 }
 
 // records returns every registered program, bounded by
