@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A deferred dispatch no longer spends a retry.** When a rate limit, a task concurrency limit or a soft-sticky fallback deferred a task before any handler ran, the re-dispatch was stamped one attempt higher than the dispatch it replaced. The handler saw "attempt 2" on its first run, and the retry budget counted the deferral as a spent attempt, so a rate-limited step with `max_attempts: 3` ran 3 times instead of 4. The re-dispatch now carries the deferred dispatch's own attempt and dispatch nonce; retries after a handler failure still start a new attempt with a new nonce. A deferral timer left in SLEEP_TIMERS by an older binary re-sends the attempt the run snapshot already counts for the queued dispatch.
 
+### Added
+
+- **The lake can store bytes, for lode's archive of sealed streams.** `lake.TypeBytes` is a nullable Parquet BYTE_ARRAY with no logical type, which DuckDB reads as BLOB; a column takes `[]byte` (nil is NULL). `lake.Schema.PayloadBytes` makes the reserved `payload` column bytes too, and rows of such a table carry `writer.Row.PayloadBytes` instead of `Payload` (`Append` refuses the wrong kind). The setting is per table, so one part never mixes kinds. A bytes table's batch digest hashes `PayloadBytes` and a `payload:bytes` marker; the digest, part names and Parquet of every existing string-payload table are unchanged.
+- **`s3store.Store.ListFrom(ctx, prefix, startAfter, limit)` lists the next keys after a given one.** It uses S3 ListObjectsV2 `start-after` and returns at most `limit` names plus `more`, true when keys remain, so a reader finds "the first keys after X" in an ever-growing prefix with one bounded listing and never truncates silently. `List` is unchanged.
+
 ## [0.0.57] - 2026-11-07
 
 ### Added

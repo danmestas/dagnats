@@ -27,6 +27,7 @@ func runStoreSuite(t *testing.T, newStore func(t *testing.T) *Store) {
 		"Delete":     suiteDelete,
 		"ListPaging": suiteListPaging,
 		"ListLimit":  suiteListLimit,
+		"ListFrom":   suiteListFrom,
 		"BadNames":   suiteBadNames,
 		"SizeMax":    suiteSizeMax,
 	}
@@ -137,6 +138,37 @@ func suiteListLimit(t *testing.T, s *Store) {
 	}
 	if _, err = s.List(ctx, "l/", 0); err == nil {
 		t.Fatal("List accepted limit 0")
+	}
+}
+
+func suiteListFrom(t *testing.T, s *Store) {
+	ctx := context.Background()
+	total := listPageMax + 5
+	for i := 0; i < total; i++ {
+		if err := s.Put(ctx, fmt.Sprintf("f/%05d", i), []byte("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	names, more, err := s.ListFrom(ctx, "f/", "f/00002", 3)
+	if err != nil || !more || !reflect.DeepEqual(names, []string{"f/00003", "f/00004", "f/00005"}) {
+		t.Fatalf("ListFrom next 3 = %v, %v, %v", names, more, err)
+	}
+	// startAfter need not exist; exactly the remainder is not "more".
+	last := fmt.Sprintf("f/%05d", total-3)
+	names, more, err = s.ListFrom(ctx, "f/", "f/00000x", total)
+	if err != nil || more || len(names) != total-1 || names[0] != "f/00001" {
+		t.Fatalf("ListFrom across pages = %d names, more %v, %v", len(names), more, err)
+	}
+	names, more, err = s.ListFrom(ctx, "f/", last, 2)
+	if err != nil || more || len(names) != 2 {
+		t.Fatalf("ListFrom the exact tail = %v, %v, %v", names, more, err)
+	}
+	names, more, err = s.ListFrom(ctx, "f/", fmt.Sprintf("f/%05d", total-1), 5)
+	if err != nil || more || len(names) != 0 {
+		t.Fatalf("ListFrom past the end = %v, %v, %v", names, more, err)
+	}
+	if _, _, err = s.ListFrom(ctx, "f/", "", 0); err == nil {
+		t.Fatal("ListFrom accepted limit 0")
 	}
 }
 

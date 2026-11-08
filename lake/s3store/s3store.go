@@ -73,9 +73,11 @@ type Store struct {
 
 // Bounds: one listing page is S3's maximum; pages per List are derived from the caller's limit.
 const (
-	listPageMax    = 1000
-	requestTimeout = 60 * time.Second
-	retriesMax     = 3
+	listPageMax = 1000
+	// listFromLimitMax bounds one ListFrom call, so a "next N" never pages without end.
+	listFromLimitMax = 10 * listPageMax
+	requestTimeout   = 60 * time.Second
+	retriesMax       = 3
 )
 
 // New validates cfg and returns a Store. It makes no request; the first operation does.
@@ -365,7 +367,7 @@ func (s *Store) List(ctx context.Context, prefix string, limit int) ([]string, e
 	token := ""
 	pagesMax := limit/listPageMax + 2
 	for page := 0; page < pagesMax; page++ {
-		result, err := s.listPage(ctx, s.cfg.Prefix+prefix, token)
+		result, err := s.listPage(ctx, s.cfg.Prefix+prefix, "", token, listPageMax)
 		if err != nil {
 			return nil, err
 		}
@@ -389,14 +391,71 @@ func (s *Store) List(ctx context.Context, prefix string, limit int) ([]string, e
 	return nil, fmt.Errorf("s3store: more than %d objects under %q", limit, prefix)
 }
 
-func (s *Store) listPage(ctx context.Context, fullPrefix, token string) (listResult, error) {
+// ListFrom returns up to limit object names under prefix that sort after startAfter, in key
+// order, and whether more exist beyond them. It is for a reader walking an ever-growing prefix:
+// ask for the first keys after the last one seen, and resume from the last name returned while
+// more is true. Truncation is explicit in more, never silent. startAfter is a name relative to
+// the store's prefix and need not exist ("" starts at the beginning); limit is at most
+// listFromLimitMax. List is unchanged: it errors, rather than truncates, past its
+// limit.
+func (s *Store) ListFrom(
+	ctx context.Context, prefix, startAfter string, limit int,
+) (names []string, more bool, err error) {
+	if limit < 1 || limit > listFromLimitMax {
+		return nil, false, fmt.Errorf("s3store: list limit %d: want 1..%d", limit,
+			listFromLimitMax)
+	}
+	if prefix != "" {
+		if err := validName(strings.TrimSuffix(prefix, "/")); err != nil {
+			return nil, false, err
+		}
+	}
+	if startAfter != "" {
+		if err := validName(startAfter); err != nil {
+			return nil, false, err
+		}
+	}
+	token := ""
+	// One extra key tells "exactly limit" from "more"; each page is capped at what is still due.
+	for page := 0; page < limit/listPageMax+2; page++ {
+		want := min(listPageMax, limit+1-len(names))
+		result, err := s.listPage(ctx, s.cfg.Prefix+prefix, s.cfg.Prefix+startAfter, token, want)
+		if err != nil {
+			return nil, false, err
+		}
+		for _, c := range result.Contents {
+			if !strings.HasPrefix(c.Key, s.cfg.Prefix) {
+				return nil, false, fmt.Errorf("s3store: listed key %q outside prefix %q",
+					c.Key, s.cfg.Prefix)
+			}
+			names = append(names, strings.TrimPrefix(c.Key, s.cfg.Prefix))
+			if len(names) > limit {
+				return names[:limit], true, nil
+			}
+		}
+		if !result.IsTruncated {
+			return names, false, nil
+		}
+		if result.NextContinuationToken == "" {
+			return nil, false, errors.New("s3store: truncated listing without a continuation token")
+		}
+		token = result.NextContinuationToken
+	}
+	return nil, false, fmt.Errorf("s3store: listing after %q did not converge", startAfter)
+}
+
+func (s *Store) listPage(
+	ctx context.Context, fullPrefix, startAfter, token string, maxKeys int,
+) (listResult, error) {
 	u := *s.base
-	q := url.Values{"list-type": {"2"}, "max-keys": {strconv.Itoa(listPageMax)}}
+	q := url.Values{"list-type": {"2"}, "max-keys": {strconv.Itoa(maxKeys)}}
 	if fullPrefix != "" {
 		q.Set("prefix", fullPrefix)
 	}
 	if token != "" {
 		q.Set("continuation-token", token)
+	} else if startAfter != "" {
+		q.Set("start-after", startAfter)
 	}
 	u.RawQuery = q.Encode()
 	resp, err := s.do(ctx, http.MethodGet, &u, nil, nil)

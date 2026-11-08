@@ -121,6 +121,11 @@ func (f *fakeS3) list(w http.ResponseWriter, r *http.Request, bucket string) {
 	q := r.URL.Query()
 	prefix := q.Get("prefix")
 	after := q.Get("continuation-token")
+	// Like S3, start-after applies to the first request; a continuation token supersedes it.
+	startAfter := q.Get("start-after")
+	if after != "" {
+		startAfter = ""
+	}
 	maxKeys, _ := strconv.Atoi(q.Get("max-keys"))
 	if maxKeys < 1 || maxKeys > 1000 {
 		maxKeys = 1000
@@ -128,7 +133,7 @@ func (f *fakeS3) list(w http.ResponseWriter, r *http.Request, bucket string) {
 	var keys []string
 	for full := range f.objects {
 		b, k, _ := strings.Cut(full, "/")
-		if b == bucket && strings.HasPrefix(k, prefix) && k > after {
+		if b == bucket && strings.HasPrefix(k, prefix) && k > after && k > startAfter {
 			keys = append(keys, k)
 		}
 	}

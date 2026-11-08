@@ -25,6 +25,7 @@ const (
 	TypeFloat64   ColumnType = "float64"   // DOUBLE
 	TypeBool      ColumnType = "bool"      // BOOLEAN
 	TypeTimestamp ColumnType = "timestamp" // TIMESTAMP(us, UTC)
+	TypeBytes     ColumnType = "bytes"     // BYTE_ARRAY, no logical type; DuckDB reads BLOB
 )
 
 // ColumnCountMax bounds a declared schema so a part's footer and the writer's row slice stay small.
@@ -48,6 +49,10 @@ type Column struct {
 type Schema struct {
 	Version int
 	Columns []Column
+	// PayloadBytes makes the reserved payload column a raw BYTE_ARRAY (DuckDB BLOB) instead of
+	// UTF8 text, for payloads that are not UTF-8 (sealed or binary events). Rows then carry
+	// writer.Row.PayloadBytes. False, the zero value, is the original layout, unchanged.
+	PayloadBytes bool
 }
 
 // Validate enforces the naming, reserved-column and type rules.
@@ -71,7 +76,7 @@ func (s Schema) Validate() error {
 		}
 		seen[column.Name] = true
 		switch column.Type {
-		case TypeString, TypeInt64, TypeFloat64, TypeBool, TypeTimestamp:
+		case TypeString, TypeInt64, TypeFloat64, TypeBool, TypeTimestamp, TypeBytes:
 		default:
 			return fmt.Errorf("lake: column %q: unknown type %q", column.Name, column.Type)
 		}
