@@ -30,10 +30,12 @@ import (
 // only catches publishes inside the stream's Duplicates window (5s for
 // the workflow events stream). See issue #173.
 type Scheduler struct {
-	nc          *nats.Conn
-	js          jetstream.JetStream
-	tp          *natsutil.TracingPublisher
-	stateKV     jetstream.KeyValue
+	nc      *nats.Conn
+	js      jetstream.JetStream
+	tp      *natsutil.TracingPublisher
+	stateKV jetstream.KeyValue
+	// fire is Fire; a field so tests can inject publish failures.
+	fire        fireFunc
 	triggers    map[string]TriggerDef
 	mu          sync.RWMutex
 	lastFiredMu sync.Mutex
@@ -41,7 +43,7 @@ type Scheduler struct {
 	// firedAt tracks the unix time of the most recent *successful*
 	// cron fire per trigger ID, for the trigger_last_fired_seconds
 	// gauge. Distinct from lastFired: lastFired advances at claim
-	// time in claimMinute (before Fire is even attempted, to guard
+	// time in tryClaim (before Fire is even attempted, to guard
 	// dedup across ticks), so it can be non-zero even when the
 	// subsequent Fire call errors. firedAt only advances on the
 	// OutcomeFired branch of fireWorkflow — it is the "did this
@@ -84,6 +86,7 @@ func NewScheduler(nc *nats.Conn) (*Scheduler, error) {
 		js:        js,
 		tp:        natsutil.NewTracingPublisher(nc, js),
 		stateKV:   kv,
+		fire:      Fire,
 		triggers:  make(map[string]TriggerDef),
 		lastFired: make(map[string]time.Time),
 		firedAt:   make(map[string]time.Time),
@@ -153,28 +156,6 @@ func (s *Scheduler) RemoveTrigger(id string) error {
 	return nil
 }
 
-// claimMinute returns true if the given minute (truncated to the minute
-// boundary) is newer than the last claim for this trigger. On true, the
-// minute is recorded so subsequent calls within the same minute return
-// false. This is the in-process dedup guard for #173.
-func (s *Scheduler) claimMinute(triggerID string, now time.Time) bool {
-	if triggerID == "" {
-		panic("claimMinute: triggerID must not be empty")
-	}
-	if now.IsZero() {
-		panic("claimMinute: now must not be zero")
-	}
-	minute := now.Truncate(time.Minute)
-
-	s.lastFiredMu.Lock()
-	defer s.lastFiredMu.Unlock()
-	if !minute.After(s.lastFired[triggerID]) {
-		return false
-	}
-	s.lastFired[triggerID] = minute
-	return true
-}
-
 // Tick evaluates all enabled cron triggers at the given time. For each
 // matching trigger, publishes workflow.started with dedup Nats-Msg-Id.
 // Triggers are evaluated and fired concurrently.
@@ -212,15 +193,10 @@ func (s *Scheduler) Tick(now time.Time) error {
 			if !shouldFire {
 				return nil
 			}
-			// In-process minute dedup: cron is minute-resolution but
-			// the scheduler ticks every 30s, so the same matching
-			// minute can be evaluated twice. Claim the minute before
-			// firing; if already claimed, treat as no-op. See #173.
-			if !s.claimMinute(def.ID, now) {
-				return nil
-			}
-			if err := s.fireWorkflow(ctx, def, now); err != nil {
-				return fmt.Errorf("fireWorkflow %q: %w", def.ID, err)
+			// Cron is minute-resolution but every node ticks every 30s:
+			// claimAndFire dedups in-process and across the cluster.
+			if err := s.claimAndFire(ctx, def, now); err != nil {
+				return fmt.Errorf("fire %q: %w", def.ID, err)
 			}
 			return nil
 		})
@@ -326,15 +302,9 @@ func (s *Scheduler) backfillTrigger(def TriggerDef) error {
 	}
 
 	for i := 0; i < fireCount; i++ {
-		// Claim the minute so a subsequent live Tick at the same
-		// minute (e.g. the boundary between backfill end and the
-		// first steady-state tick, which can be ≥30s later — past
-		// the workflow stream's 5s msgID Duplicates window) does
-		// not re-fire. Same root cause as #173, same guard.
-		if !s.claimMinute(def.ID, matches[i]) {
-			continue
-		}
-		if err := s.fireWorkflow(ctx, def, matches[i]); err != nil {
+		// Same cluster claim as a live Tick, so a catch-up here cannot
+		// double a fire another node (or a later tick) already made.
+		if err := s.claimAndFire(ctx, def, matches[i]); err != nil {
 			return fmt.Errorf("fire %v: %w", matches[i], err)
 		}
 	}
@@ -443,7 +413,7 @@ func (s *Scheduler) fireWorkflow(
 	if def.WorkflowID == "" {
 		panic("fireWorkflow: def.WorkflowID is empty")
 	}
-	if _, err := Fire(ctx, s.tp, def, SourceCron, now); err != nil {
+	if _, err := s.fire(ctx, s.tp, def, SourceCron, now); err != nil {
 		RecordFiring(ctx, TypeCron, OutcomeError)
 		return err
 	}
