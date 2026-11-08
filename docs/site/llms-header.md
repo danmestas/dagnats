@@ -37,6 +37,6 @@ CLI command groups (`dagnats --help`): `workflow`, `run`, `trigger`, `dlq`, `wor
 - `observe`: OpenTelemetry setup (`InitTelemetry`, with NATS-backed and optional OTLP exporters) and trace-context propagation through NATS headers and events.
 - `server`: embedded NATS server and `dagnats serve` lifecycle.
 - `bridge`: HTTP-to-NATS bridge for remote and non-Go workers.
-- `sdk/httpclient`: reference Go client for the HTTP bridge worker protocol.
+- `sdk/httpclient`: minimal Go example client for the HTTP bridge worker protocol (full client: `sdk/ts`).
 - `dagnatstest`: one-call test setup with an embedded NATS server.
 - `ci`: parser and compiler for `.dagnats/ci.yml` CI specs.

@@ -15,7 +15,7 @@ Each package section includes a hand-written overview and auto-generated API doc
 | [observe](observe/) | Telemetry interfaces: logging, tracing, metrics, error reporting |
 | [server](server/) | Embedded NATS server with programmatic startup |
 | [bridge](bridge/) | HTTP-to-NATS gateway for non-Go workers |
-| [httpclient](httpclient/) | Go HTTP reference client for the bridge |
+| [httpclient](httpclient/) | Minimal Go HTTP client example for the bridge |
 | [dagnatstest](dagnatstest/) | Test helpers for one-call test setup |
 | [journal](journal/) | Fenced per-step agent journal: claims, appends, commits, recovery and the invariant checker (ADR-026) |
 | [program](program/) | Programs on a shared dagnats: manifest, validation, generated NATS permissions, NKey identity, `Attach` |
