@@ -13,6 +13,7 @@ package worker
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -142,6 +143,58 @@ func TestStickyConsumer_RecreatedAfterDeletionWhileDisconnected(t *testing.T) {
 	})
 }
 
+// reconnectGate holds a client out of its reconnect until released, so
+// a test controls exactly how long the disconnect gap lasts instead of
+// racing a reconnect timer against a loaded runner.
+type reconnectGate struct {
+	disconnected chan struct{}
+	released     chan struct{}
+	once         sync.Once
+}
+
+func (g *reconnectGate) release() { g.once.Do(func() { close(g.released) }) }
+
+// awaitDisconnected waits until the client has noticed the server
+// dropped it; before that, IsConnected can still read true.
+func (g *reconnectGate) awaitDisconnected(t *testing.T) {
+	t.Helper()
+	select {
+	case <-g.disconnected:
+	case <-time.After(stickyRecoverWait):
+		t.Fatalf("worker did not see its disconnect within %v", stickyRecoverWait)
+	}
+}
+
+// connectGatedWorker connects a client whose reconnect attempts block
+// in the delay callback until the gate is released. The callback runs
+// before every attempt and holds no client lock, so blocking is safe;
+// cleanup releases it first so Close never waits on the gate.
+func connectGatedWorker(t *testing.T, url string) (*nats.Conn, *reconnectGate) {
+	t.Helper()
+	gate := &reconnectGate{
+		disconnected: make(chan struct{}, 1),
+		released:     make(chan struct{}),
+	}
+	nc, err := nats.Connect(url,
+		nats.CustomReconnectDelay(func(int) time.Duration {
+			<-gate.released
+			return 0
+		}),
+		nats.DisconnectErrHandler(func(*nats.Conn, error) {
+			select {
+			case gate.disconnected <- struct{}{}:
+			default:
+			}
+		}),
+	)
+	if err != nil {
+		t.Fatalf("connect worker: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	t.Cleanup(gate.release)
+	return nc, gate
+}
+
 func checkDisconnectedRecreate(t *testing.T, deliveredBefore bool) {
 	t.Helper()
 	srv, admin := natstest.StartServer(t)
@@ -152,14 +205,7 @@ func checkDisconnectedRecreate(t *testing.T, deliveredBefore bool) {
 	if err != nil {
 		t.Fatalf("jetstream.New: %v", err)
 	}
-	// The reconnect wait leaves room to delete the consumer and publish
-	// while the Worker holds no subscription, so no 409 reaches it and
-	// the publish lands in the gap before any recreate.
-	nc, err := nats.Connect(srv.ClientURL(), nats.ReconnectWait(2*time.Second))
-	if err != nil {
-		t.Fatalf("connect worker: %v", err)
-	}
-	t.Cleanup(nc.Close)
+	nc, gate := connectGatedWorker(t, srv.ClientURL())
 	const taskType = "probe.noresponders"
 	w, handled := startStickyWorker(t, nc, taskType, nil)
 	name := stickyConsumerName(t, js)
@@ -175,11 +221,15 @@ func checkDisconnectedRecreate(t *testing.T, deliveredBefore bool) {
 	if err := srv.DisconnectClientByID(clientID); err != nil {
 		t.Fatalf("disconnect worker: %v", err)
 	}
+	gate.awaitDisconnected(t)
 	deleteConsumer(t, js, name)
 	publishSticky(t, js, w, taskType, "run-gap")
+	// The gate, not a timer, holds the Worker out, so this cannot lose
+	// a race on a slow runner.
 	if nc.IsConnected() {
 		t.Fatal("worker reconnected before the gap publish; the test proves nothing")
 	}
+	gate.release()
 
 	awaitHandled(t, handled, "run-gap")
 	if got := stickyConsumerName(t, js); got != name {
