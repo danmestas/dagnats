@@ -33,6 +33,19 @@ func validManifest() program.Manifest {
 	}
 }
 
+func TestValidate_BridgeTokenNeedsATaskTypeToScopeTo(t *testing.T) {
+	m := validManifest()
+	m.BridgeToken = true
+	if err := program.Validate(m); err != nil {
+		t.Fatalf("Validate(bridge token with task types) = %v, want nil", err)
+	}
+	m.TaskTypes = nil
+	err := program.Validate(m)
+	if err == nil || !strings.Contains(err.Error(), "bridge token needs a task type") {
+		t.Fatalf("Validate(bridge token, no task types) = %v, want the bridge token error", err)
+	}
+}
+
 func TestValidate_AcceptsValidManifest(t *testing.T) {
 	m := validManifest()
 	// Positive: the baseline passes.

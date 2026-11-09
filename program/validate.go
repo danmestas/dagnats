@@ -55,6 +55,9 @@ func Validate(m Manifest) error {
 	}
 	errs := []error{validateCounts(m)}
 	errs = append(errs, validateTaskTypes(m.Name, m.TaskTypes)...)
+	if m.BridgeToken && len(m.TaskTypes) == 0 {
+		errs = append(errs, errors.New("bridge token needs a task type to scope it to"))
+	}
 	errs = append(errs, validateWorkflows(m.Name, m.Workflows)...)
 	errs = append(errs, validateStreams(m.Name, m.Streams)...)
 	errs = append(errs, validateBuckets(m.Name, m.Buckets)...)

@@ -200,6 +200,9 @@ func (r *Registrar) expireIfStale(ctx context.Context, name string) (bool, error
 	if err != nil {
 		return false, fmt.Errorf("expire program %q: %w", name, err)
 	}
+	if record.BridgeTokenID != "" {
+		r.revokeToken(record.BridgeTokenID, name)
+	}
 	if record.JoinKeyID != "" {
 		r.refund(record.JoinKeyID, name)
 		r.expired.note(record.JoinKeyID, name, r.now())

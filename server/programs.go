@@ -52,6 +52,7 @@ func (s *Server) startPrograms(js jetstream.JetStream) error {
 			s.cfg.NATSClusterRoutes, s.cfg.NATSJetStreamReplicas,
 		),
 		ServerVersion: version,
+		Tokens:        s.tokenStore,
 		Bind: func(record programs.Record) error {
 			return s.programUsers.put(record.Manifest.Name, record, false)
 		},

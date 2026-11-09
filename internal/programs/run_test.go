@@ -37,6 +37,8 @@ type countingProgram struct {
 	stops    atomic.Int32
 	// conn is the connection Start was handed.
 	conn atomic.Pointer[nats.Conn]
+	// bridgeToken is the Host's BridgeToken, a string.
+	bridgeToken atomic.Value
 }
 
 func (p *countingProgram) Manifest() program.Manifest { return p.manifest }
@@ -46,6 +48,7 @@ func (p *countingProgram) Start(_ context.Context, h program.Host) error {
 		panic("countingProgram.Start: host must be complete")
 	}
 	p.conn.Store(h.Conn)
+	p.bridgeToken.Store(h.BridgeToken)
 	h.Handle(p.manifest.Name+".work", func(tc worker.TaskContext) error {
 		p.handled.Add(1)
 		return tc.Complete(tc.Input())
@@ -60,7 +63,12 @@ func (p *countingProgram) Stop(context.Context) error {
 
 func serveFixture(t *testing.T, cfg Config) *fixture {
 	t.Helper()
-	f := registrationOnlyFixture(t, cfg)
+	return serveFixtureOn(t, registrationOnlyFixture(t, cfg))
+}
+
+// serveFixtureOn adds the control plane to a registration-only fixture.
+func serveFixtureOn(t *testing.T, f *fixture) *fixture {
+	t.Helper()
 	// A program's step events, journal and stores go through the engine
 	// relay dagnats-api serves; Attach refuses to start without it.
 	f.svc = api.NewService(f.nc)

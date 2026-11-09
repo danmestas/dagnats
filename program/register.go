@@ -40,6 +40,9 @@ const (
 	RefusedProtocolClash       = "protocol_clash"
 	RefusedProtocolNotAllowed  = "protocol_not_allowed"
 	RefusedConfirmExpired      = "confirm_expired"
+	// RefusedBridgeTokenUnavailable: the manifest sets BridgeToken and
+	// this dagnats has no worker token store to mint from.
+	RefusedBridgeTokenUnavailable = "bridge_token_unavailable"
 	// RefusedJoinKeyRequiredToWiden: an update adds a protocol or a read
 	// of another program's bucket, and the request carries no join key
 	// that is usable and covers it.
@@ -67,11 +70,16 @@ type RegisterRequest struct {
 // retry. Confirm, when set, is the subject the program must confirm on
 // after logging in with its key: a new registration is pending until
 // then, and a manifest change is applied only then (Grant may be nil).
+// BridgeToken is a bearer, set only on the reply to a confirmation,
+// which arrives on the program's own connection: the anonymous register
+// request proves only a join key, so no register reply carries one. It
+// lives here and not in Grant so that it cannot be stored with it.
 type RegisterReply struct {
-	Confirm string      `json:"confirm,omitempty"`
-	Grant   *Grant      `json:"grant,omitempty"`
-	Refused *ErrRefused `json:"refused,omitempty"`
-	Error   string      `json:"error,omitempty"`
+	Confirm     string      `json:"confirm,omitempty"`
+	Grant       *Grant      `json:"grant,omitempty"`
+	BridgeToken string      `json:"bridge_token,omitempty"`
+	Refused     *ErrRefused `json:"refused,omitempty"`
+	Error       string      `json:"error,omitempty"`
 }
 
 // ErrRefused is dagnats declining to admit the program, with one of the

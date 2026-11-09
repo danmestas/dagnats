@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`dagnats-mcp-duckdb` reads `s3://` data and lake dirs over TLS (#841).** Locking file access to the data and lake dirs also stopped DuckDB's `httpfs` from reading the CA bundle it verifies TLS with, so against R2 (or any `https://` endpoint) every read after the lock failed with `Cannot read a CA certificate bundle`, and `--lake-dir s3://...` failed at startup. The server now points `httpfs` at one bundle (`SSL_CERT_FILE`, or the first of httpfs's own paths that exists) and allows that file alone through the lock. Checked against the live lake at `s3://lode/mesh`: views `dagnats_stream_agent_journal` (1662 rows, seqs 1-1662) and `notify_stream_notify_analytics`.
 
+### Added
+
+- **A program can be minted an HTTP-bridge worker token scoped to its task types.** A manifest with `BridgeToken: true` (`bridge_token` in JSON) gets, on every attach, a new worker token whose `task_type_prefixes` are the manifest's `TaskTypes` exactly as declared (labeled `program:<name>`, created by `programs`), so a bridge worker, a TypeScript one for example, shares the program's identity across NATS and HTTP. `program.Run` hands the bearer to the program as `Host.BridgeToken`, and always confirms on its own connection for such a manifest, because the bearer is only ever in the reply to a confirmation, never to `api.programs.register`, whose anonymous caller proves only a join key. Each attach revokes the program's previous token (the record keeps its ID, never the bearer), so there is one live token per program and a second instance of the same program revokes the first's; a restart rotates it. A server with no worker token store refuses such a manifest with `bridge_token_unavailable`.
+
 ## [0.0.61] - 2026-11-08
 
 ### Fixed
