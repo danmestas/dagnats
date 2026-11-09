@@ -18,6 +18,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -392,6 +393,47 @@ func TestContinueWait_TwoEnginesOneTaskPerRound(t *testing.T) {
 		if err := store.Withdraw(ctx, runID, "agent", requestID); err != nil {
 			t.Fatalf("Withdraw: %v", err)
 		}
+	}
+}
+
+// TestInputQueued_ConflictsWithARivalsWaitSave forces the interleaving
+// behind the two-engine flake: a rival engine loads the run and checks
+// for inputs before the submission exists, this engine handles the
+// input's event, then the rival saves the wait. The step already had
+// inputs, so the event changes no field, but it must still write: a
+// decision taken without a write leaves the rival's save unconflicted,
+// and the wait it commits is one nothing will ever wake.
+func TestInputQueued_ConflictsWithARivalsWaitSave(t *testing.T) {
+	wfDef := loopDef("rival-wf", "rival-task", dag.AgentLoopConfig{}, nil)
+	fx := newLoopFixture(t, wfDef)
+	orch := NewOrchestrator(fx.nc)
+	ctx, cancel := context.WithTimeout(context.Background(), inputsTestTimeout)
+	defer cancel()
+	const runID = "rival-run"
+	run := dag.NewWorkflowRun(wfDef, runID)
+	run.Status = dag.RunStatusRunning
+	run.Steps["agent"] = dag.StepState{Status: dag.StepStatusRunning, Attempts: 1, HasInputs: true}
+	if err := orch.store.SaveInitial(ctx, run); err != nil {
+		t.Fatalf("SaveInitial: %v", err)
+	}
+	rival, err := fx.store.Load(ctx, runID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	fx.submitInput(t, runID, "raced")
+	queued := protocol.NewInputQueuedEvent(runID, "agent", "raced")
+	if err := orch.handleInputQueued(ctx, queued); err != nil {
+		t.Fatalf("handleInputQueued: %v", err)
+	}
+	state := rival.Steps["agent"]
+	state.WaitInput = true
+	rival.Steps["agent"] = state
+	if err := fx.store.Save(ctx, rival); !errors.Is(err, ErrSnapshotConflict) {
+		t.Fatalf("rival's wait save err = %v, want ErrSnapshotConflict (the wakeup is lost)", err)
+	}
+	saved, err := fx.store.Load(ctx, runID)
+	if got := saved.Steps["agent"]; err != nil || got.WaitInput || !got.HasInputs {
+		t.Fatalf("saved step = %+v (err=%v), want inputs marked and no wait", got, err)
 	}
 }
 

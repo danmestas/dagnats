@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An input queued while another engine commits an agent loop's wait for input now wakes the loop.** With two or more engines on one cluster, an engine handling `step.input.queued` for a step that already had inputs returned without saving. A second engine that had checked for queued inputs just before the submission landed then saved the step as waiting, with nothing to conflict with. That wait was never woken, so the loop stalled. The input event now always saves the step, so the competing wait save conflicts and runs its inputs check again.
+
 - **`dagnats-mcp-duckdb` reads `s3://` data and lake dirs over TLS (#841).** Locking file access to the data and lake dirs also stopped DuckDB's `httpfs` from reading the CA bundle it verifies TLS with, so against R2 (or any `https://` endpoint) every read after the lock failed with `Cannot read a CA certificate bundle`, and `--lake-dir s3://...` failed at startup. The server now points `httpfs` at one bundle (`SSL_CERT_FILE`, or the first of httpfs's own paths that exists) and allows that file alone through the lock. Checked against the live lake at `s3://lode/mesh`: views `dagnats_stream_agent_journal` (1662 rows, seqs 1-1662) and `notify_stream_notify_analytics`.
 
 ### Added
