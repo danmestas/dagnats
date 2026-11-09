@@ -8,7 +8,9 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/pem"
 	"fmt"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -197,7 +199,9 @@ func TestLakeView_LockCoversTheLakeDirOnly(t *testing.T) {
 	}
 }
 
-func TestLakeView_ReadsAnS3LakeDir(t *testing.T) {
+// lakeObjects is compactedLake's files as S3 objects under "lake/".
+func lakeObjects(t *testing.T) map[string][]byte {
+	t.Helper()
 	local := compactedLake(t)
 	objects := map[string][]byte{}
 	err := filepath.Walk(local, func(path string, info os.FileInfo, err error) error {
@@ -212,7 +216,47 @@ func TestLakeView_ReadsAnS3LakeDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := newFakeS3Server(t, fakeS3{"bucket": objects})
+	return objects
+}
+
+// Over TLS, httpfs reads a CA bundle from the local file system, which the lock forbids unless
+// the bundle is allowed: every s3:// read after the lock failed with "Cannot read a CA
+// certificate bundle" against R2. The fake S3 serves TLS with a certificate only the bundle in
+// SSL_CERT_FILE trusts. Positive: the lake view reads all 4 live rows after the lock. Negative:
+// the bundle being allowed opens nothing else, a read of another local file still fails.
+func TestLakeView_ReadsAnS3LakeDirOverTLS(t *testing.T) {
+	server := httptest.NewTLSServer(fakeS3{"bucket": lakeObjects(t)})
+	t.Cleanup(server.Close)
+	bundle := filepath.Join(t.TempDir(), "ca.pem")
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE",
+		Bytes: server.Certificate().Raw})
+	if err := os.WriteFile(bundle, certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SSL_CERT_FILE", bundle)
+	t.Setenv("AWS_ACCESS_KEY_ID", "test-key")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test-secret")
+	t.Setenv("AWS_REGION", "auto")
+	db, err := OpenDB(t.TempDir(), WithLakeDir("s3://bucket/lake"), WithS3Endpoint(server.URL))
+	if err != nil {
+		t.Fatalf("OpenDB over TLS s3: %v", err)
+	}
+	defer db.Close()
+	rows, err := db.Query(queryCtx(t), "SELECT count(*) AS n FROM lode_events", 1)
+	if err != nil || rows[0]["n"].(int64) != 4 {
+		t.Fatalf("TLS s3 lake view = %v, %v; want 4 live rows", rows, err)
+	}
+	other := filepath.Join(t.TempDir(), "other.csv")
+	if err := os.WriteFile(other, []byte("a\n1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Query(queryCtx(t), "SELECT * FROM read_csv("+sqlString(other)+")", 1); err == nil {
+		t.Fatal("a local file outside the data and lake dirs was readable")
+	}
+}
+
+func TestLakeView_ReadsAnS3LakeDir(t *testing.T) {
+	server := newFakeS3Server(t, fakeS3{"bucket": lakeObjects(t)})
 	db, err := OpenDB(t.TempDir(), WithLakeDir("s3://bucket/lake"), WithS3Endpoint(server))
 	if err != nil {
 		t.Fatalf("OpenDB over s3: %v", err)
