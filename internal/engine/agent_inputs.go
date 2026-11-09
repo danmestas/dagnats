@@ -193,9 +193,11 @@ func (o *Orchestrator) handleInputQueued(ctx context.Context, evt protocol.Event
 	if state.WaitInput {
 		return o.wakeStep(ctx, run, stepDef, state, "input")
 	}
-	if state.HasInputs {
-		return nil
-	}
+	// Saved even when HasInputs is already set: "not waiting" was read
+	// from a snapshot a rival engine may be about to replace with a wait
+	// whose inputs check ran before this submission existed. Only a write
+	// makes that save conflict and redo its check; returning without one
+	// loses the wakeup.
 	state.HasInputs = true
 	run.Steps[evt.StepID] = state
 	return o.saveSnapshot(ctx, run, evt.StepID)
