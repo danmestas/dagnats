@@ -80,10 +80,20 @@ func (l *rawLeaf) login(t *testing.T, fields map[string]any) bool {
 	return false
 }
 
-// publish sends one leaf message from the spoke into the hub.
-func (l *rawLeaf) publish(t *testing.T, subject, payload string) {
+// publishDeniedThenAllowed sends a disallowed leaf message and an allowed
+// one in a single write. The hub answers a disallowed publish by closing
+// the link, so a second write can land after the close and be dropped; in
+// one write both frames reach the hub's read loop together, which parses
+// the allowed frame after the disallowed one.
+func (l *rawLeaf) publishDeniedThenAllowed(t *testing.T, denied, allowed string) {
 	t.Helper()
-	l.write(t, fmt.Sprintf("LMSG %s %d\r\n%s\r\n", subject, len(payload), payload))
+	if denied == allowed {
+		panic("rawLeaf.publishDeniedThenAllowed: subjects must differ")
+	}
+	frame := func(subject, payload string) string {
+		return fmt.Sprintf("LMSG %s %d\r\n%s\r\n", subject, len(payload), payload)
+	}
+	l.write(t, frame(denied, "leak")+frame(allowed, "ok"))
 }
 
 func (l *rawLeaf) write(t *testing.T, data string) {
@@ -137,8 +147,7 @@ func TestLeafListenAllow_HubDropsDisallowedSubject(t *testing.T) {
 	}) {
 		t.Fatal("hub refused the leaf login")
 	}
-	leaf.publish(t, "task.x", "leak")
-	leaf.publish(t, "_INBOX.raw", "ok")
+	leaf.publishDeniedThenAllowed(t, "task.x", "_INBOX.raw")
 	if _, err := allowed.NextMsg(rawLeafWait); err != nil {
 		t.Fatalf("allowed subject did not reach the hub: %v", err)
 	}
@@ -233,8 +242,7 @@ func TestLeafListener_ReplicaOnlyNodeKeepsLeafLogin(t *testing.T) {
 	}) {
 		t.Fatal("replica-only node refused the leaf login")
 	}
-	leaf.publish(t, "task.x", "leak")
-	leaf.publish(t, "_INBOX.raw", "ok")
+	leaf.publishDeniedThenAllowed(t, "task.x", "_INBOX.raw")
 	if _, err := allowed.NextMsg(rawLeafWait); err != nil {
 		t.Fatalf("allowed subject did not reach the replica-only node: %v", err)
 	}
