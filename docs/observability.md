@@ -115,7 +115,12 @@ user's DuckDB extension cache.
 Queries can read only the data dir (and the lake dir, below). Once the
 views exist, the server locks file access to those paths or prefixes:
 reading other files, writing, attaching another database or changing the
-lock is refused. Every query returns at most its row cap, whatever its
+lock is refused. Over TLS, `httpfs` verifies the endpoint with a CA
+bundle, the one other file the lock allows: `SSL_CERT_FILE` when set,
+otherwise the first of `/etc/ssl/certs/ca-certificates.crt`,
+`/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem`,
+`/etc/pki/tls/certs/ca-bundle.crt`, `/etc/ssl/ca-bundle.pem` and
+`/etc/ssl/cert.pem` that exists. Without one the server refuses to start. Every query returns at most its row cap, whatever its
 text says.
 
 #### Lake views

@@ -23,6 +23,10 @@ type DB struct {
 	conn    *sql.DB
 	dataDir string
 	lakeDir string // empty: no lake views
+	// caBundle is the CA certificate file httpfs verifies TLS with, the
+	// one local file the lock allows outside the data and lake dirs;
+	// empty without TLS s3.
+	caBundle string
 
 	lakeMu     sync.Mutex
 	lakeViews  map[string]string // view name -> its part list, to skip unchanged views
@@ -154,6 +158,49 @@ func (db *DB) configureS3(endpoint string) error {
 	if _, err := db.conn.Exec(secret); err != nil {
 		return fmt.Errorf("create s3 secret: %w", err)
 	}
+	if endpoint != "" {
+		if _, useSSL := parseS3Endpoint(endpoint); !useSSL {
+			return nil
+		}
+	}
+	return db.useCABundle()
+}
+
+// caBundleCandidates are the CA bundle paths httpfs searches itself, in
+// its order. SSL_CERT_FILE, when set, is used instead.
+var caBundleCandidates = []string{
+	"/etc/ssl/certs/ca-certificates.crt",
+	"/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+	"/etc/pki/tls/certs/ca-bundle.crt",
+	"/etc/ssl/ca-bundle.pem",
+	"/etc/ssl/cert.pem",
+}
+
+// useCABundle points httpfs at one CA bundle file so lockToDataDir can
+// allow that file alone. httpfs reads the bundle on every TLS request,
+// and once file access is locked it can no longer find one by itself,
+// so every s3:// read over TLS failed after the lock.
+func (db *DB) useCABundle() error {
+	if db.conn == nil {
+		panic("useCABundle: db is not open")
+	}
+	bundle := os.Getenv("SSL_CERT_FILE")
+	if bundle == "" {
+		for _, candidate := range caBundleCandidates {
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				bundle = candidate
+				break
+			}
+		}
+	}
+	if bundle == "" {
+		return fmt.Errorf("no CA certificate bundle for TLS s3: set SSL_CERT_FILE, "+
+			"or install one of %s", strings.Join(caBundleCandidates, ", "))
+	}
+	if _, err := db.conn.Exec("SET ca_cert_file = " + sqlString(bundle)); err != nil {
+		return fmt.Errorf("set ca_cert_file: %w", err)
+	}
+	db.caBundle = bundle
 	return nil
 }
 
@@ -189,18 +236,20 @@ func (db *DB) createView(name string) error {
 }
 
 // lockToDataDir allows file access under the data dir (and the lake dir)
-// only, turns all other access off, and locks the configuration so no
+// only, plus the CA bundle TLS s3 needs, turns all other access off, and locks the configuration so no
 // query can change it back.
 func (db *DB) lockToDataDir() error {
 	allowed := sqlString(db.dataDir + "/")
 	if db.lakeDir != "" {
 		allowed += ", " + sqlString(db.lakeDir+"/")
 	}
-	for _, stmt := range []string{
-		"SET allowed_directories = [" + allowed + "]",
-		"SET enable_external_access = false",
-		"SET lock_configuration = true",
-	} {
+	statements := []string{"SET allowed_directories = [" + allowed + "]"}
+	if db.caBundle != "" {
+		statements = append(statements, "SET allowed_paths = ["+sqlString(db.caBundle)+"]")
+	}
+	statements = append(statements,
+		"SET enable_external_access = false", "SET lock_configuration = true")
+	for _, stmt := range statements {
 		if _, err := db.conn.Exec(stmt); err != nil {
 			return fmt.Errorf("%s: %w", stmt, err)
 		}
