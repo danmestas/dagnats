@@ -132,6 +132,13 @@ type Registrar struct {
 	// expired remembers (join key, name) pairs whose registration expired
 	// unconfirmed, so the key cannot re-register the name at once.
 	expired expiredRegistrations
+	// tokens is Config.Tokens as the interface the bridge token code
+	// uses; nil when none is configured. Tests replace it to fail a
+	// mint or revoke.
+	tokens tokenMinter
+	// writeBridgeRecord, when set, replaces writeRecord for the bridge
+	// token's compare-and-set: a test seam. Nil in production.
+	writeBridgeRecord func(context.Context, Record, uint64) (uint64, error)
 	// beforeRollBack, when set, runs between an update's failed
 	// provisioning and its rollback: a test seam for forcing another
 	// node's registration into that window. Nil in production.
@@ -152,7 +159,11 @@ func NewRegistrar(
 	if err != nil {
 		return nil, err
 	}
-	return &Registrar{js: js, kv: kv, stream: stream, keys: keys, cfg: cfg}, nil
+	r := &Registrar{js: js, kv: kv, stream: stream, keys: keys, cfg: cfg}
+	if cfg.Tokens != nil {
+		r.tokens = cfg.Tokens
+	}
+	return r, nil
 }
 
 // Register admits req's program and returns its Grant, or an
@@ -198,12 +209,7 @@ func (r *Registrar) checkRequest(req program.RegisterRequest) error {
 	if !nkeys.IsValidPublicUserKey(req.PublicKey) {
 		return refused(program.RefusedRequestInvalid, "public key is not an NKey user key")
 	}
-	if req.Manifest.BridgeToken && r.cfg.Tokens == nil {
-		return refused(program.RefusedBridgeTokenUnavailable,
-			"program %q asks for a bridge token and this dagnats has no worker token store",
-			req.Manifest.Name)
-	}
-	return nil
+	return r.checkBridgeToken(req.Manifest)
 }
 
 // existing settles a request for a name already registered: the same

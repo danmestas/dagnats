@@ -41,6 +41,12 @@ var ErrRelayUnavailable = natsutil.ErrRelayUnavailable
 func Attach(
 	ctx context.Context, nc *nats.Conn, prog Program, g Grant,
 ) (stop func(context.Context) error, err error) {
+	if ctx == nil || nc == nil {
+		panic("program.Attach: ctx and nc must not be nil")
+	}
+	if prog == nil {
+		panic("program.Attach: prog must not be nil")
+	}
 	return attach(ctx, nc, prog, g, "")
 }
 

@@ -144,7 +144,7 @@ func (r *Registrar) handleConfirm(req micro.Request) {
 		if err != nil {
 			return program.Grant{}, err
 		}
-		bearer, err = r.issueBridgeToken(ctx, request.Manifest.Name)
+		bearer, err = r.issueBridgeToken(ctx, request.Manifest)
 		return grant, err
 	})
 	reply.BridgeToken = bearer

@@ -55,9 +55,7 @@ func Validate(m Manifest) error {
 	}
 	errs := []error{validateCounts(m)}
 	errs = append(errs, validateTaskTypes(m.Name, m.TaskTypes)...)
-	if m.BridgeToken && len(m.TaskTypes) == 0 {
-		errs = append(errs, errors.New("bridge token needs a task type to scope it to"))
-	}
+	errs = append(errs, validateBridgeToken(m)...)
 	errs = append(errs, validateWorkflows(m.Name, m.Workflows)...)
 	errs = append(errs, validateStreams(m.Name, m.Streams)...)
 	errs = append(errs, validateBuckets(m.Name, m.Buckets)...)
@@ -501,4 +499,41 @@ func suffixMatches(s, prefix string, lo, hi byte) bool {
 		}
 	}
 	return true
+}
+
+// The worker token store's limits on one token's task-type prefixes
+// (workertoken.PrefixesCountMax and PrefixLengthMax). program cannot
+// import an internal package, so they are mirrored here; a test in
+// internal/programs asserts they are equal. Validating them at
+// registration keeps a manifest that Mint would refuse from spending a
+// join-key use and then failing every Run.
+const (
+	BridgeTokenTaskTypesMax     = 32
+	BridgeTokenTaskTypeBytesMax = 64
+)
+
+// validateBridgeToken checks that a BridgeToken manifest's task types
+// make a token the store will mint.
+func validateBridgeToken(m Manifest) []error {
+	if m.Name == "" {
+		panic("program.validateBridgeToken: name must not be empty")
+	}
+	if !m.BridgeToken {
+		return nil
+	}
+	var errs []error
+	if len(m.TaskTypes) == 0 {
+		errs = append(errs, errors.New("bridge token needs a task type to scope it to"))
+	}
+	if len(m.TaskTypes) > BridgeTokenTaskTypesMax {
+		errs = append(errs, fmt.Errorf("bridge token scopes at most %d task types, got %d",
+			BridgeTokenTaskTypesMax, len(m.TaskTypes)))
+	}
+	for _, taskType := range m.TaskTypes {
+		if len(taskType) > BridgeTokenTaskTypeBytesMax {
+			errs = append(errs, fmt.Errorf("bridge token scopes task types of at most %d "+
+				"bytes, %q is %d", BridgeTokenTaskTypeBytesMax, taskType, len(taskType)))
+		}
+	}
+	return errs
 }

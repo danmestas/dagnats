@@ -2,12 +2,15 @@
 // Bridge tokens (#885, D5): a program whose manifest sets BridgeToken
 // gets an HTTP-bridge worker token scoped to its task types, delivered
 // only in the reply to its confirmation, which arrives on its own
-// connection. Every attach mints a fresh token and revokes the last.
+// connection. Every attach mints a fresh token and revokes the last, and
+// every live token is the one its record names.
 // Methodology: real embedded NATS with Serve answering; registration
 // goes over a _JOIN-prefixed connection and confirmation over one with
 // the program's inbox prefix, as program.Run dials them. Assertions are
 // on the raw reply JSON, so the wire keys are literal, and on the real
-// workertoken.Store's Authorize.
+// workertoken.Store's Authorize. Failure branches inject a failing
+// Revoke or record write through the registrar's seams and then check
+// which of every minted bearer still authorizes.
 package programs
 
 import (
@@ -20,31 +23,65 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danmestas/dagnats/internal/joinkey"
 	"github.com/danmestas/dagnats/internal/workertoken"
 	"github.com/danmestas/dagnats/program"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
+
+// recordingTokens is the real store with every minted token noted and a
+// Revoke that can be made to fail.
+type recordingTokens struct {
+	*workertoken.Store
+	minted    []mintedToken
+	revokeErr func(id string) error
+}
+
+type mintedToken struct{ id, bearer string }
+
+func (r *recordingTokens) Mint(
+	ctx context.Context, label string, prefixes, groups []string, createdBy string,
+) (string, string, error) {
+	id, bearer, err := r.Store.Mint(ctx, label, prefixes, groups, createdBy)
+	if err == nil {
+		r.minted = append(r.minted, mintedToken{id, bearer})
+	}
+	return id, bearer, err
+}
+
+func (r *recordingTokens) Revoke(ctx context.Context, id string) error {
+	if r.revokeErr != nil {
+		if err := r.revokeErr(id); err != nil {
+			return err
+		}
+	}
+	return r.Store.Revoke(ctx, id)
+}
 
 type bridgeFixture struct {
 	*fixture
-	tokens *workertoken.Store
-	req    program.RegisterRequest
+	tokens  *recordingTokens
+	req     program.RegisterRequest
+	keyText string
 }
 
 func newBridgeFixture(t *testing.T) *bridgeFixture {
 	t.Helper()
-	f := registrationOnlyFixture(t, Config{Open: true})
+	f := registrationOnlyFixture(t, Config{Open: false})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	tokens, err := workertoken.Open(ctx, f.js)
+	store, err := workertoken.Open(ctx, f.js)
 	if err != nil {
 		t.Fatalf("workertoken.Open: %v", err)
 	}
-	t.Cleanup(tokens.Close)
-	f.registrar.cfg.Tokens = tokens
-	req := request(t, "notify", "")
+	t.Cleanup(store.Close)
+	tokens := &recordingTokens{Store: store}
+	f.registrar.tokens = tokens
+	_, plaintext := f.createKey(t, joinkey.Spec{Label: "k", UsesMax: 100})
+	req := request(t, "notify", plaintext)
 	req.Manifest.BridgeToken = true
-	return &bridgeFixture{fixture: f, tokens: tokens, req: req}
+	return &bridgeFixture{fixture: f, tokens: tokens, req: req, keyText: plaintext}
 }
 
 // ask sends req to subject on a connection with inboxPrefix and
@@ -91,6 +128,44 @@ func (b *bridgeFixture) confirmReply(t *testing.T) program.RegisterReply {
 		t.Fatalf("confirm reply %s: want a grant", raw)
 	}
 	return reply
+}
+
+// attach registers and confirms once, directly, and returns the first
+// token's ID, so a test can then break the second attach.
+func (b *bridgeFixture) attach(t *testing.T) string {
+	t.Helper()
+	b.registerRaw(t)
+	b.confirmReply(t) // the first attach mints
+	return b.record(t, "notify").BridgeTokenID
+}
+
+func (b *bridgeFixture) reattach(t *testing.T) error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := b.registrar.issueBridgeToken(ctx, b.req.Manifest)
+	return err
+}
+
+// requireOnlyNamedLive fails unless every minted bearer except the one
+// the record names is rejected; named says whether the named one must
+// authorize (false when its token was revoked too).
+func (b *bridgeFixture) requireOnlyNamedLive(t *testing.T, named bool) {
+	t.Helper()
+	id := b.record(t, "notify").BridgeTokenID
+	if len(b.tokens.minted) == 0 {
+		t.Fatal("no token was minted")
+	}
+	for _, minted := range b.tokens.minted {
+		_, err := b.tokens.Authorize(minted.bearer)
+		live := err == nil
+		switch {
+		case minted.id != id && live:
+			t.Fatalf("token %s is live but its record names %q", minted.id, id)
+		case minted.id == id && live != named:
+			t.Fatalf("the token the record names (%s): live=%v, want %v", id, live, named)
+		}
+	}
 }
 
 func TestBridgeToken_ConfirmReplyCarriesScopedBearer(t *testing.T) {
@@ -159,56 +234,123 @@ func TestBridgeToken_NonBridgeProgramGetsNone(t *testing.T) {
 	if !strings.Contains(string(raw), `"grant"`) || strings.Contains(string(raw), "bridge_token") {
 		t.Fatalf("a non-bridge confirm reply should hold a grant and no token: %s", raw)
 	}
-	if id := b.record(t, "notify").BridgeTokenID; id != "" {
-		t.Fatalf("a non-bridge record names token %q", id)
-	}
-}
-
-func TestBridgeToken_RemovingTheRecordRevokesTheToken(t *testing.T) {
-	b := newBridgeFixture(t)
-	now := time.Now()
-	b.registrar.cfg.Now = func() time.Time { return now }
-	b.registrar.cfg.PendingTTL = time.Second
-	if _, err := registerOnly(t, b.fixture, b.req); err != nil {
-		t.Fatalf("Register: %v", err)
-	}
-	ctx := context.Background()
-	prefixes := []string{"notify.work"}
-	id, bearer, err := b.tokens.Mint(ctx, "program:notify", prefixes, nil, "programs")
-	if err != nil {
-		t.Fatalf("Mint: %v", err)
-	}
-	entry, record, err := b.registrar.lookupEntry(ctx, "notify")
-	if err != nil {
-		t.Fatalf("lookupEntry: %v", err)
-	}
-	record.BridgeTokenID = id
-	if _, err := b.registrar.writeRecord(ctx, record, entry.Revision); err != nil {
-		t.Fatalf("writeRecord: %v", err)
-	}
-	now = now.Add(time.Minute)
-	if err := b.registrar.ExpirePending(ctx); err != nil {
-		t.Fatalf("ExpirePending: %v", err)
-	}
-	if _, found, _ := b.registrar.lookup(ctx, "notify"); found {
-		t.Fatal("the expired record is still stored")
-	}
-	if _, err := b.tokens.Authorize(bearer); err == nil {
-		t.Fatal("a removed program's token still authorizes")
+	if id := b.record(t, "notify").BridgeTokenID; id != "" || len(b.tokens.minted) != 0 {
+		t.Fatalf("a non-bridge program has token %q, %d minted", id, len(b.tokens.minted))
 	}
 }
 
 func TestBridgeToken_RefusedWithoutATokenStore(t *testing.T) {
-	f := newFixture(t, Config{Open: true})
+	f := newFixture(t, Config{Open: false})
 	req := request(t, "notify", "")
 	req.Manifest.BridgeToken = true
+	requireBridgeRefusal(t, f, req)
+	if _, found, _ := f.registrar.lookup(context.Background(), "notify"); found {
+		t.Fatal("a refused program was stored")
+	}
+}
+
+// In open mode anonymous clients are root and may publish any confirm
+// subject, so a confirm proves no possession of the key and a token
+// would go to whoever asked.
+func TestBridgeToken_RefusedInOpenMode(t *testing.T) {
+	f := newFixture(t, Config{Open: true})
+	store, err := workertoken.Open(context.Background(), f.js)
+	if err != nil {
+		t.Fatalf("workertoken.Open: %v", err)
+	}
+	t.Cleanup(store.Close)
+	f.registrar.tokens = store
+	req := request(t, "notify", "")
+	req.Manifest.BridgeToken = true
+	requireBridgeRefusal(t, f, req)
+	req.Manifest.BridgeToken = false
+	if _, err := registerOnly(t, f, req); err != nil {
+		t.Fatalf("a program without a bridge token registers in open mode: %v", err)
+	}
+}
+
+func requireBridgeRefusal(t *testing.T, f *fixture, req program.RegisterRequest) {
+	t.Helper()
 	_, err := registerOnly(t, f, req)
 	var refusal *program.ErrRefused
 	if !errors.As(err, &refusal) || refusal.Code != program.RefusedBridgeTokenUnavailable {
 		t.Fatalf("Register err = %v, want %s", err, program.RefusedBridgeTokenUnavailable)
 	}
-	if _, found, _ := f.registrar.lookup(context.Background(), "notify"); found {
-		t.Fatal("a refused program was stored")
+}
+
+func TestBridgeToken_FailedRevokeOfThePreviousKeepsItNamedAndLive(t *testing.T) {
+	b := newBridgeFixture(t)
+	previous := b.attach(t)
+	b.tokens.revokeErr = func(id string) error {
+		if id == previous {
+			return errors.New("injected revoke failure")
+		}
+		return nil
+	}
+	if err := b.reattach(t); err == nil {
+		t.Fatal("a failed revoke of the previous token was not reported")
+	}
+	if id := b.record(t, "notify").BridgeTokenID; id != previous {
+		t.Fatalf("record names %q, want the still-live previous %q", id, previous)
+	}
+	b.requireOnlyNamedLive(t, true)
+}
+
+func TestBridgeToken_FailedRecordWriteLeavesNoLiveToken(t *testing.T) {
+	cases := map[string]error{
+		"timeout":  context.DeadlineExceeded,
+		"mismatch": jetstream.ErrKeyRevisionMismatch,
+	}
+	for name, writeErr := range cases {
+		t.Run(name, func(t *testing.T) {
+			b := newBridgeFixture(t)
+			previous := b.attach(t)
+			b.registrar.writeBridgeRecord = func(
+				context.Context, Record, uint64,
+			) (uint64, error) {
+				return 0, writeErr
+			}
+			if err := b.reattach(t); err == nil {
+				t.Fatal("a failed record write was not reported")
+			}
+			if id := b.record(t, "notify").BridgeTokenID; id != previous {
+				t.Fatalf("record names %q, want %q", id, previous)
+			}
+			// The previous token was revoked first and the new one after the
+			// lost write, so nothing is live.
+			b.requireOnlyNamedLive(t, false)
+			if len(b.tokens.minted) < 2 {
+				t.Fatalf("%d tokens minted, want the new one too", len(b.tokens.minted))
+			}
+		})
+	}
+}
+
+func TestBridgeToken_TurningItOffRevokesAndClears(t *testing.T) {
+	b := newBridgeFixture(t)
+	previous := b.attach(t)
+	bearer := b.tokens.minted[0].bearer
+	b.req.Manifest.BridgeToken = false
+	raw := b.confirmRaw(t)
+	if strings.Contains(string(raw), "bridge_token") || !strings.Contains(string(raw), `"grant"`) {
+		t.Fatalf("a confirm that turns the token off: %s", raw)
+	}
+	if _, err := b.tokens.Authorize(bearer); err == nil {
+		t.Fatalf("token %s still authorizes after the manifest dropped BridgeToken", previous)
+	}
+	if id := b.record(t, "notify").BridgeTokenID; id != "" {
+		t.Fatalf("record still names token %q", id)
+	}
+}
+
+func TestBridgeToken_LimitsMatchTheTokenStore(t *testing.T) {
+	if program.BridgeTokenTaskTypesMax != workertoken.PrefixesCountMax {
+		t.Fatalf("program allows %d task types, workertoken %d",
+			program.BridgeTokenTaskTypesMax, workertoken.PrefixesCountMax)
+	}
+	if program.BridgeTokenTaskTypeBytesMax != workertoken.PrefixLengthMax {
+		t.Fatalf("program allows %d bytes, workertoken %d",
+			program.BridgeTokenTaskTypeBytesMax, workertoken.PrefixLengthMax)
 	}
 }
 
@@ -217,6 +359,7 @@ func TestBridgeToken_RunRotatesAndHandsTheHostTheBearer(t *testing.T) {
 	serveFixtureOn(t, b.fixture)
 	opts := program.Options{
 		URL: b.nc.ConnectedUrl(), SeedPath: filepath.Join(t.TempDir(), "notify.seed"),
+		JoinKey: b.keyText,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

@@ -22,7 +22,9 @@ import (
 // The bearer is returned only to the caller of Confirm, whose connection
 // logged in with the program's key. It is never stored: the record keeps
 // the token's ID, which is enough to revoke it. Register never issues
-// one, because its anonymous caller proves only a join key.
+// one, because its anonymous caller proves only a join key. In open mode
+// anonymous clients are root and can publish any confirm subject, so a
+// confirm proves nothing there and a BridgeToken manifest is refused.
 
 // bridgeTokenCreatedBy is the CreatedBy an operator sees on the token.
 const bridgeTokenCreatedBy = "programs"
@@ -35,99 +37,161 @@ const bridgeTokenAttemptsMax = 5
 // request's own context is already done.
 const bridgeTokenCleanupTimeout = 10 * time.Second
 
-// issueBridgeToken mints name's new bridge token, records its ID, then
-// revokes the previous one, and returns the bearer ("" when the manifest
-// sets no BridgeToken). The order matters: if the record write loses, the
-// new token is revoked so none is left live and unreferenced; if the
-// revoke of the old one fails, the record already names the new token.
-func (r *Registrar) issueBridgeToken(ctx context.Context, name string) (string, error) {
-	if ctx == nil || name == "" {
-		panic("programs.issueBridgeToken: ctx and name must be set")
-	}
-	for attempt := 1; attempt <= bridgeTokenAttemptsMax; attempt++ {
-		entry, record, err := r.lookupEntry(ctx, name)
-		if err != nil {
-			return "", err
-		}
-		if record.Pending {
-			return "", fmt.Errorf("program %q is pending; confirm before a token", name)
-		}
-		if !record.Manifest.BridgeToken && record.BridgeTokenID == "" {
-			return "", nil
-		}
-		bearer, id, err := r.mintFor(ctx, record)
-		if err != nil {
-			return "", err
-		}
-		previous := record.BridgeTokenID
-		record.BridgeTokenID = id
-		_, err = r.writeRecord(ctx, record, entry.Revision)
-		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
-			r.revokeToken(id, name)
-			continue
-		}
-		if err != nil {
-			r.revokeToken(id, name)
-			return "", err
-		}
-		if err := r.revokePrevious(ctx, previous); err != nil {
-			return "", fmt.Errorf("program %q: revoke its previous bridge token: %w", name, err)
-		}
-		return bearer, nil
-	}
-	return "", fmt.Errorf("issue bridge token for %q: its record changed on every one of "+
-		"%d attempts", name, bridgeTokenAttemptsMax)
+// tokenMinter is the part of workertoken.Store the registrar uses; tests
+// replace it to fail a mint or revoke.
+type tokenMinter interface {
+	Mint(ctx context.Context, label string, prefixes, workerGroups []string,
+		createdBy string) (id, bearer string, err error)
+	Revoke(ctx context.Context, id string) error
 }
 
-// mintFor mints record's token, or for a manifest that no longer sets
-// BridgeToken mints nothing and returns an empty bearer and ID, so the
-// caller clears the record's reference and revokes the stale token.
-func (r *Registrar) mintFor(ctx context.Context, record Record) (bearer, id string, err error) {
-	if record.Manifest.Name == "" {
-		panic("programs.mintFor: record must name its program")
+// checkBridgeToken refuses a BridgeToken manifest this server cannot
+// safely serve: with no token store to mint from, or in open mode.
+func (r *Registrar) checkBridgeToken(m program.Manifest) error {
+	if m.Name == "" {
+		panic("programs.checkBridgeToken: manifest must name its program")
 	}
-	if !record.Manifest.BridgeToken {
+	if r == nil {
+		panic("programs.checkBridgeToken: r is nil")
+	}
+	if !m.BridgeToken {
+		return nil
+	}
+	if r.tokens == nil {
+		return refused(program.RefusedBridgeTokenUnavailable,
+			"program %q asks for a bridge token and this dagnats has no worker token store",
+			m.Name)
+	}
+	if r.cfg.Open {
+		return refused(program.RefusedBridgeTokenUnavailable,
+			"program %q asks for a bridge token, but this dagnats needs no client login "+
+				"(open mode), so a confirmation does not prove the program holds its key",
+			m.Name)
+	}
+	return nil
+}
+
+// issueBridgeToken rotates m's program's bridge token and returns the new
+// bearer ("" when the manifest sets no BridgeToken). m is the manifest
+// Confirm has just matched against the record, so the scope is the
+// validated request's, not the stored record's.
+//
+// The invariant is that every live token is one its record names. The
+// order keeps it through any failure: mint the new token N; revoke the
+// previous P (already gone counts as revoked); only then write the record
+// to name N. If the revoke fails, N is revoked and the record still names
+// P, live. If the write fails, even by a timeout that in fact committed,
+// N is revoked, and P is already revoked, so at worst the record names a
+// dead token and the next attach's revoke of it is a no-op.
+func (r *Registrar) issueBridgeToken(
+	ctx context.Context, m program.Manifest,
+) (string, error) {
+	if ctx == nil || m.Name == "" {
+		panic("programs.issueBridgeToken: ctx and the manifest's name must be set")
+	}
+	for attempt := 1; attempt <= bridgeTokenAttemptsMax; attempt++ {
+		bearer, err := r.rotateBridgeToken(ctx, m)
+		if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
+			continue
+		}
+		return bearer, err
+	}
+	return "", fmt.Errorf("issue bridge token for %q: its record changed on every one of "+
+		"%d attempts", m.Name, bridgeTokenAttemptsMax)
+}
+
+// rotateBridgeToken is one attempt of issueBridgeToken. A returned
+// jetstream.ErrKeyRevisionMismatch means the record changed since it was
+// read; the new token is already revoked and the caller reads again.
+func (r *Registrar) rotateBridgeToken(
+	ctx context.Context, m program.Manifest,
+) (bearer string, err error) {
+	entry, record, err := r.lookupEntry(ctx, m.Name)
+	if err != nil {
+		return "", err
+	}
+	if record.Pending {
+		return "", fmt.Errorf("program %q is pending; confirm before a token", m.Name)
+	}
+	if !m.BridgeToken && record.BridgeTokenID == "" {
+		return "", nil
+	}
+	id, bearer, err := r.mint(ctx, m)
+	if err != nil {
+		return "", err
+	}
+	if err := r.revokePrevious(ctx, record.BridgeTokenID); err != nil {
+		r.revokeToken(id, m.Name)
+		return "", fmt.Errorf("program %q: revoke its previous bridge token: %w", m.Name, err)
+	}
+	record.BridgeTokenID = id
+	write := r.writeRecord
+	if r.writeBridgeRecord != nil {
+		write = r.writeBridgeRecord
+	}
+	if _, err := write(ctx, record, entry.Revision); err != nil {
+		r.revokeToken(id, m.Name)
+		return "", err
+	}
+	return bearer, nil
+}
+
+// mint mints m's token, scoped to its TaskTypes exactly as declared; it
+// returns nothing for a manifest that sets no BridgeToken.
+func (r *Registrar) mint(ctx context.Context, m program.Manifest) (id, bearer string, err error) {
+	if r.tokens == nil {
+		panic("programs.mint: no token store; checkBridgeToken refuses before this")
+	}
+	if m.BridgeToken && len(m.TaskTypes) == 0 {
+		panic("programs.mint: Validate requires task types for a bridge token")
+	}
+	if !m.BridgeToken {
 		return "", "", nil
 	}
-	if r.cfg.Tokens == nil {
-		return "", "", refused(program.RefusedBridgeTokenUnavailable,
-			"this dagnats has no worker token store")
-	}
-	id, bearer, err = r.cfg.Tokens.Mint(ctx, "program:"+record.Manifest.Name,
-		record.Manifest.TaskTypes, nil, bridgeTokenCreatedBy)
+	id, bearer, err = r.tokens.Mint(ctx, "program:"+m.Name, m.TaskTypes, nil,
+		bridgeTokenCreatedBy)
 	if err != nil {
-		return "", "", fmt.Errorf("mint bridge token for %q: %w", record.Manifest.Name, err)
+		return "", "", fmt.Errorf("mint bridge token for %q: %w", m.Name, err)
 	}
-	return bearer, id, nil
+	return id, bearer, nil
 }
 
 // revokePrevious revokes the token a record named before this attach. A
 // token already gone is not a failure.
 func (r *Registrar) revokePrevious(ctx context.Context, id string) error {
-	if id == "" || r.cfg.Tokens == nil {
+	if r == nil || ctx == nil {
+		panic("programs.revokePrevious: r and ctx must be set")
+	}
+	if r.tokens == nil {
+		panic("programs.revokePrevious: no token store")
+	}
+	if id == "" {
 		return nil
 	}
-	err := r.cfg.Tokens.Revoke(ctx, id)
+	err := r.tokens.Revoke(ctx, id)
 	if errors.Is(err, workertoken.ErrTokenNotFound) {
 		return nil
 	}
 	return err
 }
 
-// revokeToken revokes id on its own context, for a token a failed write
-// or a removed record leaves behind; a failure is logged, since the
-// caller's own outcome is what it needs, and the token is one the
-// program was never handed.
+// revokeToken revokes id on its own context, for the new token a failed
+// step leaves behind; a failure is logged, since the caller's own error
+// is what it needs and the program was never handed this token. An empty
+// id (a manifest that mints nothing) is a no-op.
 func (r *Registrar) revokeToken(id, name string) {
-	if id == "" || name == "" {
-		panic("programs.revokeToken: id and name must be set")
+	if r == nil || name == "" {
+		panic("programs.revokeToken: r and name must be set")
 	}
-	if r.cfg.Tokens == nil {
+	if r.tokens == nil {
+		panic("programs.revokeToken: no token store")
+	}
+	if id == "" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), bridgeTokenCleanupTimeout)
 	defer cancel()
-	err := r.cfg.Tokens.Revoke(ctx, id)
+	err := r.tokens.Revoke(ctx, id)
 	if err != nil && !errors.Is(err, workertoken.ErrTokenNotFound) {
 		slog.Error("programs: bridge token not revoked",
 			"token_id", id, "program", name, "error", err)

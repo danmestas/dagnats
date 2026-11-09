@@ -118,6 +118,15 @@ const (
 )
 ```
 
+<a name="BridgeTokenTaskTypesMax"></a>The worker token store's limits on one token's task\-type prefixes \(workertoken.PrefixesCountMax and PrefixLengthMax\). program cannot import an internal package, so they are mirrored here; a test in internal/programs asserts they are equal. Validating them at registration keeps a manifest that Mint would refuse from spending a join\-key use and then failing every Run.
+
+```go
+const (
+    BridgeTokenTaskTypesMax     = 32
+    BridgeTokenTaskTypeBytesMax = 64
+)
+```
+
 <a name="AuthRetryWindowDefault"></a>AuthRetryWindowDefault is how long a program's connection rides out the server refusing its key. A node serves clients before its watch of the programs bucket has loaded its program users \(the bucket needs JetStream, which starts with the node\), so a node that restarts refuses every program key for a while: about 22 seconds on a 3\-node mesh.
 
 ```go
@@ -201,7 +210,7 @@ An existing stream or bucket keeps every field the manifest does not own \(Disca
 Those owned fields always come from the manifest and Grant, so a limit an operator tightened by hand \(MaxBytes, MaxAge, TTL, History, Replicas\) is undone by the next Provision. That stays within the Grant, so no data is lost. A bucket field KeyValueConfig cannot express, such as its stream's MaxMsgs, is reset to the KV default.
 
 <a name="SplitRead"></a>
-## func [SplitRead](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L410>)
+## func [SplitRead](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L408>)
 
 ```go
 func SplitRead(read string) (domain, bucket string)
@@ -219,7 +228,7 @@ func Validate(m Manifest) error
 Validate checks names, prefixes, sizes, and that Protocols are not under the program's own prefix or an engine root. Pure; used by registration, by Use, and by a program's own tests. Whether a protocol falls under another registered program's prefix needs the registry and is checked at registration.
 
 <a name="ValidateName"></a>
-## func [ValidateName](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L81>)
+## func [ValidateName](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L79>)
 
 ```go
 func ValidateName(name string) error
@@ -228,7 +237,7 @@ func ValidateName(name string) error
 ValidateName checks only a manifest's Name, the first rule Validate applies. Registration uses it to tell name\_invalid apart from the other manifest errors.
 
 <a name="ValidateStreamName"></a>
-## func [ValidateStreamName](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L328>)
+## func [ValidateStreamName](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L326>)
 
 ```go
 func ValidateStreamName(stream string) error
