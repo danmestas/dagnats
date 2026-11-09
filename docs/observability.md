@@ -148,6 +148,11 @@ Unset, there are no lake views.
   by a telemetry view or an earlier lake table. The skip is reported
   once on stderr.
 - `dt` comes from the path, as a hive partition column.
+- A stream archive table (`<program>_stream_<stream>`) can hold several
+  sources: a stream recreated under a new `epoch`, or rows imported before
+  lode archived the live stream (`epoch` NULL). `stream_seq` repeats
+  across them, so it is not a row identity: count or join on `event_id`,
+  or on `(epoch, stream_seq)`, never on `stream_seq` alone.
 
 **Generic MCP client** (Cursor, Continue, anything that reads an
 `mcp.json`-style config):
