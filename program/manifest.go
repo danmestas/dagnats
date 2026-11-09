@@ -73,6 +73,14 @@ type Manifest struct {
 	// Console links the program from the dagnats console nav; nil for
 	// none.
 	Console *Link
+	// BridgeToken asks dagnats for an HTTP-bridge worker token scoped to
+	// TaskTypes, so a bridge worker (a TypeScript one, say) shares the
+	// program's identity. Every attach mints a new token and revokes the
+	// previous one, so there is one live token per program: a second
+	// instance revokes the first's. It reaches the program as
+	// Host.BridgeToken, only from Run, which confirms on its own
+	// connection to receive it, and is never stored.
+	BridgeToken bool `json:"bridge_token,omitempty"`
 }
 
 // StreamSpec declares one of the program's own JetStream streams. The
@@ -123,6 +131,9 @@ type Host struct {
 	Conn   *nats.Conn
 	Grant  Grant
 	Logger *slog.Logger
+	// BridgeToken is the bearer minted for this attach when the manifest
+	// sets BridgeToken; empty otherwise, and from Attach called directly.
+	BridgeToken string
 	// Handle registers fn for a declared task type. Attach wraps it in
 	// a per-dispatch recover and starts consuming once Start returns.
 	// Calling it after Start returns, or for an undeclared type, panics.

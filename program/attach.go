@@ -41,6 +41,20 @@ var ErrRelayUnavailable = natsutil.ErrRelayUnavailable
 func Attach(
 	ctx context.Context, nc *nats.Conn, prog Program, g Grant,
 ) (stop func(context.Context) error, err error) {
+	if ctx == nil || nc == nil {
+		panic("program.Attach: ctx and nc must not be nil")
+	}
+	if prog == nil {
+		panic("program.Attach: prog must not be nil")
+	}
+	return attach(ctx, nc, prog, g, "")
+}
+
+// attach is Attach with the bridge bearer Run received, handed to the
+// program as Host.BridgeToken.
+func attach(
+	ctx context.Context, nc *nats.Conn, prog Program, g Grant, bridgeToken string,
+) (stop func(context.Context) error, err error) {
 	if ctx == nil || nc == nil || prog == nil {
 		panic("program.Attach: ctx, nc and prog must not be nil")
 	}
@@ -69,7 +83,9 @@ func Attach(
 		worker: worker.NewWorker(nc, worker.WithEngineRelay(relayPrefix)),
 		logger: slog.Default().With("program", m.Name),
 	}
-	host := Host{Conn: nc, Grant: g, Logger: a.logger, Handle: a.handle}
+	host := Host{
+		Conn: nc, Grant: g, Logger: a.logger, BridgeToken: bridgeToken, Handle: a.handle,
+	}
 	if err := prog.Start(ctx, host); err != nil {
 		a.seal()
 		return nil, fmt.Errorf("program %s: start: %w", m.Name, err)

@@ -108,10 +108,22 @@ const (
     RefusedProtocolClash       = "protocol_clash"
     RefusedProtocolNotAllowed  = "protocol_not_allowed"
     RefusedConfirmExpired      = "confirm_expired"
+    // RefusedBridgeTokenUnavailable: the manifest sets BridgeToken and
+    // this dagnats has no worker token store to mint from.
+    RefusedBridgeTokenUnavailable = "bridge_token_unavailable"
     // RefusedJoinKeyRequiredToWiden: an update adds a protocol or a read
     // of another program's bucket, and the request carries no join key
     // that is usable and covers it.
     RefusedJoinKeyRequiredToWiden = "join_key_required_to_widen"
+)
+```
+
+<a name="BridgeTokenTaskTypesMax"></a>The worker token store's limits on one token's task\-type prefixes \(workertoken.PrefixesCountMax and PrefixLengthMax\). program cannot import an internal package, so they are mirrored here; a test in internal/programs asserts they are equal. Validating them at registration keeps a manifest that Mint would refuse from spending a join\-key use and then failing every Run.
+
+```go
+const (
+    BridgeTokenTaskTypesMax     = 32
+    BridgeTokenTaskTypeBytesMax = 64
 )
 ```
 
@@ -176,7 +188,7 @@ func EffectiveArchives(m Manifest, granted []string) []string
 EffectiveArchives is the intersection of the streams m declares in Archives and the streams the operator granted, in manifest order. Deny by default: a nil grant yields nothing.
 
 <a name="InboxPrefix"></a>
-## func [InboxPrefix](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L149>)
+## func [InboxPrefix](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L160>)
 
 ```go
 func InboxPrefix(name string) string
@@ -198,7 +210,7 @@ An existing stream or bucket keeps every field the manifest does not own \(Disca
 Those owned fields always come from the manifest and Grant, so a limit an operator tightened by hand \(MaxBytes, MaxAge, TTL, History, Replicas\) is undone by the next Provision. That stays within the Grant, so no data is lost. A bucket field KeyValueConfig cannot express, such as its stream's MaxMsgs, is reset to the KV default.
 
 <a name="SplitRead"></a>
-## func [SplitRead](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L407>)
+## func [SplitRead](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L408>)
 
 ```go
 func SplitRead(read string) (domain, bucket string)
@@ -216,7 +228,7 @@ func Validate(m Manifest) error
 Validate checks names, prefixes, sizes, and that Protocols are not under the program's own prefix or an engine root. Pure; used by registration, by Use, and by a program's own tests. Whether a protocol falls under another registered program's prefix needs the registry and is checked at registration.
 
 <a name="ValidateName"></a>
-## func [ValidateName](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L78>)
+## func [ValidateName](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L79>)
 
 ```go
 func ValidateName(name string) error
@@ -225,7 +237,7 @@ func ValidateName(name string) error
 ValidateName checks only a manifest's Name, the first rule Validate applies. Registration uses it to tell name\_invalid apart from the other manifest errors.
 
 <a name="ValidateStreamName"></a>
-## func [ValidateStreamName](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L325>)
+## func [ValidateStreamName](<https://github.com/danmestas/dagnats/blob/main/program/validate.go#L326>)
 
 ```go
 func ValidateStreamName(stream string) error
@@ -234,7 +246,7 @@ func ValidateStreamName(stream string) error
 ValidateStreamName checks an archived stream name: 1 to 128 of A\-Z, a\-z, 0\-9, \_ or \-. Narrower than JetStream's own rule, so the name is always one literal subject token in the permissions it generates. The operator's policy.archives grants are checked with it too.
 
 <a name="BucketSpec"></a>
-## type [BucketSpec](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L94-L99>)
+## type [BucketSpec](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L102-L107>)
 
 BucketSpec declares one of the program's own KV buckets. The host creates it \(Provision\); the program reads and writes keys.
 
@@ -300,7 +312,7 @@ func (s ConnStatus) Connected() bool
 Connected reports whether the connection is up.
 
 <a name="ErrRefused"></a>
-## type [ErrRefused](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L79-L82>)
+## type [ErrRefused](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L87-L90>)
 
 ErrRefused is dagnats declining to admit the program, with one of the Refused\* codes and a human\-readable detail.
 
@@ -312,7 +324,7 @@ type ErrRefused struct {
 ```
 
 <a name="ErrRefused.Error"></a>
-### func \(\*ErrRefused\) [Error](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L84>)
+### func \(\*ErrRefused\) [Error](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L92>)
 
 ```go
 func (e *ErrRefused) Error() string
@@ -321,7 +333,7 @@ func (e *ErrRefused) Error() string
 
 
 <a name="Grant"></a>
-## type [Grant](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L109-L117>)
+## type [Grant](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L117-L125>)
 
 Grant is what attach returns. Sizes are absolute: the program never does budget arithmetic.
 
@@ -338,7 +350,7 @@ type Grant struct {
 ```
 
 <a name="HTTPHandler"></a>
-## type [HTTPHandler](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L144>)
+## type [HTTPHandler](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L155>)
 
 HTTPHandler is optional. The host decides the listener and prefix.
 
@@ -347,7 +359,7 @@ type HTTPHandler interface{ Handler() http.Handler }
 ```
 
 <a name="Host"></a>
-## type [Host](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L122-L130>)
+## type [Host](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L130-L141>)
 
 Host is what Start receives. It is data: the connection the program was attached with, its Grant, a logger tagged with its name, and Handle, which registers a task handler on the worker Attach runs.
 
@@ -356,6 +368,9 @@ type Host struct {
     Conn   *nats.Conn
     Grant  Grant
     Logger *slog.Logger
+    // BridgeToken is the bearer minted for this attach when the manifest
+    // sets BridgeToken; empty otherwise, and from Attach called directly.
+    BridgeToken string
     // Handle registers fn for a declared task type. Attach wraps it in
     // a per-dispatch recover and starts consuming once Start returns.
     // Calling it after Start returns, or for an undeclared type, panics.
@@ -364,7 +379,7 @@ type Host struct {
 ```
 
 <a name="Instance"></a>
-## type [Instance](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L50-L53>)
+## type [Instance](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L53-L56>)
 
 Instance identifies the process registering, for the operator.
 
@@ -432,7 +447,7 @@ func (k Key) String() string
 String prints the public key, so logging a Key cannot leak the seed.
 
 <a name="Link"></a>
-## type [Link](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L102-L105>)
+## type [Link](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L110-L113>)
 
 Link is a console navigation entry.
 
@@ -444,7 +459,7 @@ type Link struct {
 ```
 
 <a name="Manifest"></a>
-## type [Manifest](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L16-L76>)
+## type [Manifest](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L16-L84>)
 
 Manifest is everything dagnats needs to admit a program. Name is the prefix root: task types and workflow names "name.\*", subjects "name.\>", streams "NAME\_\*", buckets "name\_\*".
 
@@ -509,6 +524,14 @@ type Manifest struct {
     // Console links the program from the dagnats console nav; nil for
     // none.
     Console *Link
+    // BridgeToken asks dagnats for an HTTP-bridge worker token scoped to
+    // TaskTypes, so a bridge worker (a TypeScript one, say) shares the
+    // program's identity. Every attach mints a new token and revokes the
+    // previous one, so there is one live token per program: a second
+    // instance revokes the first's. It reaches the program as
+    // Host.BridgeToken, only from Run, which confirms on its own
+    // connection to receive it, and is never stored.
+    BridgeToken bool `json:"bridge_token,omitempty"`
 }
 ```
 
@@ -592,7 +615,7 @@ PermissionsGranted is PermissionsFor plus the archive rights \(archivePublish\) 
 Every program is denied publish under "lode.stream.\>", whatever its name or protocols grant: only dagnats itself asks an archive for records, after its own ownership checks, and an archive's answer is trusted as the journal's history.
 
 <a name="Program"></a>
-## type [Program](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L133-L141>)
+## type [Program](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L144-L152>)
 
 Program is a separately released binary's view of dagnats.
 
@@ -609,21 +632,22 @@ type Program interface {
 ```
 
 <a name="RegisterReply"></a>
-## type [RegisterReply](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L70-L75>)
+## type [RegisterReply](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L77-L83>)
 
-RegisterReply is the reply: a Grant, Refused or Error. Error is a server fault \(a KV write failed\), not a refusal, and may succeed on retry. Confirm, when set, is the subject the program must confirm on after logging in with its key: a new registration is pending until then, and a manifest change is applied only then \(Grant may be nil\).
+RegisterReply is the reply: a Grant, Refused or Error. Error is a server fault \(a KV write failed\), not a refusal, and may succeed on retry. Confirm, when set, is the subject the program must confirm on after logging in with its key: a new registration is pending until then, and a manifest change is applied only then \(Grant may be nil\). BridgeToken is a bearer, set only on the reply to a confirmation, which arrives on the program's own connection: the anonymous register request proves only a join key, so no register reply carries one. It lives here and not in Grant so that it cannot be stored with it.
 
 ```go
 type RegisterReply struct {
-    Confirm string      `json:"confirm,omitempty"`
-    Grant   *Grant      `json:"grant,omitempty"`
-    Refused *ErrRefused `json:"refused,omitempty"`
-    Error   string      `json:"error,omitempty"`
+    Confirm     string      `json:"confirm,omitempty"`
+    Grant       *Grant      `json:"grant,omitempty"`
+    BridgeToken string      `json:"bridge_token,omitempty"`
+    Refused     *ErrRefused `json:"refused,omitempty"`
+    Error       string      `json:"error,omitempty"`
 }
 ```
 
 <a name="RegisterRequest"></a>
-## type [RegisterRequest](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L58-L63>)
+## type [RegisterRequest](<https://github.com/danmestas/dagnats/blob/main/program/register.go#L61-L66>)
 
 RegisterRequest is the body of a RegisterSubject request. JoinKey may be empty on an open\-mode server. Only the public key is sent; the seed never leaves the program.
 
@@ -686,7 +710,7 @@ func (r *Running) Stop(ctx context.Context) error
 Stop drains the worker, calls prog.Stop and closes the connection. It makes no control\-plane request, so it works while dagnats is down. Later calls return the first result.
 
 <a name="StreamSpec"></a>
-## type [StreamSpec](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L82-L90>)
+## type [StreamSpec](<https://github.com/danmestas/dagnats/blob/main/program/manifest.go#L90-L98>)
 
 StreamSpec declares one of the program's own JetStream streams. The host creates it \(Provision\); the program only reads and consumes it. Its MaxBytes is resolved by dagnats from the fraction and floor and handed back in Grant.StreamMaxBytes.
 

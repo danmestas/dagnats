@@ -37,6 +37,7 @@ import (
 	"github.com/danmestas/dagnats/internal/joinkey"
 	"github.com/danmestas/dagnats/internal/kvmirror"
 	"github.com/danmestas/dagnats/internal/natsutil"
+	"github.com/danmestas/dagnats/internal/workertoken"
 	"github.com/danmestas/dagnats/program"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
@@ -72,6 +73,9 @@ type Config struct {
 	// PendingTTL is how long an unconfirmed registration lives; zero
 	// means the PendingTTL default.
 	PendingTTL time.Duration
+	// Tokens mints the bridge tokens of programs whose manifest sets
+	// BridgeToken (bridgetoken.go). Nil refuses such a manifest.
+	Tokens *workertoken.Store
 	// Now is the registrar's clock; nil means time.Now. Tests set it so
 	// expiry windows are stepped, not slept through.
 	Now func() time.Time
@@ -91,6 +95,10 @@ type Record struct {
 	// it is removed at PendingUntil (possession.go).
 	Pending      bool      `json:"pending,omitempty"`
 	PendingUntil time.Time `json:"pending_until,omitempty"`
+	// BridgeTokenID names the program's live bridge token, to revoke it
+	// at the next attach or when the record is removed. Only the ID is
+	// stored; the bearer never is.
+	BridgeTokenID string `json:"bridge_token_id,omitempty"`
 }
 
 // Registrar admits programs. Safe for concurrent use.
@@ -124,6 +132,13 @@ type Registrar struct {
 	// expired remembers (join key, name) pairs whose registration expired
 	// unconfirmed, so the key cannot re-register the name at once.
 	expired expiredRegistrations
+	// tokens is Config.Tokens as the interface the bridge token code
+	// uses; nil when none is configured. Tests replace it to fail a
+	// mint or revoke.
+	tokens tokenMinter
+	// writeBridgeRecord, when set, replaces writeRecord for the bridge
+	// token's compare-and-set: a test seam. Nil in production.
+	writeBridgeRecord func(context.Context, Record, uint64) (uint64, error)
 	// beforeRollBack, when set, runs between an update's failed
 	// provisioning and its rollback: a test seam for forcing another
 	// node's registration into that window. Nil in production.
@@ -144,7 +159,11 @@ func NewRegistrar(
 	if err != nil {
 		return nil, err
 	}
-	return &Registrar{js: js, kv: kv, stream: stream, keys: keys, cfg: cfg}, nil
+	r := &Registrar{js: js, kv: kv, stream: stream, keys: keys, cfg: cfg}
+	if cfg.Tokens != nil {
+		r.tokens = cfg.Tokens
+	}
+	return r, nil
 }
 
 // Register admits req's program and returns its Grant, or an
@@ -190,7 +209,7 @@ func (r *Registrar) checkRequest(req program.RegisterRequest) error {
 	if !nkeys.IsValidPublicUserKey(req.PublicKey) {
 		return refused(program.RefusedRequestInvalid, "public key is not an NKey user key")
 	}
-	return nil
+	return r.checkBridgeToken(req.Manifest)
 }
 
 // existing settles a request for a name already registered: the same

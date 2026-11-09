@@ -193,6 +193,11 @@ func (r *Registrar) expireIfStale(ctx context.Context, name string) (bool, error
 	if err != nil || !record.expired(r.now()) {
 		return false, nil
 	}
+	// A token is minted only for a confirmed record, so removing a
+	// pending one revokes nothing.
+	if record.BridgeTokenID != "" {
+		panic("programs.expireIfStale: a pending record holds a bridge token")
+	}
 	err = r.kv.Delete(ctx, name, jetstream.LastRevision(entry.Revision))
 	if errors.Is(err, jetstream.ErrKeyRevisionMismatch) {
 		return false, nil

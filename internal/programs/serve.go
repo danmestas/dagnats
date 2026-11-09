@@ -134,11 +134,21 @@ func (r *Registrar) handleConfirm(req micro.Request) {
 	if !replyUnder(req, program.InboxPrefix(name)+".") {
 		return
 	}
-	respond(req, r.answerWith(req.Data(), func(
+	// The bearer is minted here and nowhere else: this reply goes to the
+	// program's own inbox, on a connection logged in with its key.
+	var bearer string
+	reply := r.answerWith(req.Data(), func(
 		ctx context.Context, request program.RegisterRequest,
 	) (program.Grant, error) {
-		return r.Confirm(ctx, publicKey, request)
-	}))
+		grant, err := r.Confirm(ctx, publicKey, request)
+		if err != nil {
+			return program.Grant{}, err
+		}
+		bearer, err = r.issueBridgeToken(ctx, request.Manifest)
+		return grant, err
+	})
+	reply.BridgeToken = bearer
+	respond(req, reply)
 }
 
 // confirmingProgram names the program a confirmation is for: the one the

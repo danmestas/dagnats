@@ -237,9 +237,10 @@ func (s *Store) Mint(
 	}
 	// Check-then-act, not atomic: two concurrent Mints can both read a
 	// count just under TokensCountMax and both succeed, overshooting it
-	// by a small amount. Accepted: Mint is admin-only (fail-closed
-	// behind DAGNATS_BRIDGE_TOKEN), so this is not an externally
-	// triggerable resource-exhaustion path.
+	// by a small amount. Accepted: Mint is reached by an admin (fail-closed
+	// behind DAGNATS_BRIDGE_TOKEN) and by a confirming program with a
+	// BridgeToken manifest (internal/programs), which holds one live token
+	// and revokes it at the next attach. The count check bounds both.
 	if s.activeTokenCount() >= TokensCountMax {
 		return "", "", fmt.Errorf(
 			"worker token limit reached (%d active)", TokensCountMax,

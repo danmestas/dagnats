@@ -100,6 +100,13 @@ func Run(ctx context.Context, prog Program, opts Options) (*Running, error) {
 	if err != nil {
 		return nil, err
 	}
+	if m.BridgeToken && confirm == "" {
+		// A bearer goes only to a connection that proved it holds the key,
+		// and an unchanged confirmed program is otherwise admitted by the
+		// register reply alone, which proves nothing of the kind.
+		confirm = ConfirmSubject(key.PublicKey())
+	}
+	var bridgeToken string
 	running := newRunning(m.Name)
 	nc, err := dialAsProgram(opts, m.Name, key, running)
 	if err != nil {
@@ -108,7 +115,7 @@ func Run(ctx context.Context, prog Program, opts Options) (*Running, error) {
 	if confirm != "" {
 		// The registration (or a manifest change) is pending until this
 		// connection, logged in with the key, confirms it.
-		if grant, err = confirmRegistration(ctx, nc, confirm, req); err != nil {
+		if grant, bridgeToken, err = confirmRegistration(ctx, nc, confirm, req); err != nil {
 			running.stopping.Store(true)
 			nc.Close()
 			return nil, err
@@ -119,7 +126,7 @@ func Run(ctx context.Context, prog Program, opts Options) (*Running, error) {
 			return nil, err
 		}
 	}
-	stopAttach, err := Attach(ctx, nc, prog, grant)
+	stopAttach, err := attach(ctx, nc, prog, grant, bridgeToken)
 	if err != nil {
 		running.stopping.Store(true)
 		nc.Close()
@@ -252,7 +259,8 @@ func register(ctx context.Context, opts Options, req RegisterRequest) (Grant, st
 	if err != nil {
 		return Grant{}, "", fmt.Errorf("program %s: register: %w", req.Manifest.Name, err)
 	}
-	return decodeReply(req.Manifest.Name, msg.Data)
+	grant, confirm, _, err := decodeReply(req.Manifest.Name, msg.Data)
+	return grant, confirm, err
 }
 
 // waitPromoted waits until nc's own server gives it the confirmed
@@ -314,10 +322,11 @@ const promotionProbeWait = 500 * time.Millisecond
 
 // confirmRegistration confirms on subject over nc, which is logged in
 // with the program's key: that login is what proves the program holds
-// the seed (internal/programs/possession.go).
+// the seed (internal/programs/possession.go). It returns the bridge
+// bearer the reply carries, if any.
 func confirmRegistration(
 	ctx context.Context, nc *nats.Conn, subject string, req RegisterRequest,
-) (Grant, error) {
+) (Grant, string, error) {
 	if nc == nil || subject == "" {
 		panic("program.confirmRegistration: nc and subject must be set")
 	}
@@ -328,37 +337,45 @@ func confirmRegistration(
 	}
 	body, err := json.Marshal(req)
 	if err != nil {
-		return Grant{}, fmt.Errorf("program %s: encode confirmation: %w", req.Manifest.Name, err)
+		return Grant{}, "", fmt.Errorf("program %s: encode confirmation: %w",
+			req.Manifest.Name, err)
 	}
 	msg, err := nc.RequestWithContext(ctx, subject, body)
 	if err != nil {
-		return Grant{}, fmt.Errorf("program %s: confirm: %w", req.Manifest.Name, err)
+		return Grant{}, "", fmt.Errorf("program %s: confirm: %w", req.Manifest.Name, err)
 	}
-	grant, again, err := decodeReply(req.Manifest.Name, msg.Data)
+	grant, again, bearer, err := decodeReply(req.Manifest.Name, msg.Data)
 	if err == nil && again != "" {
-		return Grant{}, fmt.Errorf("program %s: confirmation still pending", req.Manifest.Name)
+		return Grant{}, "", fmt.Errorf("program %s: confirmation still pending",
+			req.Manifest.Name)
 	}
-	return grant, err
+	if err == nil && req.Manifest.BridgeToken && bearer == "" {
+		return Grant{}, "", fmt.Errorf("program %s: confirmed, but no bridge token came back",
+			req.Manifest.Name)
+	}
+	return grant, bearer, err
 }
 
 // decodeReply returns the Grant, the subject to confirm on when the
-// registration needs it (the Grant may then be empty), or the refusal.
-func decodeReply(name string, data []byte) (Grant, string, error) {
+// registration needs it (the Grant may then be empty), the bridge bearer
+// (only a confirmation's reply has one), or the refusal.
+func decodeReply(name string, data []byte) (Grant, string, string, error) {
 	var reply RegisterReply
 	if err := json.Unmarshal(data, &reply); err != nil {
-		return Grant{}, "", fmt.Errorf("program %s: registration reply: %w", name, err)
+		return Grant{}, "", "", fmt.Errorf("program %s: registration reply: %w", name, err)
 	}
 	switch {
 	case reply.Refused != nil:
-		return Grant{}, "", reply.Refused
+		return Grant{}, "", "", reply.Refused
 	case reply.Error != "":
-		return Grant{}, "", fmt.Errorf("program %s: registration failed: %s", name, reply.Error)
+		return Grant{}, "", "", fmt.Errorf("program %s: registration failed: %s",
+			name, reply.Error)
 	case reply.Grant == nil && reply.Confirm == "":
-		return Grant{}, "", fmt.Errorf("program %s: registration reply has no grant", name)
+		return Grant{}, "", "", fmt.Errorf("program %s: registration reply has no grant", name)
 	case reply.Grant == nil:
-		return Grant{}, reply.Confirm, nil
+		return Grant{}, reply.Confirm, "", nil
 	}
-	return *reply.Grant, reply.Confirm, nil
+	return *reply.Grant, reply.Confirm, reply.BridgeToken, nil
 }
 
 func thisInstance() Instance {

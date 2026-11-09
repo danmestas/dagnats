@@ -7,6 +7,7 @@
 package program_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -30,6 +31,41 @@ func validManifest() program.Manifest {
 		}},
 		Protocols: []string{"toyproto.ping"},
 		Console:   &program.Link{Label: "Toy", URL: "http://127.0.0.1:9000/"},
+	}
+}
+
+func TestValidate_BridgeTokenNeedsATaskTypeToScopeTo(t *testing.T) {
+	m := validManifest()
+	m.BridgeToken = true
+	if err := program.Validate(m); err != nil {
+		t.Fatalf("Validate(bridge token with task types) = %v, want nil", err)
+	}
+	m.TaskTypes = nil
+	err := program.Validate(m)
+	if err == nil || !strings.Contains(err.Error(), "bridge token needs a task type") {
+		t.Fatalf("Validate(bridge token, no task types) = %v, want the bridge token error", err)
+	}
+}
+
+func TestValidate_BridgeTokenRespectsTheTokenLimits(t *testing.T) {
+	many := validManifest()
+	many.BridgeToken = true
+	many.TaskTypes = nil
+	for i := 0; i < program.BridgeTokenTaskTypesMax+1; i++ {
+		many.TaskTypes = append(many.TaskTypes, fmt.Sprintf("toy.t%02d", i))
+	}
+	long := validManifest()
+	long.BridgeToken = true
+	long.TaskTypes = []string{"toy." + strings.Repeat("a", program.BridgeTokenTaskTypeBytesMax)}
+	for name, m := range map[string]program.Manifest{"count": many, "length": long} {
+		err := program.Validate(m)
+		if err == nil || !strings.Contains(err.Error(), "bridge token") {
+			t.Errorf("%s: Validate = %v, want a bridge token limit error", name, err)
+		}
+		m.BridgeToken = false
+		if strings.Contains(fmt.Sprint(program.Validate(m)), "bridge token") {
+			t.Errorf("%s: without BridgeToken the limit must not apply", name)
+		}
 	}
 }
 
