@@ -236,8 +236,8 @@ func (db *DB) createView(name string) error {
 }
 
 // lockToDataDir allows file access under the data dir (and the lake dir)
-// only, plus the CA bundle TLS s3 needs, turns all other access off, and locks the configuration so no
-// query can change it back.
+// only, plus the CA bundle TLS s3 needs, turns all other access off,
+// and locks the configuration so no query can change it back.
 func (db *DB) lockToDataDir() error {
 	allowed := sqlString(db.dataDir + "/")
 	if db.lakeDir != "" {
