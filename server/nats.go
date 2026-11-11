@@ -108,8 +108,11 @@ func natsOptions(cfg Config) (*natsserver.Options, error) {
 		JetStreamMaxMemory: cfg.MaxMemoryBytes,
 		MaxPayload:         cfg.MaxPayload,
 		JetStreamDomain:    cfg.JetStreamDomain,
-		NoLog:              true,
-		NoSigs:             true,
+		// NoLog keeps nats-server from building its own stderr logger,
+		// including on a ReloadOptions that touches logging options;
+		// tryStartNATS installs natsLogAdapter, which forwards into slog.
+		NoLog:  true,
+		NoSigs: true,
 	}
 	// The operator's login (when set), the built-in anonymous user and,
 	// once programs register, their NKey users. The WebSocket listener
@@ -326,6 +329,10 @@ func tryStartNATS(opts *natsserver.Options) (*natsserver.Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create NATS server: %w", err)
 	}
+	// Installed before Start so startup errors are kept too. Debug and
+	// trace stay off whatever opts say: they log every protocol message.
+	logAdapter := newNATSLogAdapter(slog.Default)
+	ns.SetLoggerV2(logAdapter, false, false, false)
 
 	ns.Start()
 
@@ -333,6 +340,7 @@ func tryStartNATS(opts *natsserver.Options) (*natsserver.Server, error) {
 		ns.Shutdown()
 		return nil, fmt.Errorf("NATS server not ready after %v", natsReadyTimeout)
 	}
+	logAdapter.markReady()
 	rememberOptions(ns, opts)
 
 	return ns, nil

@@ -2,21 +2,23 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/danmestas/dagnats/internal/api"
+	natsserver "github.com/nats-io/nats-server/v2/server"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/metric/noop"
 )
 
 const (
 	// defaultDiskFreeMinBytes is the absolute floor of the low-disk
 	// threshold when disk_free_min_bytes is unset (0).
 	defaultDiskFreeMinBytes int64 = 10 << 30
-
-	// diskCheckInterval is how often the data dir's filesystem is probed.
-	diskCheckInterval = 60 * time.Second
 
 	// diskReminderInterval bounds how often a still-low disk is re-logged.
 	diskReminderInterval = 10 * time.Minute
@@ -25,6 +27,37 @@ const (
 	// the same again for compaction, snapshots and raft logs.
 	diskStoreHeadroomFactor = 2
 )
+
+// diskCheckInterval is how often the data dir's filesystem is probed. A
+// variable so integration tests can tick in milliseconds.
+var diskCheckInterval = 60 * time.Second
+
+// ErrJetStreamDisabled is returned by Server.Run when nats-server turned
+// JetStream off on this server (it does so on a storage failure, such as
+// a full disk, and never turns it back on) and the disk has since
+// recovered. Only a process restart brings JetStream back, so the caller
+// should exit non-zero and let its supervisor restart it (#999).
+var ErrJetStreamDisabled = errors.New(
+	"jetstream was disabled on this server, likely by a full disk; " +
+		"restart the process to bring it back")
+
+// shouldRestartForJetStream decides whether a server should exit so its
+// supervisor restarts it: JetStream is configured but off, and the disk
+// is back above the low-space threshold. While the disk is still low a
+// restart would only crash-loop, so the server waits.
+func shouldRestartForJetStream(jsConfigured, jsEnabled, diskOK bool) bool {
+	return jsConfigured && !jsEnabled && diskOK
+}
+
+// jetStreamWatch is the monitor's view of local JetStream: whether it is
+// configured, a probe for whether it is still on, and the callback that
+// asks the server to exit.
+type jetStreamWatch struct {
+	configured bool
+	enabled    func() bool
+	onLost     func()
+	disabled   metric.Int64Counter
+}
 
 // diskThresholdBytes is the free-space level below which the data dir's
 // filesystem counts as low: the larger of the configured floor (default
@@ -47,6 +80,8 @@ type diskMonitor struct {
 	path           string
 	thresholdBytes int64
 	log            *slog.Logger
+	interval       time.Duration
+	jetStream      *jetStreamWatch
 
 	mu           sync.Mutex
 	status       api.DiskStatus
@@ -67,7 +102,60 @@ func newDiskMonitor(
 		path:           path,
 		thresholdBytes: diskThresholdBytes(floorBytes, maxStoreBytes),
 		log:            log,
+		interval:       diskCheckInterval,
 	}
+}
+
+// watchJetStream makes each successful probe also check local JetStream;
+// see checkJetStream. Call before run.
+func (m *diskMonitor) watchJetStream(configured bool, enabled func() bool, onLost func()) {
+	if enabled == nil || onLost == nil {
+		panic("diskMonitor.watchJetStream: enabled and onLost must not be nil")
+	}
+	if m.jetStream != nil {
+		panic("diskMonitor.watchJetStream: already watching")
+	}
+	disabled, err := otel.Meter("dagnats/server").Int64Counter(
+		"server.jetstream_disabled_checks",
+		metric.WithDescription("Disk checks that found local JetStream "+
+			"configured but disabled"))
+	if err != nil {
+		// Losing the counter must not stop the restart path.
+		m.log.Warn("jetstream_disabled_checks counter not registered", "error", err)
+		disabled = noop.Int64Counter{}
+	}
+	m.jetStream = &jetStreamWatch{
+		configured: configured, enabled: enabled, onLost: onLost, disabled: disabled,
+	}
+}
+
+// checkJetStream logs at ERROR on every check that finds JetStream
+// configured but off, and asks the server to exit once the disk is OK.
+// It never re-enables JetStream in process: on a clustered server a
+// restart is the path nats-server supports for rejoining the meta group.
+func (m *diskMonitor) checkJetStream(diskOK bool) {
+	if m.jetStream == nil {
+		return
+	}
+	watch := m.jetStream
+	if watch.enabled == nil || watch.onLost == nil {
+		panic("diskMonitor.checkJetStream: watch is incomplete")
+	}
+	enabled := watch.enabled()
+	if !watch.configured || enabled {
+		return
+	}
+	watch.disabled.Add(context.Background(), 1)
+	if !shouldRestartForJetStream(watch.configured, enabled, diskOK) {
+		m.log.Error("JetStream was disabled on this server, likely by a full "+
+			"disk; waiting for disk space before exiting so the supervisor "+
+			"restarts it", "path", m.path, "threshold_bytes", m.thresholdBytes)
+		return
+	}
+	m.log.Error("JetStream was disabled on this server, likely by a full "+
+		"disk; exiting so the supervisor restarts it",
+		"path", m.path, "threshold_bytes", m.thresholdBytes)
+	watch.onLost()
 }
 
 // Status returns the most recent probe result.
@@ -90,6 +178,7 @@ func (m *diskMonitor) check(now time.Time) {
 		panic(fmt.Sprintf("diskMonitor.check: negative free bytes %d", free))
 	}
 	low := free < m.thresholdBytes
+	m.checkJetStream(!low)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -109,10 +198,10 @@ func (m *diskMonitor) check(now time.Time) {
 	m.low = low
 }
 
-// run checks every diskCheckInterval until ctx ends; the caller does the
+// run checks every m.interval until ctx ends; the caller does the
 // startup check so the first health report already has a reading.
 func (m *diskMonitor) run(ctx context.Context) {
-	ticker := time.NewTicker(diskCheckInterval)
+	ticker := time.NewTicker(m.interval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -137,9 +226,25 @@ func (s *Server) startDiskMonitor() {
 		s.cfg.DataDir, s.cfg.DiskFreeMinBytes, s.cfg.MaxStoreBytes,
 		slog.Default(),
 	)
+	opts, ok := liveOptions.Load(s.ns)
+	if !ok {
+		panic("startDiskMonitor: embedded server options not remembered")
+	}
+	monitor.watchJetStream(opts.(*natsserver.Options).JetStream,
+		s.ns.JetStreamEnabled, s.signalJetStreamLost)
 	monitor.check(time.Now())
 	s.clusterReporter.SetDiskStatus(monitor.Status)
 	ctx, stop := context.WithCancel(context.Background())
-	s.diskMonitorStop = stop
-	go monitor.run(ctx)
+	done := make(chan struct{})
+	// Stop waits for the goroutine so no check runs after shutdown: a
+	// late check could ask a stopped server to exit, or read a disk probe
+	// a test has already swapped back.
+	s.diskMonitorStop = func() {
+		stop()
+		<-done
+	}
+	go func() {
+		defer close(done)
+		monitor.run(ctx)
+	}()
 }

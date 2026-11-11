@@ -170,7 +170,11 @@ type Config struct {
 	MaxStoreBytes int64 `json:"max_store_bytes"`
 	// DiskFreeMinBytes is the absolute floor of the low-disk warning on the
 	// data dir's filesystem; the threshold is max(floor, 2 x MaxStoreBytes).
-	// 0 means defaultDiskFreeMinBytes.
+	// 0 means defaultDiskFreeMinBytes. It also gates recovery from a
+	// JetStream that nats-server turned off on a storage failure: once
+	// free space is back at or above the threshold, Run shuts down and
+	// returns ErrJetStreamDisabled, and the embedder decides whether to
+	// exit (dagnats serve exits non-zero for its supervisor to restart).
 	DiskFreeMinBytes int64 `json:"disk_free_min_bytes"`
 	// ConnMsgsWarnPerSec is the per-client-connection inbound message rate
 	// that, sustained for ~5 minutes, logs an ERROR and marks

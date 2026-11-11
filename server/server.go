@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -82,12 +83,17 @@ type Server struct {
 	queueSnapshotStop  func()
 	ready              atomic.Bool
 	stopCh             chan struct{}
-	workerShims        []*WorkerShim
-	workers            []*worker.Worker
-	running            atomic.Bool
-	tempCreds          string              // inline creds temp file; cleaned on shutdown
-	cfgWatcher         *configfile.Watcher // hot-reload watcher (#358)
-	cfgWatcherCancel   context.CancelFunc  // cleanup paired with cfgWatcher
+	// jetStreamLost closes when the disk monitor finds JetStream turned
+	// off by nats-server with the disk recovered; Run then shuts down and
+	// returns ErrJetStreamDisabled.
+	jetStreamLost     chan struct{}
+	jetStreamLostOnce sync.Once
+	workerShims       []*WorkerShim
+	workers           []*worker.Worker
+	running           atomic.Bool
+	tempCreds         string              // inline creds temp file; cleaned on shutdown
+	cfgWatcher        *configfile.Watcher // hot-reload watcher (#358)
+	cfgWatcherCancel  context.CancelFunc  // cleanup paired with cfgWatcher
 	// grantHolder holds the hot-reloadable capability-grant policy (#380),
 	// shared with the orchestrator (enqueue-time capability strip) and the
 	// api service (promotion authorization). The configfile reload closure
@@ -110,13 +116,21 @@ func New(cfg Config) *Server {
 		cfg.MaxStoreBytes = deriveMaxStoreBytes(cfg.DataDir)
 	}
 	return &Server{
-		cfg:    cfg,
-		stopCh: make(chan struct{}),
+		cfg:           cfg,
+		stopCh:        make(chan struct{}),
+		jetStreamLost: make(chan struct{}),
 	}
 }
 
 // Run starts all server components, serves HTTP, and blocks until shutdown.
 // Returns nil on clean shutdown, error otherwise.
+//
+// If nats-server turns JetStream off on this server (it does so on a
+// storage failure such as a full disk, and never turns it back on), Run
+// waits until the disk is back above the low-space threshold, shuts the
+// server down and returns ErrJetStreamDisabled (test with errors.Is). Run
+// never exits the process: `dagnats serve` exits non-zero so its
+// supervisor restarts it, and an embedder decides for itself.
 func (s *Server) Run() error {
 	if s == nil {
 		panic("Run: s is nil")
@@ -781,8 +795,9 @@ func (s *Server) waitAndShutdown(httpErrCh <-chan error) error {
 		panic("waitAndShutdown: httpErrCh is nil")
 	}
 
-	// A nil channel never fires: with IgnoreSignals only Stop or an HTTP
-	// error ends Run, so the embedding host owns the shutdown order.
+	// A nil channel never fires: with IgnoreSignals only Stop, an HTTP
+	// error or a lost JetStream ends Run, so the embedding host owns the
+	// shutdown order.
 	var sigCh chan os.Signal
 	if !s.cfg.IgnoreSignals {
 		sigCh = make(chan os.Signal, 1)
@@ -796,6 +811,8 @@ func (s *Server) waitAndShutdown(httpErrCh <-chan error) error {
 		// Clean shutdown requested
 	case <-s.stopCh:
 		// Programmatic shutdown
+	case <-s.jetStreamLost:
+		shutdownErr = ErrJetStreamDisabled
 	case err := <-httpErrCh:
 		if err != nil {
 			shutdownErr = fmt.Errorf("HTTP server error: %w", err)
@@ -824,6 +841,18 @@ func (s *Server) Stop() {
 	default:
 		close(s.stopCh)
 	}
+}
+
+// signalJetStreamLost asks Run to shut down and return
+// ErrJetStreamDisabled. Safe to call from every disk check.
+func (s *Server) signalJetStreamLost() {
+	if s == nil {
+		panic("signalJetStreamLost: s is nil")
+	}
+	if s.jetStreamLost == nil {
+		panic("signalJetStreamLost: server not built with New")
+	}
+	s.jetStreamLostOnce.Do(func() { close(s.jetStreamLost) })
 }
 
 // shutdown orchestrates graceful shutdown of all components.
