@@ -69,12 +69,14 @@ const (
 	subscriberBuffer = 256
 )
 
-// ringHandler is the concrete Handler. It is goroutine-safe; every
-// access to records or subs goes through mu. The monotonic seq is
-// useful for tests asserting eviction order and for future SSE
-// resume-by-seq protocols — not exposed on the interface yet.
-type ringHandler struct {
-	inner       slog.Handler
+// ring is the state every handler derived from one New shares: the
+// retained records, the live subscribers and the lock over both.
+// Handlers derived with WithAttrs/WithGroup point at the same ring, so
+// records logged through logger.With(...) land in the buffer the console
+// reads, and nothing copies this state outside its lock (#1002). The
+// monotonic seq is useful for tests asserting eviction order and for
+// future SSE resume-by-seq protocols — not exposed on the interface yet.
+type ring struct {
 	capEntries  int
 	maxAge      time.Duration
 	now         func() time.Time
@@ -83,6 +85,14 @@ type ringHandler struct {
 	seq         uint64
 	subscribers map[uint64]chan slog.Record
 	nextSubID   uint64
+}
+
+// ringHandler is the concrete Handler: an inner slog.Handler (carrying
+// this handler's attrs and groups) plus the shared ring. It is
+// goroutine-safe; every access to the ring goes through ring.mu.
+type ringHandler struct {
+	inner slog.Handler
+	r     *ring
 }
 
 // Options tunes ring construction. Zero values fall back to defaults.
@@ -132,12 +142,14 @@ func NewWithOptions(inner slog.Handler, opts Options) Handler {
 		nowFn = time.Now
 	}
 	return &ringHandler{
-		inner:       inner,
-		capEntries:  cap,
-		maxAge:      age,
-		now:         nowFn,
-		records:     make([]slog.Record, 0, cap),
-		subscribers: make(map[uint64]chan slog.Record),
+		inner: inner,
+		r: &ring{
+			capEntries:  cap,
+			maxAge:      age,
+			now:         nowFn,
+			records:     make([]slog.Record, 0, cap),
+			subscribers: make(map[uint64]chan slog.Record),
+		},
 	}
 }
 
@@ -166,28 +178,22 @@ func (h *ringHandler) Handle(ctx context.Context, rec slog.Record) error {
 		panic("ringHandler.Handle: inner handler is nil")
 	}
 	innerErr := h.inner.Handle(ctx, rec)
-	h.append(rec)
+	h.r.append(rec)
 	return innerErr
 }
 
-// WithAttrs delegates to the inner handler and wraps the result so
-// the ring still receives every record. Subscribers carry over — they
-// are bound to the ring instance, not to the slog.Handler returned
-// here.
+// WithAttrs delegates to the inner handler and shares the ring, so the
+// root's Snapshot and subscribers see records logged through the
+// derived handler. Only inner differs; the ring pointer is shared, so no
+// ring state is copied and no lock is needed.
 func (h *ringHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	if h == nil {
 		panic("ringHandler.WithAttrs: receiver is nil")
 	}
-	return &ringHandler{
-		inner:       h.inner.WithAttrs(attrs),
-		capEntries:  h.capEntries,
-		maxAge:      h.maxAge,
-		now:         h.now,
-		records:     h.records,
-		seq:         h.seq,
-		subscribers: h.subscribers,
-		nextSubID:   h.nextSubID,
+	if h.r == nil {
+		panic("ringHandler.WithAttrs: ring is nil")
 	}
+	return &ringHandler{inner: h.inner.WithAttrs(attrs), r: h.r}
 }
 
 // WithGroup mirrors WithAttrs — see the note there. Both are common
@@ -197,20 +203,14 @@ func (h *ringHandler) WithGroup(name string) slog.Handler {
 	if h == nil {
 		panic("ringHandler.WithGroup: receiver is nil")
 	}
+	if h.r == nil {
+		panic("ringHandler.WithGroup: ring is nil")
+	}
 	if name == "" {
 		// slog.WithGroup("") is a no-op per the stdlib contract.
 		return h
 	}
-	return &ringHandler{
-		inner:       h.inner.WithGroup(name),
-		capEntries:  h.capEntries,
-		maxAge:      h.maxAge,
-		now:         h.now,
-		records:     h.records,
-		seq:         h.seq,
-		subscribers: h.subscribers,
-		nextSubID:   h.nextSubID,
-	}
+	return &ringHandler{inner: h.inner.WithGroup(name), r: h.r}
 }
 
 // append takes the lock, prunes by age, drops the oldest if cap is
@@ -218,20 +218,20 @@ func (h *ringHandler) WithGroup(name string) slog.Handler {
 // callers may mutate Record), bumps seq, and fans out. Fanout is
 // non-blocking — a full subscriber buffer drops the record for that
 // subscriber only.
-func (h *ringHandler) append(rec slog.Record) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.pruneByAgeLocked()
-	if len(h.records) >= h.capEntries {
+func (r *ring) append(rec slog.Record) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pruneByAgeLocked()
+	if len(r.records) >= r.capEntries {
 		// Drop oldest. Shifting is acceptable at this scale — 10k
 		// slog.Record values is tiny compared with the inner handler's
 		// per-record formatting cost. A ring-buffer index would be a
 		// micro-optimisation that complicates Snapshot ordering.
-		h.records = h.records[1:]
+		r.records = r.records[1:]
 	}
-	h.records = append(h.records, rec.Clone())
-	h.seq++
-	for id, ch := range h.subscribers {
+	r.records = append(r.records, rec.Clone())
+	r.seq++
+	for id, ch := range r.subscribers {
 		select {
 		case ch <- rec.Clone():
 		default:
@@ -246,20 +246,20 @@ func (h *ringHandler) append(rec slog.Record) {
 }
 
 // pruneByAgeLocked removes records older than now() - maxAge. Called
-// from append and Snapshot. Callers must hold h.mu.
-func (h *ringHandler) pruneByAgeLocked() {
-	if h.maxAge <= 0 {
+// from append and Snapshot. Callers must hold r.mu.
+func (r *ring) pruneByAgeLocked() {
+	if r.maxAge <= 0 {
 		return
 	}
-	cutoff := h.now().Add(-h.maxAge)
+	cutoff := r.now().Add(-r.maxAge)
 	// records are oldest-first, so we trim the prefix that is older
 	// than cutoff. Bounded loop — at most len(records) iterations.
 	drop := 0
-	for drop < len(h.records) && h.records[drop].Time.Before(cutoff) {
+	for drop < len(r.records) && r.records[drop].Time.Before(cutoff) {
 		drop++
 	}
 	if drop > 0 {
-		h.records = h.records[drop:]
+		r.records = r.records[drop:]
 	}
 }
 
@@ -271,10 +271,11 @@ func (h *ringHandler) Clear() {
 	if h == nil {
 		panic("ringHandler.Clear: receiver is nil")
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.records = h.records[:0]
-	for id, ch := range h.subscribers {
+	r := h.r
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.records = r.records[:0]
+	for id, ch := range r.subscribers {
 		select {
 		case ch <- slog.Record{}:
 		default:
@@ -292,12 +293,13 @@ func (h *ringHandler) Snapshot() []slog.Record {
 	if h == nil {
 		panic("ringHandler.Snapshot: receiver is nil")
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.pruneByAgeLocked()
-	out := make([]slog.Record, len(h.records))
-	for i, r := range h.records {
-		out[i] = r.Clone()
+	r := h.r
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pruneByAgeLocked()
+	out := make([]slog.Record, len(r.records))
+	for i, rec := range r.records {
+		out[i] = rec.Clone()
 	}
 	return out
 }
@@ -319,20 +321,21 @@ func (h *ringHandler) Subscribe(
 		panic("ringHandler.Subscribe: ctx is nil")
 	}
 	ch := make(chan slog.Record, subscriberBuffer)
-	h.mu.Lock()
-	id := h.nextSubID
-	h.nextSubID++
-	h.subscribers[id] = ch
-	h.mu.Unlock()
+	r := h.r
+	r.mu.Lock()
+	id := r.nextSubID
+	r.nextSubID++
+	r.subscribers[id] = ch
+	r.mu.Unlock()
 	var once sync.Once
 	cleanup := func() {
 		once.Do(func() {
-			h.mu.Lock()
-			if existing, ok := h.subscribers[id]; ok && existing == ch {
-				delete(h.subscribers, id)
+			r.mu.Lock()
+			if existing, ok := r.subscribers[id]; ok && existing == ch {
+				delete(r.subscribers, id)
 				close(ch)
 			}
-			h.mu.Unlock()
+			r.mu.Unlock()
 		})
 	}
 	go func() {
