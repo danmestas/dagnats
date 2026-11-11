@@ -781,8 +781,14 @@ func (s *Server) waitAndShutdown(httpErrCh <-chan error) error {
 		panic("waitAndShutdown: httpErrCh is nil")
 	}
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	// A nil channel never fires: with IgnoreSignals only Stop or an HTTP
+	// error ends Run, so the embedding host owns the shutdown order.
+	var sigCh chan os.Signal
+	if !s.cfg.IgnoreSignals {
+		sigCh = make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		defer signal.Stop(sigCh)
+	}
 
 	var shutdownErr error
 	select {

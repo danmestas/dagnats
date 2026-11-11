@@ -77,7 +77,7 @@ func PrintDryRun(w io.Writer, rc ResolvedConfig) bool
 PrintDryRun writes the dry\-run report to w. Returns true if all validations passed.
 
 <a name="Config"></a>
-## type [Config](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L81-L292>)
+## type [Config](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L81-L301>)
 
 Config holds all server configuration.
 
@@ -287,12 +287,21 @@ type Config struct {
     // CLI's --die-with-parent flag sets it; not persisted to
     // dagnats.yaml — it's an invocation mode, not stored config.
     DieWithParent bool `json:"-"`
+
+    // IgnoreSignals stops Run from handling SIGINT and SIGTERM (#998). A
+    // host that embeds the Server and runs programs in the same process
+    // needs to own shutdown order: stop its programs first, then call Stop.
+    // When Run also reacts to the signal, the engine drains while the
+    // programs are still stopping. Default off, so `dagnats serve` and
+    // existing embedders keep shutting down on a signal. Not persisted:
+    // it's an embedding mode, not stored config.
+    IgnoreSignals bool `json:"-"`
     // contains filtered or unexported fields
 }
 ```
 
 <a name="ConfigFromEnv"></a>
-### func [ConfigFromEnv](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L367>)
+### func [ConfigFromEnv](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L376>)
 
 ```go
 func ConfigFromEnv() Config
@@ -301,7 +310,7 @@ func ConfigFromEnv() Config
 ConfigFromEnv loads config from defaults, config file, then env vars. Config file is dagnats.yaml in CWD. Missing file is not an error. Panics if DataDir is empty after resolution. Exits \(via log.Fatalf\) if MaxStoreBytes still resolves to \<= 0 \(e.g. the disk backing DataDir has no space left\) \-\- see ConfigWithPath.
 
 <a name="ConfigWithPath"></a>
-### func [ConfigWithPath](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L384-L386>)
+### func [ConfigWithPath](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L393-L395>)
 
 ```go
 func ConfigWithPath(configPath string) (Config, string, error)
@@ -310,7 +319,7 @@ func ConfigWithPath(configPath string) (Config, string, error)
 ConfigWithPath loads config using an explicit path or standard search. Returns the resolved config and the path of the file that was loaded \(empty string if no file was found\). When configPath is non\-empty, the file must exist or an error is returned. Panics if DataDir is empty after resolution. Returns an error if MaxStoreBytes still resolves to \<= 0 after the disk\-derived default is applied \(e.g. the disk backing DataDir has no space left\) \-\- that is operator/host state, not a programmer error, so it is reported rather than panicked on. See deriveMaxStoreBytes \(\#687\).
 
 <a name="DefaultConfig"></a>
-### func [DefaultConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L302>)
+### func [DefaultConfig](<https://github.com/danmestas/dagnats/blob/main/server/config.go#L311>)
 
 ```go
 func DefaultConfig() Config
@@ -446,7 +455,7 @@ func (s *Server) Run() error
 Run starts all server components, serves HTTP, and blocks until shutdown. Returns nil on clean shutdown, error otherwise.
 
 <a name="Server.Stop"></a>
-### func \(\*Server\) [Stop](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L807>)
+### func \(\*Server\) [Stop](<https://github.com/danmestas/dagnats/blob/main/server/server.go#L813>)
 
 ```go
 func (s *Server) Stop()

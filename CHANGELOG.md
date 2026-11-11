@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`server.Config.IgnoreSignals` lets an embedding host own shutdown order (#998).** `Server.Run` handles SIGINT and SIGTERM itself, so a binary that embeds the server and runs programs in the same process (notify compiled into an app, for example) had the engine draining while its programs were still stopping. With `IgnoreSignals` set, `Run` ends only on `Stop()` or an HTTP error, so the host stops its programs first and then the server. Default off: `dagnats serve` and existing embedders still shut down on a signal. `Run` also releases its signal channel on return.
+
 ## [0.0.62] - 2026-11-09
 
 ### Fixed

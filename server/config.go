@@ -289,6 +289,15 @@ type Config struct {
 	// CLI's --die-with-parent flag sets it; not persisted to
 	// dagnats.yaml — it's an invocation mode, not stored config.
 	DieWithParent bool `json:"-"`
+
+	// IgnoreSignals stops Run from handling SIGINT and SIGTERM (#998). A
+	// host that embeds the Server and runs programs in the same process
+	// needs to own shutdown order: stop its programs first, then call Stop.
+	// When Run also reacts to the signal, the engine drains while the
+	// programs are still stopping. Default off, so `dagnats serve` and
+	// existing embedders keep shutting down on a signal. Not persisted:
+	// it's an embedding mode, not stored config.
+	IgnoreSignals bool `json:"-"`
 }
 
 // DefaultConfig returns platform-appropriate defaults.
