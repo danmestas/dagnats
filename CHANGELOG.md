@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.64] - 2026-11-11
+
 ### Fixed
 
 - **Loggers derived with `slog.With` share the console's log ring, without a data race (#1002).** The log ring's `WithAttrs` and `WithGroup` copied the ring's records, subscribers and counters into a new handler without holding its lock, while `Handle` changed them under it. A derived logger also wrote into its own diverging copy, so records logged through `logger.With(...)` never reached the console's Logs page or its live tail. v0.0.63's nats-server log forwarding made it visible: `program.Run`'s `slog.With` raced nats-server's shutdown logging under `-race`. The ring's state now lives in one shared struct that every derived handler points to, so derived handlers copy only their own attrs and groups.
