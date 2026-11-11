@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`server.Config.IgnoreSignals` lets an embedding host own shutdown order (#998).** `Server.Run` handles SIGINT and SIGTERM itself, so a binary that embeds the server and runs programs in the same process (notify compiled into an app, for example) had the engine draining while its programs were still stopping. With `IgnoreSignals` set, `Run` ends only on `Stop()` or an HTTP error, so the host stops its programs first and then the server. Default off: `dagnats serve` and existing embedders still shut down on a signal. `Run` also releases its signal channel on return.
 
+### Fixed
+
+- **A server whose JetStream was turned off by a full disk now exits once the disk recovers, so its supervisor restarts it (#999).** On a storage failure nats-server logs `JetStream out of resources, will be DISABLED`, shuts JetStream down on that server and never turns it back on; the node stayed in the cluster without JetStream until someone restarted it, and two such nodes cost a region its meta quorum for 10 hours. The disk monitor now checks, on every tick, whether JetStream is configured but off. While the disk is still below the low-space threshold it logs at ERROR and waits, so a full disk does not crash-loop; once the disk is OK it logs `exiting so the supervisor restarts it`, shuts the server down, and `Server.Run` returns `server.ErrJetStreamDisabled`, which `dagnats serve` turns into exit status 1. Embedders get the error from `Run` and decide. Each check that finds JetStream off counts on the `server.jetstream_disabled_checks` metric. JetStream is never re-enabled in process: on a cluster a restart is the supported way back into the meta group.
+
+- **nats-server's own log lines now reach dagnats's log.** The embedded server ran with logging off, so the line naming the cause of #999 never appeared. Its Warn, Error and Fatal lines now go to `slog` with `component=nats-server` (Fatal at ERROR with `fatal=true`, without exiting); Notice lines go out at INFO once the server is ready (route, leaf and leader changes) and at DEBUG before then, which keeps nats-server's startup banner out of the default log. Debug and Trace are dropped.
+
 ## [0.0.62] - 2026-11-09
 
 ### Fixed
