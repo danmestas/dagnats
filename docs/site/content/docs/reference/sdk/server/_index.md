@@ -52,8 +52,10 @@ The server has more settings (cluster, WebSocket, limits). See the configuration
 
 1. `New(cfg)` builds the server object
 2. Optionally register embedded workers with `EmbeddedWorker(srv)`
-3. `Run()` starts embedded NATS, the engine, API, bridge, triggers and your workers, then blocks until SIGINT/SIGTERM
+3. `Run()` starts embedded NATS, the engine, API, bridge, triggers and your workers, then blocks until SIGINT/SIGTERM or `Stop()`
 4. Graceful shutdown stops all components
+
+A host that runs programs (`program.Run`) in the same process should set `cfg.IgnoreSignals = true` and own the order: on its signal, stop its programs first, then call `srv.Stop()`. Otherwise `Run` reacts to the same signal and the engine drains while the programs are still stopping.
 
 ## Usage
 
