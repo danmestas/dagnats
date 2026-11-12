@@ -18,6 +18,7 @@ import (
 
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/protocol"
+	"github.com/nats-io/nats.go/jetstream"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
@@ -140,7 +141,8 @@ func TestCancelAfterDequeueCancelsRunningRun(t *testing.T) {
 }
 
 // A dequeue whose scan saw the run pending but whose load finds it
-// already cancelled leaves it alone: no slot, no dispatch.
+// already cancelled leaves it alone (no slot, no dispatch) and asks
+// for the next queued run, since its slot is still free.
 func TestDequeueSkipsRunCancelledBeforeLoad(t *testing.T) {
 	f := newLimitedFixture(t)
 	f.startLimited(t, "holder", dag.RunStatusRunning)
@@ -148,12 +150,12 @@ func TestDequeueSkipsRunCancelledBeforeLoad(t *testing.T) {
 	f.cancel(t, "stale")
 	f.finishStep(t, "holder")
 
-	lost, err := f.orch.transitionPendingToRunning(context.Background(), "stale")
+	tryNext, err := f.orch.transitionPendingToRunning(context.Background(), "stale")
 	if err != nil {
 		t.Fatalf("transitionPendingToRunning: %v", err)
 	}
-	if lost {
-		t.Fatal("a run that was not pending at load reported as lost after acquiring")
+	if !tryNext {
+		t.Fatal("a skipped stale run stopped the queue pass, want the next run tried")
 	}
 	if got := f.runStatus(t, "stale"); got != dag.RunStatusCancelled {
 		t.Fatalf("stale run = %s, want cancelled", got)
@@ -180,15 +182,15 @@ func TestLosingDequeueKeepsTheWinnersSlot(t *testing.T) {
 	}
 	f.orch.afterDequeueLoad = func(ctx context.Context, runID string) {
 		f.orch.afterDequeueLoad = nil
-		lost, err := f.orch.transitionPendingToRunning(ctx, runID)
-		if err != nil || lost {
-			t.Errorf("winning dequeue: lost=%v err=%v, want it to win", lost, err)
+		tryNext, err := f.orch.transitionPendingToRunning(ctx, runID)
+		if err != nil || tryNext {
+			t.Errorf("winning dequeue: tryNext=%v err=%v, want it to win", tryNext, err)
 		}
 	}
 
-	lost, err := f.orch.transitionPendingToRunning(ctx, "contested")
-	if err != nil || lost {
-		t.Fatalf("losing dequeue: lost=%v err=%v, want neither", lost, err)
+	tryNext, err := f.orch.transitionPendingToRunning(ctx, "contested")
+	if err != nil || !tryNext {
+		t.Fatalf("losing dequeue: tryNext=%v err=%v, want the next run tried", tryNext, err)
 	}
 	if got := f.runStatus(t, "contested"); got != dag.RunStatusRunning {
 		t.Fatalf("contested run = %s, want running", got)
@@ -196,6 +198,95 @@ func TestLosingDequeueKeepsTheWinnersSlot(t *testing.T) {
 	f.assertSlots(t, "contested")
 	if got := f.taskCount(t); got != 2 {
 		t.Fatalf("TASK_QUEUES holds %d tasks, want 2: one dispatch per run", got)
+	}
+}
+
+// Limit 2 on two engines: r1 and r2 finish on different engines and
+// both scans pick p1. The engine that loses p1 to the other's dequeue
+// goes on to p2, so p2 starts instead of waiting for p1 to finish.
+func TestLostDequeueKeepsDrainingAcrossEngines(t *testing.T) {
+	f := newLimitedFixtureMax(t, 2)
+	other := NewOrchestrator(f.nc)
+	for _, runID := range []string{"r1", "r2"} {
+		f.startLimited(t, runID, dag.RunStatusRunning)
+	}
+	for _, runID := range []string{"p1", "p2"} {
+		f.startLimited(t, runID, dag.RunStatusPending)
+	}
+	f.orch.afterDequeueLoad = func(ctx context.Context, runID string) {
+		f.orch.afterDequeueLoad = nil
+		if runID != "p1" {
+			t.Errorf("first dequeue loaded %s, want p1", runID)
+		}
+		done := protocol.NewStepEvent(protocol.EventStepCompleted, "r2", "a", []byte(`"done"`))
+		publishEvent(t, f.js, done)
+		if err := other.dispatchEvent(ctx, done); err != nil {
+			t.Errorf("other engine finishing r2: %v", err)
+		}
+	}
+
+	f.finishStep(t, "r1")
+	for _, runID := range []string{"p1", "p2"} {
+		if got := f.runStatus(t, runID); got != dag.RunStatusRunning {
+			t.Fatalf("run %s = %s, want running", runID, got)
+		}
+	}
+	got := f.slotHolders(t)
+	slices.Sort(got)
+	if !slices.Equal(got, []string{"p1", "p2"}) {
+		t.Fatalf("slot holders = %v, want [p1 p2]", got)
+	}
+}
+
+// errInjectedRelease is the slot-set failure failingSlotKV injects.
+var errInjectedRelease = errors.New("injected slot-set failure")
+
+// failingSlotKV fails every read of the slot set, so a release fails.
+type failingSlotKV struct{ jetstream.KeyValue }
+
+func (failingSlotKV) Get(context.Context, string) (jetstream.KeyValueEntry, error) {
+	return nil, errInjectedRelease
+}
+
+// A dequeue that lost its run to a cancel and cannot give the slot back
+// records the release as owed on the cancelled run, and the
+// reconciler's pass then frees the slot.
+func TestLostDequeueFailedReleaseIsOwed(t *testing.T) {
+	f := newLimitedFixture(t)
+	ctx := context.Background()
+	cm := f.orch.admission.concurrency
+	f.startLimited(t, "holder", dag.RunStatusRunning)
+	f.startLimited(t, "raced", dag.RunStatusPending)
+	pending, err := f.orch.store.Load(ctx, "raced")
+	if err != nil {
+		t.Fatalf("Load raced: %v", err)
+	}
+	f.cancel(t, "raced")
+	// The losing dequeue's slot, taken after the cancel released.
+	if ok, err := cm.AcquireRun(ctx, f.def.Name, "raced", 2); err != nil || !ok {
+		t.Fatalf("AcquireRun raced: ok=%v err=%v", ok, err)
+	}
+
+	realKV := cm.runKV
+	cm.runKV = failingSlotKV{realKV}
+	_, err = f.orch.releaseLostDequeue(ctx, pending)
+	cm.runKV = realKV
+	if !errors.Is(err, errInjectedRelease) {
+		t.Fatalf("releaseLostDequeue: err=%v, want the injected failure", err)
+	}
+	owed, err := f.orch.store.Load(ctx, "raced")
+	if err != nil || owed.Status != dag.RunStatusCancelled || !owed.ReleasePending {
+		t.Fatalf("raced = %s release_pending=%v err=%v, want cancelled with the release owed",
+			owed.Status, owed.ReleasePending, err)
+	}
+	f.assertSlots(t, "holder", "raced")
+
+	f.orch.reconcileRunningRuns(ctx)
+	f.assertSlots(t, "holder")
+	cleared, err := f.orch.store.Load(ctx, "raced")
+	if err != nil || cleared.ReleasePending {
+		t.Fatalf("raced release_pending=%v err=%v after the reconciler, want cleared",
+			cleared.ReleasePending, err)
 	}
 }
 

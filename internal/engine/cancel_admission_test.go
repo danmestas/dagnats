@@ -25,6 +25,12 @@ import (
 
 func newLimitedFixture(t *testing.T) unstartedFixture {
 	t.Helper()
+	return newLimitedFixtureMax(t, 1)
+}
+
+// newLimitedFixtureMax is newLimitedFixture with maxRuns slots.
+func newLimitedFixtureMax(t *testing.T, maxRuns int) unstartedFixture {
+	t.Helper()
 	_, nc := natstest.StartServer(t)
 	err := natsutil.SetupAll(nc, natsutil.WithKVBuckets(
 		natsutil.KVConfig{Bucket: "concurrency_runs"},
@@ -42,7 +48,7 @@ func newLimitedFixture(t *testing.T) unstartedFixture {
 	}
 	def := dag.WorkflowDef{
 		Name: "limited-wf", Version: "1",
-		Concurrency: &dag.ConcurrencyLimit{MaxRuns: 1},
+		Concurrency: &dag.ConcurrencyLimit{MaxRuns: maxRuns},
 		Steps:       []dag.StepDef{{ID: "a", Task: "limited-task", Type: dag.StepTypeNormal}},
 	}
 	defKV, err := js.KeyValue("workflow_defs")
@@ -51,7 +57,7 @@ func newLimitedFixture(t *testing.T) unstartedFixture {
 	}
 	mustPut(t, defKV, def.Name, mustMarshal(t, def))
 	mustPut(t, defKV, dag.DefVersionKey(def.Name, dag.DefHash(def)), mustMarshal(t, def))
-	f := unstartedFixture{orch: NewOrchestrator(nc), js: js, jsNew: jsNew, def: def}
+	f := unstartedFixture{orch: NewOrchestrator(nc), nc: nc, js: js, jsNew: jsNew, def: def}
 	if f.orch.admission.concurrency == nil {
 		t.Fatal("the orchestrator found no concurrency_runs bucket")
 	}

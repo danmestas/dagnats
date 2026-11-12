@@ -26,6 +26,7 @@ import (
 
 type unstartedFixture struct {
 	orch  *Orchestrator
+	nc    *nats.Conn // set by newLimitedFixtureMax, for a second engine
 	js    nats.JetStreamContext
 	jsNew jetstream.JetStream
 	def   dag.WorkflowDef
