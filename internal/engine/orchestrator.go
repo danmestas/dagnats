@@ -85,6 +85,11 @@ type Orchestrator struct {
 	publisher  *TaskPublisher   // task dispatch pipeline
 	recovery   *RecoveryManager // failure recovery + compensation
 
+	// afterDequeueLoad, nil in production, runs between the dequeue's
+	// load of a queued run and its slot acquisition, so a test can put
+	// a cancel in that window (#1008).
+	afterDequeueLoad func(ctx context.Context, runID string)
+
 	// Pre-allocated metric instruments — created once in constructor.
 	metrics orchMetrics
 
@@ -1877,15 +1882,35 @@ func (o *Orchestrator) startNextPendingRun(
 		panic("startNextPendingRun: store must not be nil")
 	}
 
-	runID, found, err := o.findOldestPendingRun(ctx, workflowID)
-	if err != nil {
-		return err
+	// A dequeue that finds its run already taken (cancelled, or started
+	// by another engine's dequeue) has not used the slot that freed: the
+	// next queued run gets it here, or it idles until a later finish.
+	for attempt := 0; attempt < pendingDequeueAttemptsMax; attempt++ {
+		runID, found, err := o.findOldestPendingRun(ctx, workflowID)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return nil
+		}
+		tryNext, err := o.transitionPendingToRunning(ctx, runID)
+		if err != nil || !tryNext {
+			return err
+		}
 	}
-	if !found {
-		return nil
-	}
-	return o.transitionPendingToRunning(ctx, runID)
+	slog.WarnContext(ctx,
+		"queue pass gave up: every dequeue found its run already taken",
+		"workflow_id", workflowID,
+		"attempts", pendingDequeueAttemptsMax,
+	)
+	return nil
 }
+
+// pendingDequeueAttemptsMax bounds startNextPendingRun's tries after a
+// dequeue finds its run taken. Each one needs another cancel or engine
+// to take a run inside a dequeue's window; past the bound the next
+// completion advances the queue.
+const pendingDequeueAttemptsMax = 4
 
 // findOldestPendingRun finds the oldest pending run for the given workflow
 // among what it can read this tick (#523). It is bounded and best-effort:
@@ -2014,40 +2039,114 @@ func (o *Orchestrator) logPendingScanDegraded(
 }
 
 // transitionPendingToRunning loads a pending run, acquires concurrency,
-// transitions to Running, and enqueues entry steps.
+// transitions to Running, and enqueues entry steps. It reports tryNext
+// when the run was already taken (cancelled, or started by another
+// dequeue): this dequeue used no slot, so the caller tries the next.
+//
+// The Running save is revision-checked at the revision loaded, and a
+// cancel of a Pending run is too (#1008), so exactly one of them wins
+// the run on any engine. The slot is taken before that save: the save
+// is what makes the run cancellable as Running, so a slot taken after
+// it could land after that cancel had already released. A dequeue
+// that loses to a cancel therefore holds a slot for a terminal run and
+// gives it back itself. It must not when it lost to another dequeue:
+// slots are keyed by run, so that slot is the winner's.
 func (o *Orchestrator) transitionPendingToRunning(
 	ctx context.Context, runID string,
-) error {
+) (bool, error) {
+	if ctx == nil {
+		panic("transitionPendingToRunning: ctx must not be nil")
+	}
 	if runID == "" {
 		panic("transitionPendingToRunning: runID must not be empty")
 	}
 	wfDef, run, err := o.loadRunAndDef(ctx, runID)
 	if err != nil {
-		return fmt.Errorf("load pending run %q: %w", runID, err)
+		return false, fmt.Errorf("load pending run %q: %w", runID, err)
 	}
-
+	if run.Status != dag.RunStatusPending {
+		return true, nil // the scan was stale: started or cancelled since
+	}
+	if o.afterDequeueLoad != nil {
+		o.afterDequeueLoad(ctx, runID)
+	}
 	if wfDef.Concurrency != nil {
 		acquired, err := o.admission.AcquireRun(
 			ctx, wfDef.Name, run.RunID, wfDef.Concurrency.MaxRuns,
 		)
 		if err != nil {
-			return fmt.Errorf("acquire for pending run: %w", err)
+			return false, fmt.Errorf("acquire for pending run: %w", err)
 		}
 		if !acquired {
-			return nil // Slot not available (shouldn't happen)
+			return false, nil // Slot not available (shouldn't happen)
 		}
 	}
-
 	run.Status = dag.RunStatusRunning
 	if wfDef.Timeout > 0 {
 		deadline := time.Now().Add(wfDef.Timeout)
 		run.Deadline = &deadline
 	}
-	if err := o.saveSnapshot(ctx, run, ""); err != nil {
-		return fmt.Errorf("save running run: %w", err)
+	err = o.saveSnapshot(ctx, run, "")
+	if errors.Is(err, ErrSnapshotConflict) {
+		return o.releaseLostDequeue(ctx, run)
+	}
+	if err != nil {
+		return false, fmt.Errorf("save running run: %w", err)
 	}
 	o.metrics.runsActive.Add(ctx, 1)
-	return o.enqueueReady(ctx, wfDef, run)
+	return false, o.enqueueReady(ctx, wfDef, run)
+}
+
+// releaseLostDequeue handles a dequeue whose Running save lost the run.
+// Only a terminal run's slot is released: a terminal run never holds
+// one legitimately, while a live run's slot belongs to whichever
+// dequeue won it. Either way the caller tries the next queued run.
+func (o *Orchestrator) releaseLostDequeue(
+	ctx context.Context, lost dag.WorkflowRun,
+) (bool, error) {
+	if lost.RunID == "" {
+		panic("releaseLostDequeue: RunID must not be empty")
+	}
+	if lost.WorkflowID == "" {
+		panic("releaseLostDequeue: WorkflowID must not be empty")
+	}
+	current, err := o.store.Load(ctx, lost.RunID)
+	if err != nil {
+		return false, fmt.Errorf("reload lost pending run %q: %w", lost.RunID, err)
+	}
+	if !current.Status.IsTerminal() {
+		return true, nil
+	}
+	err = o.admission.ReleaseRunIfConcurrency(ctx, lost.WorkflowID, lost.RunID)
+	if err != nil {
+		return false, o.oweLostDequeueRelease(ctx, current, err)
+	}
+	return true, nil
+}
+
+// oweLostDequeueRelease records a failed release of a terminal run's
+// slot as owed (ReleasePending), and puts the run back in the runactive
+// index the reconciler lists, which its cancel's finalize removed. The
+// reconciler's releaseAdmission then frees the slot.
+func (o *Orchestrator) oweLostDequeueRelease(
+	ctx context.Context, run dag.WorkflowRun, releaseErr error,
+) error {
+	if releaseErr == nil {
+		panic("oweLostDequeueRelease: releaseErr must not be nil")
+	}
+	if !run.Status.IsTerminal() {
+		panic("oweLostDequeueRelease: run must be terminal")
+	}
+	slog.WarnContext(ctx,
+		"lost dequeue could not release a cancelled run's slot; "+
+			"recording the release as owed for the reconciler",
+		"run_id", run.RunID, "workflow_id", run.WorkflowID, "error", releaseErr)
+	run, err := saveReleaseDebt(ctx, o.store, o.saveSnapshot, run, "")
+	if err == nil {
+		err = o.store.createActiveEntry(ctx, run.RunID)
+	}
+	return errors.Join(
+		fmt.Errorf("release lost pending run %q: %w", run.RunID, releaseErr), err)
 }
 
 // findStepDef locates a step definition by ID within a workflow def.
@@ -2128,7 +2227,11 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	if err != nil {
 		return fmt.Errorf("load run %q: %w", evt.RunID, err)
 	}
-	if run.Status != dag.RunStatusRunning {
+	// A Pending run is queued behind a concurrency limit (#1008). Its
+	// cancel is a revision-checked save like any other, so it and the
+	// dequeue (transitionPendingToRunning) cannot both win the run.
+	wasRunning := run.Status == dag.RunStatusRunning
+	if !wasRunning && run.Status != dag.RunStatusPending {
 		return nil
 	}
 	wfDef, err := o.loadPinnedOrLatestDef(ctx, run)
@@ -2166,7 +2269,9 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	run, err = finalizeRun(
 		ctx, o.tp, o.store, o.saveSnapshot, run, dag.RunStatusCancelled, "",
 		func(ctx context.Context) error {
-			o.metrics.runsActive.Add(ctx, -1)
+			if wasRunning { // a queued run was never counted active
+				o.metrics.runsActive.Add(ctx, -1)
+			}
 			return o.releaseAdmission(ctx, run)
 		},
 	)
