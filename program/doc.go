@@ -50,11 +50,13 @@
 //
 // # Known limitations / threat model
 //
-// Programs on a dagnats are trusted: today they are all the operator's
-// own, the same stance as the coarse-shared engine buckets. Within that
-// model these gaps are accepted, and they are closed before untrusted
-// (third-party) programs join a dagnats, the same trigger as making
-// nats_auth: required the default.
+// A dagnats is one trust domain: every program on it is trusted by
+// whoever runs it, the same stance as the coarse-shared engine buckets.
+// Parties that do not trust each other each run their own dagnats rather
+// than share one, so the gaps below are accepted by design, not pending
+// fixes. A join key admits a program into that domain. Isolating
+// untrusting programs on one dagnats would take one NATS account per
+// program (dagnats#909), which this model does not need.
 //
 //   - JetStream reply reflection. nats-server publishes a JetStream API
 //     response, a direct get's message and a pull delivery to whatever
@@ -64,9 +66,9 @@
 //     in its own bucket, then direct-get them with a reply of
 //     "$KV.<bucket>.<key>". Every node therefore derives a program's
 //     permissions from its stored manifest and never from a stored
-//     permission set. Closed by per-program NATS accounts, dagnats#909;
-//     TestResidual_JetStreamReplyWritesForeignBuckets pins the gap and
-//     fails once it is closed.
+//     permission set. Accepted by design (dagnats#909);
+//     TestResidual_JetStreamReplyWritesForeignBuckets pins the gap, so a
+//     change in nats-server's behaviour shows up.
 //   - Push-consumer delivery. A consumer's deliver subject travels in the
 //     JetStream request body, which subject permissions never see, and
 //     nats-server does not check it against the creating user's
@@ -76,17 +78,17 @@
 //     need push consumers, so denying consumer creates is not an option.
 //     User permissions inside one account cannot close this; one NATS
 //     account per program, or a server-side check of the deliver
-//     subject, will. Tracked as dagnats#862;
+//     subject, would. Accepted by design (dagnats#862);
 //     TestAttack_PushConsumerCannotDeliverIntoForeignSubjects is the proof,
-//     skipped until then.
+//     kept skipped.
 //   - Inbox forgery. Micro services reply by publishing to the caller's
 //     inbox, so every program may publish on "_INBOX.>". Inbox names are
 //     not secret: one process's inboxes share a prefix and are numbered
 //     in sequence, so a single reply subject seen from program beta (on a
 //     shared protocol, say) lets program alpha write forged replies into
 //     beta's next inboxes. Reading stays confined to the program's own
-//     "_INBOX.<name>.>". Tracked as dagnats#862 and closed by the same fix
-//     as push-consumer delivery: accounts or a server-side check.
+//     "_INBOX.<name>.>". Accepted by design with push-consumer delivery
+//     (dagnats#862).
 //   - Name-gated grants. Consumer delete on shared buckets and next, ack
 //     and create on STICKY_TASKS are gated only by consumer names: random
 //     NUIDs, and for sticky consumers 128 bits from crypto/rand, which a

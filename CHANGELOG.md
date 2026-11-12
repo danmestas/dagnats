@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A dagnats is documented as one trust domain (#909, #862).** Every program on a dagnats is trusted by whoever runs it. Parties that don't trust each other each run their own dagnats, rather than share one, so per-program NATS accounts aren't planned. The known cross-program gaps inside one account (JetStream reply reflection, push-consumer delivery subjects, inbox forgery) are accepted by design, not pending fixes. A join key admits a program into that trust domain, so give one only to a party you would let run code on the host, and don't leaf-link a dagnats to one whose operator you don't trust. The configuration and wire-protocol docs and the `program` package's threat model now say so.
+
 ## [0.0.66] - 2026-11-12
 
 ### Fixed

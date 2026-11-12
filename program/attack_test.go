@@ -188,8 +188,8 @@ func TestAttack_ProgramCannotCreateOrReconfigureStreams(t *testing.T) {
 // push consumers. Accepted for trusted programs; see "Known limitations /
 // threat model" in the package doc. The test stays as the proof.
 func TestAttack_PushConsumerCannotDeliverIntoForeignSubjects(t *testing.T) {
-	t.Skip("accepted gap for trusted programs (#862): see \"Known limitations / threat model\" " +
-		"in the program package doc; closed by accounts or a server check before untrusted programs")
+	t.Skip("accepted by design: a dagnats is one trust domain (#862); see \"Known limitations / " +
+		"threat model\" in the program package doc")
 	f, js := attackFixture(t)
 	victim, err := f.admin.SubscribeSync("beta.svc.x")
 	if err != nil {
