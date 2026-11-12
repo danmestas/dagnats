@@ -865,10 +865,7 @@ func (w *Worker) createPullConsumer(
 	}
 
 	l := lane{taskType: taskType, handler: handler, ackWait: ackWait, park: &lanePark{}}
-	cc, err := cons.Consume(
-		w.messageHandler(l),
-		jetstream.ConsumeErrHandler(consumeErrHandler(durable)),
-	)
+	cc, err := consumeLane(cons, w.messageHandler(l), consumeErrHandler(durable))
 	if err != nil {
 		return nil, fmt.Errorf("consume %s: %w", durable, err)
 	}
@@ -884,15 +881,20 @@ func (w *Worker) createPullConsumer(
 // re-fetch-before-delete now prevents in the steady case, but a wider
 // TOCTOU window can still exist — see its doc comment), an unhandled
 // "consumer deleted" error would otherwise vanish instead of surfacing.
+// Built as its lane starts, it logs the lane's expected start-up pull
+// misses at Debug (consumeErrLevel).
 func consumeErrHandler(label string) jetstream.ConsumeErrHandlerFunc {
 	if label == "" {
 		panic("consumeErrHandler: label must not be empty")
 	}
+	started := time.Now()
 	return func(_ jetstream.ConsumeContext, err error) {
 		if err == nil {
 			panic("consumeErrHandler: err must not be nil")
 		}
-		slog.Warn("consumer error", "consumer", label, "error", err)
+		level := consumeErrLevel(err, time.Since(started))
+		slog.Log(context.Background(), level, "consumer error",
+			"consumer", label, "error", err)
 	}
 }
 
