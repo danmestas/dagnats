@@ -2128,9 +2128,6 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	if err != nil {
 		return fmt.Errorf("load run %q: %w", evt.RunID, err)
 	}
-	if run.Status == dag.RunStatusPending {
-		return o.cancelQueuedRun(ctx, run)
-	}
 	if run.Status != dag.RunStatusRunning {
 		return nil
 	}

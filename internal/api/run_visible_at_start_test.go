@@ -164,3 +164,19 @@ func taskMessages(t *testing.T, nc *nats.Conn, task string) uint64 {
 	}
 	return total
 }
+
+// The inputs path's leader read answers a wildcard run id as not found,
+// as Load does, not as an internal error.
+func TestLoadRunFromLeaderRefusesWildcards(t *testing.T) {
+	_, svc, _ := startHeldAPI(t)
+	for _, id := range []string{"*", ">"} {
+		_, err := svc.loadRunFromLeader(context.Background(), id)
+		if !errors.Is(err, engine.ErrRunNotFound) {
+			t.Errorf("loadRunFromLeader(%q) err=%v, want ErrRunNotFound", id, err)
+		}
+	}
+	_, err := svc.loadRunFromLeader(context.Background(), "nosuchrun")
+	if !errors.Is(err, engine.ErrRunNotFound) {
+		t.Fatalf("loadRunFromLeader(unknown) err=%v, want ErrRunNotFound", err)
+	}
+}

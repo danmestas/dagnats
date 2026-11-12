@@ -364,6 +364,9 @@ func (r *Registrar) readRecord(
 		panic("programs.readRecord: name must not be empty")
 	}
 	entry, err := natsutil.KVGetLeader(ctx, r.js.Conn(), BucketName, name)
+	if errors.Is(err, jetstream.ErrInvalidKey) {
+		err = jetstream.ErrKeyNotFound // A name no key can hold names no program.
+	}
 	if errors.Is(err, jetstream.ErrKeyNotFound) {
 		return natsutil.KVLeaderEntry{}, Record{}, err
 	}

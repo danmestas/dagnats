@@ -103,25 +103,6 @@ func (o *Orchestrator) persistCancelledBeforeStart(
 	return err
 }
 
-// cancelQueuedRun finalizes a run admission queued behind its
-// concurrency limit (Pending). It holds no slot and dispatched nothing;
-// the queue is the set of pending snapshots, so once terminal it is out
-// of the queue and startNextPendingRun never picks it.
-func (o *Orchestrator) cancelQueuedRun(ctx context.Context, run dag.WorkflowRun) error {
-	if run.RunID == "" {
-		panic("cancelQueuedRun: RunID must not be empty")
-	}
-	if run.Status != dag.RunStatusPending {
-		panic("cancelQueuedRun: run must be pending")
-	}
-	cancelUnfinishedSteps(run)
-	_, err := finalizeRun(
-		ctx, o.tp, o.store, o.saveSnapshot, run, dag.RunStatusCancelled, "",
-		func(ctx context.Context) error { return o.releaseAdmission(ctx, run) },
-	)
-	return err
-}
-
 // releaseTerminalRunSlot gives back the admission a terminal run may
 // still hold when its start is redelivered: a start that claimed its
 // slot and stopped before its first save, whose run a cancel then

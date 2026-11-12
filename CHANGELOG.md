@@ -13,8 +13,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`Service.GetRun` succeeding no longer means the run's snapshot exists (#1006).** For a run whose start is not handled yet, `GetRun` (and `GET /runs/{id}`, `runs.get`) now returns a `pending` run built from its `workflow.started` event: no store revision, no run index entry, and it is not listed by `runs.list` until the engine writes the snapshot. Code that waited for `GetRun` to succeed as a sign the engine had created the run should wait for the status it needs instead. `dagnatstest.RunFixture.Snapshot` now reads the engine's snapshot from the store and waits up to 10s for it, rather than returning `GetRun`'s pending view.
 
-- **Cancelling a run queued behind its concurrency limit cancels it (#1006).** The engine ignored `workflow.cancelled` for a `pending` run, so `runs.cancel` replied `cancelled` while the run stayed queued and started once a slot freed. A queued run is now finalized as cancelled and leaves the queue.
-
 - **A run id containing a NATS wildcard no longer reads another run (#1006).** The stream-leader KV read used `run.<id>` as a `last_by_subj` subject, so `GET /runs/*` or `runs.get` with `*` or `>` returned the newest snapshot of some other run. `natsutil.KVGetLeader` now refuses keys jetstream would refuse (`jetstream.ErrInvalidKey`), and such a run id is not found.
 
 ## [0.0.64] - 2026-11-11

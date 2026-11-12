@@ -184,7 +184,7 @@ func (s *Service) loadRunFromLeader(ctx context.Context, runID string) (dag.Work
 	}
 	entry, err := natsutil.KVGetLeader(ctx, s.nc, "workflow_runs", "run."+runID)
 	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
+		if errors.Is(err, jetstream.ErrKeyNotFound) || errors.Is(err, jetstream.ErrInvalidKey) {
 			return dag.WorkflowRun{}, engine.ErrRunNotFound
 		}
 		return dag.WorkflowRun{}, fmt.Errorf("load run %s: %w", runID, err)

@@ -17,10 +17,15 @@ import (
 const historyStreamName = "WORKFLOW_HISTORY"
 
 // startEventScanMax bounds the history messages read looking for a
-// run's workflow.started. Before the orchestrator handles a start the
-// run's subject holds only that event, a redelivered copy or two, and
-// cancels, so the start is among the first few.
+// run's latest workflow.started. Before the orchestrator handles a start
+// the run's subject holds only its starts and any cancels sent since,
+// a few messages. A subject longer than this fails the read with
+// errStartBeyondScanBound rather than answer with an older start.
 const startEventScanMax = 16
+
+// errStartBeyondScanBound reports a run whose history subject has more
+// than startEventScanMax messages, so a later start may lie unread.
+var errStartBeyondScanBound = errors.New("start event beyond scan bound")
 
 // LoadAccepted is Load for readers outside the orchestrator (#1006). A
 // run the API acknowledged has its workflow.started in the history
@@ -100,8 +105,9 @@ func findStartEvent(
 	return scanForLastStart(ctx, nc, runID)
 }
 
-// scanForLastStart returns the last workflow.started among the first
-// startEventScanMax messages of runID's history subject.
+// scanForLastStart returns the last workflow.started of runID's history
+// subject, reading at most startEventScanMax messages; a subject with
+// more is errStartBeyondScanBound.
 func scanForLastStart(
 	ctx context.Context, nc *nats.Conn, runID string,
 ) (protocol.Event, bool, error) {
@@ -115,21 +121,22 @@ func scanForLastStart(
 	var last protocol.Event
 	found := false
 	seq := uint64(1)
-	for range startEventScanMax {
+	// One read past the bound tells "subject ended" from "bound hit".
+	for range startEventScanMax + 1 {
 		msg, err := natsutil.StreamMsgLeader(ctx, nc, historyStreamName,
 			map[string]any{"seq": seq, "next_by_subj": subject})
 		if err != nil {
 			return protocol.Event{}, false, err
 		}
 		if msg == nil {
-			break
+			return last, found, nil
 		}
 		if evt, err := protocol.UnmarshalEvent(msg.Data); err == nil && isStartOf(evt, runID) {
 			last, found = evt, true
 		}
 		seq = msg.Sequence + 1
 	}
-	return last, found, nil
+	return protocol.Event{}, false, fmt.Errorf("run %q: %w", runID, errStartBeyondScanBound)
 }
 
 // isStartOf reports whether evt is a workflow.started for runID. The

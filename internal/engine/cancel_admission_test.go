@@ -169,36 +169,6 @@ func TestCancelBeforeStartRecordsAFailedRelease(t *testing.T) {
 	}
 }
 
-// A cancel of a run queued behind the concurrency limit finalizes it,
-// and it never starts when the slot frees.
-func TestCancelQueuedRunNeverStarts(t *testing.T) {
-	f := newLimitedFixture(t)
-	for _, id := range []string{"holder-run", "queued-run"} {
-		publishEvent(t, f.js, f.startEvent(t, id))
-		f.dispatch(t, f.startEvent(t, id))
-	}
-	if got := f.runStatus(t, "queued-run"); got != dag.RunStatusPending {
-		t.Fatalf("second run = %s, want pending behind the limit", got)
-	}
-	publishEvent(t, f.js, cancelEvent("queued-run"))
-	f.dispatch(t, cancelEvent("queued-run"))
-	if got := f.runStatus(t, "queued-run"); got != dag.RunStatusCancelled {
-		t.Fatalf("cancelled queued run = %s, want cancelled", got)
-	}
-
-	publishEvent(t, f.js, cancelEvent("holder-run"))
-	f.dispatch(t, cancelEvent("holder-run"))
-	if got := f.runStatus(t, "queued-run"); got != dag.RunStatusCancelled {
-		t.Fatalf("queued run after the slot freed = %s, want still cancelled", got)
-	}
-	if got := f.taskCount(t); got != 1 {
-		t.Fatalf("TASK_QUEUES holds %d messages, want only the holder's 1", got)
-	}
-	if got := f.slotHolders(t); len(got) != 0 {
-		t.Fatalf("slot holders = %v, want none", got)
-	}
-}
-
 // Two starts for one run id that both pass the existence check: the
 // second loses the create, is handled again, and skips, so the run
 // dispatches once and nothing is dead-lettered.
@@ -286,5 +256,30 @@ func TestLoadRefusesWildcardRunIDs(t *testing.T) {
 		if run, err := f.orch.store.LoadAccepted(ctx, id); !errors.Is(err, ErrRunNotFound) {
 			t.Errorf("LoadAccepted(%q) = run %q err=%v, want ErrRunNotFound", id, run.RunID, err)
 		}
+	}
+}
+
+// A run subject longer than the scan bound may hide a later start past
+// it: the read fails rather than answer with an older start. Within the
+// bound the same layout answers.
+func TestStartScanPastItsBoundIsAnError(t *testing.T) {
+	f := newUnstartedFixture(t)
+	ctx := context.Background()
+	const shortID, longID = "short-history-run", "long-history-run"
+	for _, id := range []string{shortID, longID} {
+		publishWithoutDedup(t, f.js, f.startEvent(t, id))
+	}
+	for range startEventScanMax - 1 {
+		publishWithoutDedup(t, f.js, cancelEvent(shortID))
+	}
+	for range startEventScanMax {
+		publishWithoutDedup(t, f.js, cancelEvent(longID))
+	}
+	if _, err := f.orch.store.LoadAccepted(ctx, shortID); err != nil {
+		t.Fatalf("start within the bound: %v", err)
+	}
+	_, err := f.orch.store.LoadAccepted(ctx, longID)
+	if !errors.Is(err, errStartBeyondScanBound) {
+		t.Fatalf("start scan past the bound: err=%v, want errStartBeyondScanBound", err)
 	}
 }
