@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.66] - 2026-11-12
+
 ### Fixed
 
 - **A worker lane no longer sits idle for 30s when its first pull misses the consumer (#992).** On a replicated cluster, a lane's first pull can reach the worker's server before the consumer leader's interest does and be answered "no responders". Nothing is then outstanding, and nats.go pulls again only after two missed idle heartbeats, half the 30s expiry each, so the lane waited about 30s after every worker restart and logged two warnings. Task and sticky lanes now ask for a 1s idle heartbeat, so a missed pull is retried within about 2s (measured: 30.0s before, 2.0s after). Pulls stay at 2 a minute per idle lane; idle heartbeats rise from 4 to at most 60 a minute per lane. In a lane's first 10s, "no responders" and "no heartbeat received" now log at Debug; later, and for every other consume error, the lane still warns.
