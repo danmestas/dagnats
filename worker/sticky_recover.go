@@ -103,7 +103,7 @@ func (s *stickyConsume) consume(cons jetstream.Consumer) (jetstream.ConsumeConte
 	if cons == nil {
 		panic("consume: consumer must not be nil")
 	}
-	return cons.Consume(s.deliver, jetstream.ConsumeErrHandler(s.onError))
+	return consumeLane(cons, s.deliver, s.onError)
 }
 
 func (s *stickyConsume) deliver(msg jetstream.Msg) {
