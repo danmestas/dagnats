@@ -71,10 +71,6 @@ func TestRunReadableBeforeStartHandled(t *testing.T) {
 	if !bytes.Equal(unknown, foreign) || replyField(t, foreign, "error") == "" {
 		t.Fatalf("foreign run %s differs from unknown run %s", foreign, unknown)
 	}
-	wildcard := scopedRequest(t, nc, "api.p.notify.runs.get", []byte("*"))
-	if replyField(t, wildcard, "error") == "" {
-		t.Fatalf("a wildcard run id matched a run: %s", wildcard)
-	}
 	_, err = svc.GetRun(context.Background(), "nosuchrun")
 	if !errors.Is(err, engine.ErrRunNotFound) {
 		t.Fatalf("svc.GetRun(unknown) err=%v, want ErrRunNotFound", err)
@@ -111,6 +107,17 @@ func TestRunCancelledBeforeStartHandledNeverDispatches(t *testing.T) {
 	}
 	if status, _ := scopedRunStatus(t, nc, "notify", notifyRun); status != dag.RunStatusCancelled {
 		t.Fatalf("cancelled run became %s once every event was handled", status)
+	}
+	// Both runs now have snapshots, so a wildcard id that reached a
+	// last_by_subj read would match the newest, which one of the two
+	// programs owns: ask as both.
+	for _, program := range []string{"notify", "artifact"} {
+		for _, id := range []string{"*", ">"} {
+			reply := scopedRequest(t, nc, "api.p."+program+".runs.get", []byte(id))
+			if replyField(t, reply, "error") == "" {
+				t.Fatalf("%s: wildcard run id %q matched a run: %s", program, id, reply)
+			}
+		}
 	}
 }
 

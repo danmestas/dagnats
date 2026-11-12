@@ -18,7 +18,7 @@ import (
 // engine taking the cancel first), both create the run's snapshot as
 // cancelled from the start event. The snapshot is the tombstone: the
 // start's existence check (startExistingRun) then skips it, and since
-// every creating write is a KV Create, a start and a cancel racing on
+// both creating writes are KV Creates, a start and a cancel racing on
 // two engines cannot both create it.
 
 // cancelBeforeStart handles workflow.cancelled for a run with no
@@ -77,8 +77,10 @@ func (o *Orchestrator) startCancelledRun(
 // persistCancelledBeforeStart creates run's snapshot as cancelled. Its
 // creating write is a KV Create: losing it to the run's start (another
 // engine) is a snapshot conflict, so the cancel is handled again from a
-// fresh Load through the normal path. No admission was claimed and no
-// step dispatched, so there is nothing to release.
+// fresh Load through the normal path. No step was dispatched, but a
+// start that claimed the run's slot and stopped before its first save
+// left that claim behind; the release gives it back, and is a no-op
+// for a run that holds none.
 func (o *Orchestrator) persistCancelledBeforeStart(
 	ctx context.Context, run dag.WorkflowRun,
 ) error {
@@ -91,22 +93,66 @@ func (o *Orchestrator) persistCancelledBeforeStart(
 	slog.InfoContext(ctx, "cancelling a run before it started",
 		"run_id", run.RunID, "workflow_id", run.WorkflowID)
 	cancelUnfinishedSteps(run)
+	// Revision 0: the create advances it, so a release-debt save after
+	// it (finalizeRun's failed-release path) is a revision-checked Save.
+	run.Revision = dag.NewSnapshotRevision(0)
 	_, err := finalizeRun(
-		ctx, o.tp, o.store, o.createSnapshotOnce, run, dag.RunStatusCancelled, "", nil,
+		ctx, o.tp, o.store, o.createSnapshotOnce, run, dag.RunStatusCancelled, "",
+		func(ctx context.Context) error { return o.releaseAdmission(ctx, run) },
 	)
 	return err
 }
 
+// cancelQueuedRun finalizes a run admission queued behind its
+// concurrency limit (Pending). It holds no slot and dispatched nothing;
+// the queue is the set of pending snapshots, so once terminal it is out
+// of the queue and startNextPendingRun never picks it.
+func (o *Orchestrator) cancelQueuedRun(ctx context.Context, run dag.WorkflowRun) error {
+	if run.RunID == "" {
+		panic("cancelQueuedRun: RunID must not be empty")
+	}
+	if run.Status != dag.RunStatusPending {
+		panic("cancelQueuedRun: run must be pending")
+	}
+	cancelUnfinishedSteps(run)
+	_, err := finalizeRun(
+		ctx, o.tp, o.store, o.saveSnapshot, run, dag.RunStatusCancelled, "",
+		func(ctx context.Context) error { return o.releaseAdmission(ctx, run) },
+	)
+	return err
+}
+
+// releaseTerminalRunSlot gives back the admission a terminal run may
+// still hold when its start is redelivered: a start that claimed its
+// slot and stopped before its first save, whose run a cancel then
+// finalized (#1006). Releasing a slot the run does not hold is a no-op.
+func (o *Orchestrator) releaseTerminalRunSlot(ctx context.Context, run dag.WorkflowRun) error {
+	if run.RunID == "" {
+		panic("releaseTerminalRunSlot: RunID must not be empty")
+	}
+	if !run.Status.IsTerminal() {
+		panic("releaseTerminalRunSlot: run must be terminal")
+	}
+	if run.WorkflowID == "" {
+		return nil // A start that failed before naming a workflow claimed nothing.
+	}
+	return o.releaseAdmission(ctx, run)
+}
+
 // createSnapshotOnce is a SaveSnapshotFunc for a run's creating write:
-// a KV Create, reporting a lost race as ErrSnapshotConflict.
+// a KV Create, reporting a lost race as ErrSnapshotConflict. Once the
+// create has landed (the revision moved off 0) later saves are Saves.
 func (o *Orchestrator) createSnapshotOnce(
-	ctx context.Context, run dag.WorkflowRun, _ string,
+	ctx context.Context, run dag.WorkflowRun, stepID string,
 ) error {
 	if run.RunID == "" {
 		panic("createSnapshotOnce: RunID must not be empty")
 	}
-	if o.store == nil {
-		panic("createSnapshotOnce: store must not be nil")
+	if run.Revision == nil {
+		panic("createSnapshotOnce: run must carry a revision handle")
+	}
+	if run.Revision.Seq() != 0 {
+		return o.saveSnapshot(ctx, run, stepID)
 	}
 	created, err := o.store.CreateSnapshot(ctx, run)
 	if err != nil {

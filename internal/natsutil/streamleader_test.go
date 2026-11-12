@@ -100,4 +100,11 @@ func TestKVGetLeaderOrMarker(t *testing.T) {
 	if !errors.Is(err, jetstream.ErrKeyNotFound) || deleted {
 		t.Fatalf("never written: deleted=%v err=%v, want false, ErrKeyNotFound", deleted, err)
 	}
+	// A wildcard key would match every key in last_by_subj: refused.
+	for _, key := range []string{"*", ">"} {
+		got, err := KVGetLeader(ctx, nc, "marker_read", key)
+		if !errors.Is(err, jetstream.ErrInvalidKey) {
+			t.Errorf("KVGetLeader(%q) = %q err=%v, want ErrInvalidKey", key, got.Value, err)
+		}
+	}
 }

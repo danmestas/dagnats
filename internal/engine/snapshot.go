@@ -640,6 +640,12 @@ func (s *SnapshotStore) loadPrunable(
 // lagging replica, and every Load feeds a read-modify-Save. The
 // returned run carries the revision it was read at (see Save).
 func (s *SnapshotStore) Load(ctx context.Context, runID string) (dag.WorkflowRun, error) {
+	if ctx == nil {
+		panic("SnapshotStore.Load: ctx must not be nil")
+	}
+	if runID == "" {
+		panic("SnapshotStore.Load: runID must not be empty")
+	}
 	run, _, err := s.loadOrMarker(ctx, runID)
 	return run, err
 }
@@ -657,7 +663,8 @@ func (s *SnapshotStore) loadOrMarker(
 	}
 	entry, deleted, err := natsutil.KVGetLeaderOrMarker(ctx, s.nc, runsBucket, "run."+runID)
 	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
+		// An id no key can hold (a wildcard) names no run.
+		if errors.Is(err, jetstream.ErrKeyNotFound) || errors.Is(err, jetstream.ErrInvalidKey) {
 			return dag.WorkflowRun{}, deleted, ErrRunNotFound
 		}
 		return dag.WorkflowRun{}, false, err

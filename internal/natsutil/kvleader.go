@@ -59,6 +59,12 @@ type MsgGetReply struct {
 func KVGetLeader(
 	ctx context.Context, nc *nats.Conn, bucket, key string,
 ) (KVLeaderEntry, error) {
+	if nc == nil {
+		panic("KVGetLeader: nc must not be nil")
+	}
+	if bucket == "" {
+		panic("KVGetLeader: bucket must not be empty")
+	}
 	entry, _, err := KVGetLeaderOrMarker(ctx, nc, bucket, key)
 	return entry, err
 }
@@ -66,7 +72,9 @@ func KVGetLeader(
 // KVGetLeaderOrMarker is KVGetLeader that also reports whether a missing
 // key was deleted or purged (deleted=true) rather than never written: a
 // reader that falls back to another record of the key's existence must
-// not resurrect a key that was removed on purpose.
+// not resurrect a key that was removed on purpose. A key jetstream would
+// refuse returns jetstream.ErrInvalidKey: as a last_by_subj subject a
+// wildcard key would match, and return, another key's value.
 func KVGetLeaderOrMarker(
 	ctx context.Context, nc *nats.Conn, bucket, key string,
 ) (entry KVLeaderEntry, deleted bool, err error) {
@@ -75,6 +83,9 @@ func KVGetLeaderOrMarker(
 	}
 	if bucket == "" || key == "" {
 		panic("KVGetLeaderOrMarker: bucket and key must not be empty")
+	}
+	if !ValidKVKey(key) {
+		return KVLeaderEntry{}, false, jetstream.ErrInvalidKey
 	}
 	msg, err := StreamMsgLeader(ctx, nc, "KV_"+bucket,
 		map[string]any{"last_by_subj": "$KV." + bucket + "." + key})

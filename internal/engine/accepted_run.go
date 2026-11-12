@@ -60,15 +60,25 @@ func (s *SnapshotStore) LoadAccepted(ctx context.Context, runID string) (dag.Wor
 // subject match other runs' events. The rule is the KV key rule, which
 // every stored run ID already meets ("run.<runID>" is its snapshot key).
 func historySubject(runID string) (string, bool) {
+	if runID == "" {
+		panic("historySubject: runID must not be empty")
+	}
 	if !natsutil.ValidKVKey(runID) {
 		return "", false
 	}
-	return "history." + runID, true
+	subject := "history." + runID
+	if len(subject) <= len(runID) {
+		panic("historySubject: subject must extend the prefix")
+	}
+	return subject, true
 }
 
-// findStartEvent reads runID's workflow.started from the history
-// stream through the stream leader, so a start the API just published
-// is visible to a reader routed to any server.
+// findStartEvent reads runID's latest workflow.started from the
+// history stream through the stream leader, so a start the API just
+// published is visible to a reader routed to any server. Latest, not
+// first: a run id can be started again (an idempotent start
+// republished outside the dedup window), and the latest start is the
+// one the orchestrator runs.
 func findStartEvent(
 	ctx context.Context, nc *nats.Conn, runID string,
 ) (protocol.Event, bool, error) {
@@ -78,31 +88,91 @@ func findStartEvent(
 	if runID == "" {
 		panic("findStartEvent: runID must not be empty")
 	}
+	latest, found, err := latestHistoryEvent(ctx, nc, runID)
+	if err != nil || !found {
+		return protocol.Event{}, false, err
+	}
+	if isStartOf(latest, runID) {
+		return latest, true, nil
+	}
+	// A cancel (or another event) followed the start: walk the subject
+	// from its first message, keeping the last start seen.
+	return scanForLastStart(ctx, nc, runID)
+}
+
+// scanForLastStart returns the last workflow.started among the first
+// startEventScanMax messages of runID's history subject.
+func scanForLastStart(
+	ctx context.Context, nc *nats.Conn, runID string,
+) (protocol.Event, bool, error) {
+	if nc == nil {
+		panic("scanForLastStart: nc must not be nil")
+	}
 	subject, ok := historySubject(runID)
 	if !ok {
-		return protocol.Event{}, false, nil
+		panic("scanForLastStart: runID must name one history subject")
 	}
+	var last protocol.Event
+	found := false
 	seq := uint64(1)
 	for range startEventScanMax {
 		msg, err := natsutil.StreamMsgLeader(ctx, nc, historyStreamName,
 			map[string]any{"seq": seq, "next_by_subj": subject})
-		if err != nil || msg == nil {
+		if err != nil {
 			return protocol.Event{}, false, err
 		}
-		evt, err := protocol.UnmarshalEvent(msg.Data)
-		// The run_id check keeps a hand-published event whose body
-		// disagrees with its subject from naming another run.
-		if err == nil && evt.Type == protocol.EventWorkflowStarted && evt.RunID == runID {
-			return evt, true, nil
+		if msg == nil {
+			break
+		}
+		if evt, err := protocol.UnmarshalEvent(msg.Data); err == nil && isStartOf(evt, runID) {
+			last, found = evt, true
 		}
 		seq = msg.Sequence + 1
 	}
-	return protocol.Event{}, false, nil
+	return last, found, nil
+}
+
+// isStartOf reports whether evt is a workflow.started for runID. The
+// run_id check keeps a hand-published event whose body disagrees with
+// its subject from naming another run.
+func isStartOf(evt protocol.Event, runID string) bool {
+	if runID == "" {
+		panic("isStartOf: runID must not be empty")
+	}
+	return evt.Type == protocol.EventWorkflowStarted && evt.RunID == runID
+}
+
+// latestHistoryEvent reads runID's latest history event through the
+// stream leader. found is false when runID has no readable event or
+// does not name one subject.
+func latestHistoryEvent(
+	ctx context.Context, nc *nats.Conn, runID string,
+) (protocol.Event, bool, error) {
+	if nc == nil {
+		panic("latestHistoryEvent: nc must not be nil")
+	}
+	if runID == "" {
+		panic("latestHistoryEvent: runID must not be empty")
+	}
+	subject, ok := historySubject(runID)
+	if !ok {
+		return protocol.Event{}, false, nil
+	}
+	msg, err := natsutil.StreamMsgLeader(ctx, nc, historyStreamName,
+		map[string]any{"last_by_subj": subject})
+	if err != nil {
+		return protocol.Event{}, false, fmt.Errorf("read latest event of run %q: %w", runID, err)
+	}
+	if msg == nil {
+		return protocol.Event{}, false, nil
+	}
+	evt, err := protocol.UnmarshalEvent(msg.Data)
+	return evt, err == nil, nil
 }
 
 // cancelInHistory reports whether runID's latest history event is a
 // workflow.cancelled. Called by a start that found no snapshot, when
-// the run's subject holds only its start and any cancels sent since.
+// the run's subject holds only its starts and any cancels sent since.
 func cancelInHistory(ctx context.Context, nc *nats.Conn, runID string) (bool, error) {
 	if nc == nil {
 		panic("cancelInHistory: nc must not be nil")
@@ -110,20 +180,8 @@ func cancelInHistory(ctx context.Context, nc *nats.Conn, runID string) (bool, er
 	if runID == "" {
 		panic("cancelInHistory: runID must not be empty")
 	}
-	subject, ok := historySubject(runID)
-	if !ok {
-		return false, nil
-	}
-	msg, err := natsutil.StreamMsgLeader(ctx, nc, historyStreamName,
-		map[string]any{"last_by_subj": subject})
-	if err != nil {
-		return false, fmt.Errorf("read latest event of run %q: %w", runID, err)
-	}
-	if msg == nil {
-		return false, nil
-	}
-	evt, err := protocol.UnmarshalEvent(msg.Data)
-	return err == nil && evt.Type == protocol.EventWorkflowCancelled, nil
+	latest, found, err := latestHistoryEvent(ctx, nc, runID)
+	return found && latest.Type == protocol.EventWorkflowCancelled, err
 }
 
 // pendingRunFromStart builds the pending run a workflow.started

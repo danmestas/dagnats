@@ -1065,9 +1065,10 @@ func (o *Orchestrator) startExistingRun(
 	// never concurrent ones — reach this early exit in a single
 	// process. Multiple orchestrator replicas remain a genuine race,
 	// which is exactly what CreateSnapshot defends against.
-	if existing, loadErr := o.store.Load(
-		ctx, evt.RunID,
-	); loadErr == nil {
+	if existing, loadErr := o.store.Load(ctx, evt.RunID); loadErr == nil {
+		if existing.Status.IsTerminal() {
+			return true, o.releaseTerminalRunSlot(ctx, existing)
+		}
 		// A live run with ready steps still pending means a save that
 		// would have dispatched them never landed (lost to a rival
 		// engine, or a crash in between). Skipping would strand it;
@@ -1087,9 +1088,7 @@ func (o *Orchestrator) startExistingRun(
 		)
 		return true, nil
 	} else if !errors.Is(loadErr, ErrRunNotFound) {
-		return true, fmt.Errorf(
-			"load existing run %q: %w", evt.RunID, loadErr,
-		)
+		return true, fmt.Errorf("load existing run %q: %w", evt.RunID, loadErr)
 	}
 	return false, nil
 }
@@ -2128,6 +2127,9 @@ func (o *Orchestrator) handleWorkflowCancelled(
 	}
 	if err != nil {
 		return fmt.Errorf("load run %q: %w", evt.RunID, err)
+	}
+	if run.Status == dag.RunStatusPending {
+		return o.cancelQueuedRun(ctx, run)
 	}
 	if run.Status != dag.RunStatusRunning {
 		return nil
