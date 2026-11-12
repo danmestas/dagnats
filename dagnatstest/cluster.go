@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 
@@ -60,6 +61,9 @@ func StartTestCluster(t *testing.T, n int) *nats.Conn {
 
 	cluster := startClusterWithRetry(t, n, allocateFreePorts)
 	t.Cleanup(cluster.shutdown)
+	// Registered after shutdown, so it runs first: the dump shows the
+	// nodes' state at the failure, not their shutdown.
+	t.Cleanup(func() { cluster.dumpOnFailure(t) })
 	servers := cluster.servers
 
 	for i, ns := range servers {
@@ -161,6 +165,7 @@ func tryStartCluster(
 type testCluster struct {
 	servers []*natsserver.Server
 	options []*natsserver.Options
+	logs    []*nodeLog
 }
 
 func (c *testCluster) shutdown() { shutdownClusterServers(c.servers) }
@@ -182,10 +187,11 @@ func (c *testCluster) restartNode(t *testing.T, i int) {
 	if err != nil {
 		t.Fatalf("restart node %d: %v", i, err)
 	}
-	fatal := &fatalLog{messages: make(chan string, 1)}
+	fatal := newNodeLog()
 	ns.SetLogger(fatal, false, false)
 	ns.Start()
 	c.servers[i] = ns
+	c.logs[i] = fatal
 	if err := waitListening(ns, fatal); err != nil {
 		t.Fatalf("restart node %d: %v", i, err)
 	}
@@ -195,27 +201,91 @@ func (c *testCluster) restartNode(t *testing.T, i int) {
 	waitForRoutesMeshed(t, c.servers, len(c.servers))
 }
 
-// fatalLog is a node's logger. Logging stays off except for Fatalf,
-// which nats-server calls when it cannot bind a listener and then
-// carries on half started; with no logger the failure is invisible.
-type fatalLog struct{ messages chan string }
+// nodeLogLinesMax bounds the Warn/Error/Fatal lines a node keeps for a
+// failure dump: enough for the lead-up to a failure, small enough that a
+// long test cannot grow it.
+const nodeLogLinesMax = 200
 
-func (l *fatalLog) Fatalf(format string, v ...any) {
+// nodeLog is a node's logger. It keeps the last nodeLogLinesMax Warn,
+// Error and Fatal lines so a failing test can print why a node
+// misbehaved (#996: nats-server logs the cause of "error creating store
+// for stream" on the peer and returns only the code), and hands the first
+// Fatalf to waitListening, because nats-server calls it when it cannot
+// bind a listener and then carries on half started. Notice, Debug and
+// Trace are dropped. nats-server logs from many goroutines, so mu guards
+// the ring.
+type nodeLog struct {
+	messages chan string
+	mu       sync.Mutex
+	ring     []string
+}
+
+func newNodeLog() *nodeLog {
+	return &nodeLog{
+		messages: make(chan string, 1),
+		ring:     make([]string, 0, nodeLogLinesMax),
+	}
+}
+
+func (l *nodeLog) keep(level, format string, v ...any) {
+	if l == nil || level == "" {
+		panic("nodeLog.keep: log and level must be set")
+	}
+	line := level + " " + fmt.Sprintf(format, v...)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.ring) == nodeLogLinesMax {
+		l.ring = append(l.ring[:0], l.ring[1:]...)
+	}
+	l.ring = append(l.ring, line)
+}
+
+// lines returns a copy of the kept lines, oldest first.
+func (l *nodeLog) lines() []string {
+	if l == nil {
+		panic("nodeLog.lines: log must not be nil")
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.ring...)
+}
+
+func (l *nodeLog) Fatalf(format string, v ...any) {
+	l.keep("[FTL]", format, v...)
 	select {
 	case l.messages <- fmt.Sprintf(format, v...):
 	default: // the first failure is the one that matters
 	}
 }
 
-func (*fatalLog) Noticef(string, ...any) {}
-func (*fatalLog) Warnf(string, ...any)   {}
-func (*fatalLog) Errorf(string, ...any)  {}
-func (*fatalLog) Debugf(string, ...any)  {}
-func (*fatalLog) Tracef(string, ...any)  {}
+func (l *nodeLog) Warnf(format string, v ...any)  { l.keep("[WRN]", format, v...) }
+func (l *nodeLog) Errorf(format string, v ...any) { l.keep("[ERR]", format, v...) }
+func (*nodeLog) Noticef(string, ...any)           {}
+func (*nodeLog) Debugf(string, ...any)            {}
+func (*nodeLog) Tracef(string, ...any)            {}
+
+// dumpOnFailure prints every node's kept lines when the test failed, so
+// a flaky cluster failure carries nats-server's own explanation.
+func (c *testCluster) dumpOnFailure(t *testing.T) {
+	t.Helper()
+	if len(c.logs) != len(c.servers) {
+		panic("testCluster.dumpOnFailure: every node must have a log")
+	}
+	if !t.Failed() {
+		return
+	}
+	for i, l := range c.logs {
+		lines := l.lines()
+		t.Logf("node %d nats-server warnings and errors (%d kept):", i, len(lines))
+		for _, line := range lines {
+			t.Logf("  node %d %s", i, line)
+		}
+	}
+}
 
 // waitListening returns once the node has bound its client and route
 // listeners, or with the failure it logged, within testClusterListenWait.
-func waitListening(server *natsserver.Server, fatal *fatalLog) error {
+func waitListening(server *natsserver.Server, fatal *nodeLog) error {
 	if server == nil || fatal == nil {
 		panic("waitListening: server and fatal must not be nil")
 	}
@@ -242,14 +312,15 @@ func startClusterNodes(
 	t *testing.T,
 	clientPorts, clusterPorts []int,
 	routesByNode [][]*url.URL,
-) (*testCluster, []*fatalLog) {
+) (*testCluster, []*nodeLog) {
 	t.Helper()
 	n := len(clientPorts)
 	cluster := &testCluster{
 		servers: make([]*natsserver.Server, n),
 		options: make([]*natsserver.Options, n),
+		logs:    make([]*nodeLog, n),
 	}
-	fatals := make([]*fatalLog, n)
+	fatals := make([]*nodeLog, n)
 	for i := 0; i < n; i++ {
 		opts := &natsserver.Options{
 			Host:       "127.0.0.1",
@@ -276,10 +347,11 @@ func startClusterNodes(
 		if err != nil {
 			t.Fatalf("NewServer node %d: %v", i, err)
 		}
-		fatals[i] = &fatalLog{messages: make(chan string, 1)}
+		fatals[i] = newNodeLog()
 		ns.SetLogger(fatals[i], false, false)
 		ns.Start()
 		cluster.servers[i] = ns
+		cluster.logs[i] = fatals[i]
 		cluster.options[i] = opts
 	}
 	return cluster, fatals
