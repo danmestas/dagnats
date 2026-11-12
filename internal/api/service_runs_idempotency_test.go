@@ -61,7 +61,7 @@ func waitRunExists(t *testing.T, svc *Service, runID string) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := svc.GetRun(context.Background(), runID); err == nil {
+		if _, err := svc.store.Load(context.Background(), runID); err == nil {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)

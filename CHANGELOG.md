@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A run can be read and cancelled as soon as `runs.start` returns its id (#1006).** `runs.get` and `runs.cancel` (the program-scoped `api.p.<program>.runs.*` routes, and every reader of `Service.GetRun`, including `GET /runs/{id}`) looked only at the run's snapshot, which the orchestrator writes when it handles `workflow.started`. In the tens to hundreds of milliseconds before that, both answered `workflow run not found`, and a run cancelled in that window went on to execute. A run with no snapshot is now looked up by its `workflow.started` event in the history stream, read through the stream leader so a start just published is visible: `runs.get` answers it as `pending`, the ownership check uses the workflow the event names, and `runs.cancel` publishes `workflow.cancelled` as usual. A run whose snapshot was pruned stays not found. In the engine, a start that finds a cancel already behind it in history finalizes the run as cancelled without dispatching anything, and a cancel handled before its run's start (a redelivery, or another engine taking it first) creates the run's snapshot as cancelled from the start event, so the start then skips it. Every top-level start now creates its snapshot with a KV Create, so a start and a cancel racing on two engines cannot both create the run; a start that loses to the cancel gives back its admission claim. A `workflow.cancelled` for a run that never started is dropped instead of being retried into `DEAD_LETTERS`. A start that claimed its concurrency slot and stopped before its first save no longer leaks that slot when a cancel finalizes the run first: the cancel releases it, and so does any start redelivered for a run that is already terminal.
+
+- **`Service.GetRun` succeeding no longer means the run's snapshot exists (#1006).** For a run whose start is not handled yet, `GetRun` (and `GET /runs/{id}`, `runs.get`) now returns a `pending` run built from its `workflow.started` event: no store revision, no run index entry, and it is not listed by `runs.list` until the engine writes the snapshot. Code that waited for `GetRun` to succeed as a sign the engine had created the run should wait for the status it needs instead. `dagnatstest.RunFixture.Snapshot` now reads the engine's snapshot from the store and waits up to 10s for it, rather than returning `GetRun`'s pending view.
+
+- **A run id containing a NATS wildcard no longer reads another run (#1006).** The stream-leader KV read used `run.<id>` as a `last_by_subj` subject, so `GET /runs/*` or `runs.get` with `*` or `>` returned the newest snapshot of some other run. `natsutil.KVGetLeader` now refuses keys jetstream would refuse (`jetstream.ErrInvalidKey`), and such a run id is not found.
+
 ## [0.0.64] - 2026-11-11
 
 ### Fixed

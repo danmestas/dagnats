@@ -7,14 +7,17 @@ package dagnatstest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/engine"
 	"github.com/danmestas/dagnats/protocol"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // RunFixture wraps a Harness with helpers that submit and advance
@@ -199,9 +202,16 @@ func (f *RunFixture) RunSingleStepToCompletion(
 	return runID, stepID
 }
 
-// Snapshot returns the current KV snapshot for runID. Fatals the
-// test on load failure — callers use this to assert state didn't
-// change across an event publish, so a load error is unrecoverable.
+// snapshotWaitTimeout bounds how long Snapshot waits for the engine to
+// write a just-started run's snapshot.
+const snapshotWaitTimeout = 10 * time.Second
+
+// Snapshot returns the engine's current KV snapshot for runID, waiting
+// up to snapshotWaitTimeout for the engine to write it. It reads the
+// store, not Service.GetRun: GetRun answers a run whose start is not
+// handled yet with a pending view built from the start event (#1006),
+// and callers here assert on the engine's own state. Fatals the test
+// when no snapshot appears or a load fails.
 func (f *RunFixture) Snapshot(
 	t *testing.T, runID string,
 ) dag.WorkflowRun {
@@ -212,11 +222,25 @@ func (f *RunFixture) Snapshot(
 	if runID == "" {
 		panic("Snapshot: runID must not be empty")
 	}
-	run, err := f.h.Svc.GetRun(context.Background(), runID)
+	js, err := jetstream.New(f.h.NC)
 	if err != nil {
-		t.Fatalf("Snapshot: GetRun %q: %v", runID, err)
+		t.Fatalf("Snapshot: jetstream.New: %v", err)
 	}
-	return run
+	store := engine.NewSnapshotStore(js)
+	deadline := time.Now().Add(snapshotWaitTimeout)
+	for {
+		run, err := store.Load(context.Background(), runID)
+		if err == nil {
+			return run
+		}
+		if !errors.Is(err, engine.ErrRunNotFound) {
+			t.Fatalf("Snapshot: load %q: %v", runID, err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Snapshot: run %q has no snapshot after %s", runID, snapshotWaitTimeout)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // PublishStaleStepStarted synthesizes a step.started event for

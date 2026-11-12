@@ -2,7 +2,6 @@ package natsutil
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -63,66 +62,52 @@ func KVGetLeader(
 	if nc == nil {
 		panic("KVGetLeader: nc must not be nil")
 	}
-	if bucket == "" || key == "" {
-		panic("KVGetLeader: bucket and key must not be empty")
+	if bucket == "" {
+		panic("KVGetLeader: bucket must not be empty")
 	}
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, kvLeaderReadTimeout)
-		defer cancel()
-	}
-	body, err := json.Marshal(map[string]string{
-		"last_by_subj": "$KV." + bucket + "." + key,
-	})
-	if err != nil {
-		return KVLeaderEntry{}, fmt.Errorf("kv %s/%s: encode read: %w", bucket, key, err)
-	}
-	// The default "$JS.API" prefix, hardcoded like the lease store's
-	// read: dagnats never runs JetStream under a domain or a custom API
-	// prefix. Supporting one means threading it through both readers.
-	resp, err := nc.RequestWithContext(
-		ctx, "$JS.API.STREAM.MSG.GET.KV_"+bucket, body,
-	)
-	if err != nil {
-		return KVLeaderEntry{}, fmt.Errorf("kv %s/%s: read: %w", bucket, key, err)
-	}
-	return decodeKVLeaderReply(bucket, key, resp.Data)
+	entry, _, err := KVGetLeaderOrMarker(ctx, nc, bucket, key)
+	return entry, err
 }
 
-// decodeKVLeaderReply turns a STREAM.MSG.GET reply into the entry, or
-// into ErrKeyNotFound for a missing key or a delete/purge marker.
-func decodeKVLeaderReply(bucket, key string, data []byte) (KVLeaderEntry, error) {
+// KVGetLeaderOrMarker is KVGetLeader that also reports whether a missing
+// key was deleted or purged (deleted=true) rather than never written: a
+// reader that falls back to another record of the key's existence must
+// not resurrect a key that was removed on purpose. A key jetstream would
+// refuse returns jetstream.ErrInvalidKey: as a last_by_subj subject a
+// wildcard key would match, and return, another key's value.
+func KVGetLeaderOrMarker(
+	ctx context.Context, nc *nats.Conn, bucket, key string,
+) (entry KVLeaderEntry, deleted bool, err error) {
+	if nc == nil {
+		panic("KVGetLeaderOrMarker: nc must not be nil")
+	}
 	if bucket == "" || key == "" {
-		panic("decodeKVLeaderReply: bucket and key must not be empty")
+		panic("KVGetLeaderOrMarker: bucket and key must not be empty")
 	}
-	var reply MsgGetReply
-	if err := json.Unmarshal(data, &reply); err != nil {
-		return KVLeaderEntry{}, fmt.Errorf("kv %s/%s: decode read: %w", bucket, key, err)
+	if !ValidKVKey(key) {
+		return KVLeaderEntry{}, false, jetstream.ErrInvalidKey
 	}
-	if reply.Error != nil {
-		if reply.Error.ErrCode == int(jetstream.JSErrCodeMessageNotFound) {
-			return KVLeaderEntry{}, jetstream.ErrKeyNotFound
-		}
-		return KVLeaderEntry{}, fmt.Errorf(
-			"kv %s/%s: read: %s", bucket, key, reply.Error.Description,
-		)
+	msg, err := StreamMsgLeader(ctx, nc, "KV_"+bucket,
+		map[string]any{"last_by_subj": "$KV." + bucket + "." + key})
+	if err != nil {
+		return KVLeaderEntry{}, false, fmt.Errorf("kv %s/%s: %w", bucket, key, err)
 	}
-	if reply.Message == nil || reply.Message.Sequence == 0 {
-		return KVLeaderEntry{}, fmt.Errorf("kv %s/%s: read: empty reply", bucket, key)
+	if msg == nil {
+		return KVLeaderEntry{}, false, jetstream.ErrKeyNotFound
 	}
-	if len(reply.Message.Header) > 0 {
-		header, err := nats.DecodeHeadersMsg(reply.Message.Header)
+	if len(msg.Header) > 0 {
+		header, err := nats.DecodeHeadersMsg(msg.Header)
 		if err != nil {
-			return KVLeaderEntry{}, fmt.Errorf("kv %s/%s: decode headers: %w", bucket, key, err)
+			return KVLeaderEntry{}, false,
+				fmt.Errorf("kv %s/%s: decode headers: %w", bucket, key, err)
 		}
 		if header.Get(kvOperationHeader) != "" {
-			return KVLeaderEntry{}, jetstream.ErrKeyNotFound
+			return KVLeaderEntry{}, true, jetstream.ErrKeyNotFound
 		}
 	}
 	return KVLeaderEntry{
-		Value: reply.Message.Data, Revision: reply.Message.Sequence,
-		Created: reply.Message.Time,
-	}, nil
+		Value: msg.Data, Revision: msg.Sequence, Created: msg.Time,
+	}, false, nil
 }
 
 // LeaderReadKV returns kv with Get answered by the bucket's stream

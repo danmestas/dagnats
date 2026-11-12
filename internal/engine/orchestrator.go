@@ -1065,9 +1065,10 @@ func (o *Orchestrator) startExistingRun(
 	// never concurrent ones — reach this early exit in a single
 	// process. Multiple orchestrator replicas remain a genuine race,
 	// which is exactly what CreateSnapshot defends against.
-	if existing, loadErr := o.store.Load(
-		ctx, evt.RunID,
-	); loadErr == nil {
+	if existing, loadErr := o.store.Load(ctx, evt.RunID); loadErr == nil {
+		if existing.Status.IsTerminal() {
+			return true, o.releaseTerminalRunSlot(ctx, existing)
+		}
 		// A live run with ready steps still pending means a save that
 		// would have dispatched them never landed (lost to a rival
 		// engine, or a crash in between). Skipping would strand it;
@@ -1087,9 +1088,7 @@ func (o *Orchestrator) startExistingRun(
 		)
 		return true, nil
 	} else if !errors.Is(loadErr, ErrRunNotFound) {
-		return true, fmt.Errorf(
-			"load existing run %q: %w", evt.RunID, loadErr,
-		)
+		return true, fmt.Errorf("load existing run %q: %w", evt.RunID, loadErr)
 	}
 	return false, nil
 }
@@ -1165,6 +1164,9 @@ func (o *Orchestrator) handleWorkflowStarted(
 	if handled, err := o.startExistingRun(ctx, evt, isRunTerminal); handled || err != nil {
 		return err
 	}
+	if handled, err := o.startCancelledRun(ctx, evt); handled || err != nil {
+		return err
+	}
 	wfDef, input, labels, triggerDepth, err := o.resolveStartPayload(ctx, evt)
 	if errors.Is(err, errStartPayloadHandled) {
 		return nil
@@ -1173,9 +1175,7 @@ func (o *Orchestrator) handleWorkflowStarted(
 		return err
 	}
 
-	if handled, err := o.rejectInvalidStart(
-		ctx, evt, wfDef, input, labels,
-	); handled || err != nil {
+	if handled, err := o.rejectInvalidStart(ctx, evt, wfDef, input, labels); handled || err != nil {
 		return err
 	}
 
@@ -1203,9 +1203,7 @@ func (o *Orchestrator) handleWorkflowStarted(
 	run.SingletonKey = admission.singletonKey
 	switch admission.action {
 	case admissionSkip:
-		if err := o.persistSkippedRun(
-			ctx, run, admission.skippedBy,
-		); err != nil {
+		if err := o.persistSkippedRun(ctx, run, admission.skippedBy); err != nil {
 			return fmt.Errorf("save skipped run: %w", err)
 		}
 		return nil
@@ -1222,26 +1220,25 @@ func (o *Orchestrator) handleWorkflowStarted(
 	return o.createOrHealRun(ctx, isRunTerminal, wfDef, run, true)
 }
 
-// createOrHealRun persists run's initial state using the write
-// strategy isRunTerminal selects, then — for a live run (doEnqueue) —
-// dispatches its entry-point steps.
+// createOrHealRun persists run's initial state and then — for a live
+// run (doEnqueue) — dispatches its entry-point steps.
 //
-//   - isRunTerminal=false (every other trigger type, manual/HTTP/cron
-//     starts): a plain, unconditional Save (Put). Safe because
-//     handleWorkflowStarted's early guard already proved evt.RunID
-//     has no existing snapshot for THIS message before reaching here
-//     — matches every trigger type's original behavior exactly.
-//   - isRunTerminal=true (run_terminal chain starts, #634 review round
-//     2): CreateSnapshot — an atomic KV Create, not Put. This IS the
-//     claim; there is no separate placeholder write. If it wins the
-//     race, dispatch proceeds below exactly as the non-run_terminal
-//     path does. If it loses — "already exists" — a delivery landed
-//     between this call's caller's own early Load-miss and now (the
-//     narrow window only a genuine cross-replica race, or extremely
-//     tight redelivery timing, can hit — see handleWorkflowStarted's
-//     early-guard comment). Losing does NOT mean "nothing to do":
-//     load the existing row and heal it (o.healRun) instead of
-//     silently dropping this delivery.
+// The write is CreateSnapshot, an atomic KV Create: it is both the claim
+// and the run's genuine first persistence (the one place, with the
+// repair passes, that creates the derived indexes). Losing it means a
+// snapshot appeared after handleWorkflowStarted's early guard found
+// none, and what to do depends on what is there:
+//
+//   - a terminal run: a cancel handled in that window finalized the run
+//     from its start event (#1006). Nothing dispatches, and the
+//     admission this start claimed is given back.
+//   - a live run, every trigger type but run_terminal: another engine
+//     handled this same start. A snapshot conflict re-handles the event
+//     from a fresh Load, where startExistingRun skips or heals it.
+//   - a live run, run_terminal chain start (#634 review round 2): the
+//     RunID is deterministic, so "already exists" can be an earlier,
+//     separate delivery that saved but crashed before enqueueing. Heal
+//     it (o.healRun) rather than drop this delivery.
 func (o *Orchestrator) createOrHealRun(
 	ctx context.Context, isRunTerminal bool,
 	wfDef dag.WorkflowDef, run dag.WorkflowRun, doEnqueue bool,
@@ -1252,37 +1249,30 @@ func (o *Orchestrator) createOrHealRun(
 	// The key does not exist yet; the creating write advances this
 	// handle, so the dispatch saves below are revision-checked too.
 	run.Revision = dag.NewSnapshotRevision(0)
-
-	if !isRunTerminal {
-		// SaveInitial, not saveSnapshot/Save (#664 review round 2):
-		// this IS the run's genuine first persistence for every
-		// non-run_terminal trigger type, so it is the one call site
-		// (besides CreateSnapshot below) that must create both
-		// derived indexes. Every LATER save for this run goes through
-		// saveSnapshot -> Save, which touches neither.
-		if err := o.saveInitialSnapshot(ctx, run); err != nil {
-			return fmt.Errorf("save initial run: %w", err)
-		}
-		return o.dispatchNewRun(ctx, wfDef, run, doEnqueue)
-	}
-
-	created, err := o.store.CreateSnapshot(ctx, run)
+	created, err := o.createInitialSnapshot(ctx, run)
 	if err != nil {
 		return fmt.Errorf("create initial run %q: %w", run.RunID, err)
 	}
 	if created {
 		return o.dispatchNewRun(ctx, wfDef, run, doEnqueue)
 	}
-	if !doEnqueue {
-		// Pending: nothing live to heal yet — the queue-advance path
-		// (not this function) owns moving a Pending run forward.
-		return nil
-	}
 	existing, loadErr := o.store.Load(ctx, run.RunID)
 	if loadErr != nil {
 		return fmt.Errorf(
 			"load existing run %q for healing: %w", run.RunID, loadErr,
 		)
+	}
+	if existing.Status.IsTerminal() {
+		return o.releaseAdmission(ctx, run)
+	}
+	if !isRunTerminal {
+		return fmt.Errorf("%w: run %q was created by another delivery",
+			ErrSnapshotConflict, run.RunID)
+	}
+	if !doEnqueue {
+		// Pending: nothing live to heal yet — the queue-advance path
+		// (not this function) owns moving a Pending run forward.
+		return nil
 	}
 	return o.healRun(ctx, existing)
 }
@@ -2132,6 +2122,9 @@ func (o *Orchestrator) handleWorkflowCancelled(
 		panic("handleWorkflowCancelled: RunID must not be empty")
 	}
 	run, err := o.store.Load(ctx, evt.RunID)
+	if errors.Is(err, ErrRunNotFound) {
+		return o.cancelBeforeStart(ctx, evt.RunID)
+	}
 	if err != nil {
 		return fmt.Errorf("load run %q: %w", evt.RunID, err)
 	}
@@ -2793,12 +2786,9 @@ func (o *Orchestrator) saveSnapshot(
 	return err
 }
 
-// saveInitialSnapshot is saveSnapshot's counterpart for a run's
-// GENUINE first persistence via the Put-based admission path (#664
-// review round 2) -- see SnapshotStore.SaveInitial's doc comment.
-// Records the same snapshot.save.duration_ms histogram as saveSnapshot
-// (step label empty: a creation is never attributed to a step), just
-// through the index-creating store call instead of the plain one.
+// saveInitialSnapshot is saveSnapshot's counterpart for a child run's
+// GENUINE first persistence via the Put-based spawn path (#664 review
+// round 2) -- see SnapshotStore.SaveInitial's doc comment.
 func (o *Orchestrator) saveInitialSnapshot(
 	ctx context.Context, run dag.WorkflowRun,
 ) error {
@@ -2810,6 +2800,40 @@ func (o *Orchestrator) saveInitialSnapshot(
 	}
 	start := time.Now()
 	err := o.store.SaveInitial(ctx, run)
+	o.recordInitialSave(ctx, run, start)
+	return err
+}
+
+// createInitialSnapshot is saveInitialSnapshot through
+// SnapshotStore.CreateSnapshot: the write creates the run or, when a
+// snapshot already exists, reports created=false and writes nothing.
+func (o *Orchestrator) createInitialSnapshot(
+	ctx context.Context, run dag.WorkflowRun,
+) (bool, error) {
+	if run.RunID == "" {
+		panic("createInitialSnapshot: RunID must not be empty")
+	}
+	if ctx == nil {
+		panic("createInitialSnapshot: ctx must not be nil")
+	}
+	start := time.Now()
+	created, err := o.store.CreateSnapshot(ctx, run)
+	o.recordInitialSave(ctx, run, start)
+	return created, err
+}
+
+// recordInitialSave records the same snapshot.save.duration_ms
+// histogram as saveSnapshot, with the step label empty: a creation is
+// never attributed to a step.
+func (o *Orchestrator) recordInitialSave(
+	ctx context.Context, run dag.WorkflowRun, start time.Time,
+) {
+	if run.RunID == "" {
+		panic("recordInitialSave: RunID must not be empty")
+	}
+	if start.IsZero() {
+		panic("recordInitialSave: start must be set")
+	}
 	elapsed := float64(time.Since(start).Milliseconds())
 	o.metrics.snapshotDuration.Record(ctx, elapsed,
 		metric.WithAttributes(
@@ -2817,7 +2841,6 @@ func (o *Orchestrator) saveInitialSnapshot(
 			attribute.String("step", ""),
 		),
 	)
-	return err
 }
 
 // loadRunAndDef loads the workflow definition and current run

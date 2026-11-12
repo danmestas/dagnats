@@ -799,7 +799,7 @@ func (m *MockTaskContext) WaitForSignal(name string, timeout time.Duration) ([]b
 
 
 <a name="RunFixture"></a>
-## type [RunFixture](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/run_fixture.go#L23-L39>)
+## type [RunFixture](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/run_fixture.go#L26-L42>)
 
 RunFixture wraps a Harness with helpers that submit and advance workflow runs into terminal states. The fixture is concern\-scoped \(run shape\) rather than infrastructure\-scoped \(NATS lifecycle\).
 
@@ -810,7 +810,7 @@ type RunFixture struct {
 ```
 
 <a name="NewRunFixture"></a>
-### func [NewRunFixture](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/run_fixture.go#L43>)
+### func [NewRunFixture](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/run_fixture.go#L46>)
 
 ```go
 func NewRunFixture(h *Harness) *RunFixture
@@ -819,7 +819,7 @@ func NewRunFixture(h *Harness) *RunFixture
 NewRunFixture constructs a RunFixture bound to h. Panics on nil harness — programmer error.
 
 <a name="RunFixture.PublishStaleStepStarted"></a>
-### func \(\*RunFixture\) [PublishStaleStepStarted](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/run_fixture.go#L243-L246>)
+### func \(\*RunFixture\) [PublishStaleStepStarted](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/run_fixture.go#L267-L270>)
 
 ```go
 func (f *RunFixture) PublishStaleStepStarted(ctx context.Context, t *testing.T, runID, stepID string, attempt int)
@@ -832,7 +832,7 @@ We deliberately do NOT set Nats\-Msg\-Id to the deterministic NATSMsgID\(\). The
 attempt must be \> 0; attempt == 0 is reserved for "not yet scheduled" elsewhere in the engine.
 
 <a name="RunFixture.RunSingleStepToCompletion"></a>
-### func \(\*RunFixture\) [RunSingleStepToCompletion](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/run_fixture.go#L156-L158>)
+### func \(\*RunFixture\) [RunSingleStepToCompletion](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/run_fixture.go#L159-L161>)
 
 ```go
 func (f *RunFixture) RunSingleStepToCompletion(t *testing.T) (string, string)
@@ -841,16 +841,16 @@ func (f *RunFixture) RunSingleStepToCompletion(t *testing.T) (string, string)
 RunSingleStepToCompletion drives one fresh single\-step workflow through the worker harness and waits for it to reach Completed. Returns the run ID and step ID of the now\-terminal step. Callers rely on this to seed the "step is terminal" precondition before synthesizing a stale step.started in idempotency tests.
 
 <a name="RunFixture.Snapshot"></a>
-### func \(\*RunFixture\) [Snapshot](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/run_fixture.go#L205-L207>)
+### func \(\*RunFixture\) [Snapshot](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/run_fixture.go#L215-L217>)
 
 ```go
 func (f *RunFixture) Snapshot(t *testing.T, runID string) dag.WorkflowRun
 ```
 
-Snapshot returns the current KV snapshot for runID. Fatals the test on load failure — callers use this to assert state didn't change across an event publish, so a load error is unrecoverable.
+Snapshot returns the engine's current KV snapshot for runID, waiting up to snapshotWaitTimeout for the engine to write it. It reads the store, not Service.GetRun: GetRun answers a run whose start is not handled yet with a pending view built from the start event \(\#1006\), and callers here assert on the engine's own state. Fatals the test when no snapshot appears or a load fails.
 
 <a name="RunFixture.SubmitAndAdvanceTo"></a>
-### func \(\*RunFixture\) [SubmitAndAdvanceTo](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/run_fixture.go#L60-L62>)
+### func \(\*RunFixture\) [SubmitAndAdvanceTo](<https://github.com/danmestas/dagnats/blob/main/dagnatstest/run_fixture.go#L63-L65>)
 
 ```go
 func (f *RunFixture) SubmitAndAdvanceTo(t *testing.T, state string, n int)
