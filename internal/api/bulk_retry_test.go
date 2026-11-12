@@ -46,8 +46,8 @@ func TestBulkRetryRerunMode(t *testing.T) {
 	var run1, run2 dag.WorkflowRun
 	for {
 		var err1, err2 error
-		run1, err1 = svc.GetRun(context.Background(), runID1)
-		run2, err2 = svc.GetRun(context.Background(), runID2)
+		run1, err1 = svc.store.Load(context.Background(), runID1)
+		run2, err2 = svc.store.Load(context.Background(), runID2)
 		if err1 == nil && err2 == nil {
 			break
 		}
@@ -130,7 +130,7 @@ func TestBulkRetryDryRun(t *testing.T) {
 	var run dag.WorkflowRun
 	for {
 		var err error
-		run, err = svc.GetRun(context.Background(), runID)
+		run, err = svc.store.Load(context.Background(), runID)
 		if err == nil {
 			break
 		}
@@ -226,7 +226,7 @@ func TestBulkRetrySkipsNonFailed(t *testing.T) {
 	// Wait for orchestrator to create snapshot
 	deadline := time.After(5 * time.Second)
 	for {
-		_, err := svc.GetRun(context.Background(), runID)
+		_, err := svc.store.Load(context.Background(), runID)
 		if err == nil {
 			break
 		}
@@ -368,7 +368,7 @@ func reloadRun(t *testing.T, svc *Service, runID string) dag.WorkflowRun {
 	if runID == "" {
 		t.Fatal("reloadRun: runID must not be empty")
 	}
-	run, err := svc.GetRun(context.Background(), runID)
+	run, err := svc.store.Load(context.Background(), runID)
 	if err != nil {
 		t.Fatalf("reload run %s: %v", runID, err)
 	}

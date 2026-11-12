@@ -180,8 +180,11 @@ type RunResponse struct {
 	TraceID string `json:"trace_id"`
 }
 
-// GetRun retrieves the current snapshot for the given run ID.
-// Returns engine.ErrRunNotFound when no snapshot exists.
+// GetRun retrieves the current snapshot for the given run ID. A run
+// StartRun acknowledged whose start the orchestrator has not handled yet
+// answers as pending (#1006), so a run id is readable, and its workflow
+// known for ownership checks, from the moment StartRun returns it.
+// Returns engine.ErrRunNotFound when the run is unknown.
 func (s *Service) GetRun(
 	ctx context.Context, runID string,
 ) (dag.WorkflowRun, error) {
@@ -198,7 +201,7 @@ func (s *Service) GetRun(
 		},
 		func(ctx context.Context) error {
 			var innerErr error
-			run, innerErr = s.store.Load(ctx, runID)
+			run, innerErr = s.store.LoadAccepted(ctx, runID)
 			return innerErr
 		},
 	)

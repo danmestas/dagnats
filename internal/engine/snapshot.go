@@ -217,15 +217,14 @@ func advanceRevision(run dag.WorkflowRun, revision uint64) {
 }
 
 // SaveInitial is Save's counterpart for a run's GENUINE first
-// persistence via the Put-based admission path (createOrHealRun's
-// non-terminal branch -- every trigger type except run_terminal chain
-// starts, which use CreateSnapshot's atomic Create instead). Unlike
-// Save, SaveInitial ALSO writes both derived indexes (#664): this is
-// the only other place a "run." key transitions from not-existing to
-// existing, so it is the only other place the indexes need creating.
+// persistence via a Put: a spawned child run (handleWorkflowSpawn).
+// Top-level starts create through CreateSnapshot instead. Unlike Save,
+// SaveInitial ALSO writes both derived indexes (#664): creation is the
+// only place a "run." key transitions from not-existing to existing, so
+// it is the only place the indexes need creating.
 //
 // Callers must only call this for a run they know has no existing
-// snapshot (createOrHealRun's early guard already proves this for its
+// snapshot (the spawn handler's existence check proves this for its
 // caller) -- SaveInitial does not itself check. Calling it on an
 // existing run's advance would not be incorrect (Put still overwrites,
 // the index writes are idempotent Creates) but would waste two KV
@@ -399,18 +398,16 @@ func (s *SnapshotStore) deleteActiveEntry(ctx context.Context, runID string) {
 // fully succeeded" or "an earlier delivery saved but crashed before
 // finishing (e.g. before enqueueReady)."
 //
-// This exists for run-ID schemes that are DETERMINISTIC across
-// redeliveries -- today, exclusively internal/trigger's run_terminal
-// chain-start run IDs (runTerminalChainRunID). A time-bounded publish
-// dedup window (WORKFLOW_HISTORY's Nats-Msg-Id Duplicates, a few
-// seconds) cannot survive a crash/restart gap of minutes; an atomic
-// KV write can, because it has no expiry. Every OTHER trigger type
-// still mints a fresh run ID per fire and relies on the existing
-// Load-then-skip idempotency guard in handleWorkflowStarted (#196) --
-// that guard is correct for THEM because a genuine redelivery of the
-// exact same stored workflow.started message always carries the same
-// RunID; CreateSnapshot only matters when two SEPARATE publish
-// attempts might independently compute the same target RunID.
+// Every top-level start creates through it (createOrHealRun), and so
+// does a cancel handled before its run's start (#1006): with both
+// writes a Create, a start and a cancel racing on two engines cannot
+// both create the run, so the loser sees the winner's snapshot. It was
+// first added for run-ID schemes DETERMINISTIC across redeliveries --
+// internal/trigger's run_terminal chain-start run IDs
+// (runTerminalChainRunID) -- where a time-bounded publish dedup window
+// (WORKFLOW_HISTORY's Nats-Msg-Id Duplicates, a few seconds) cannot
+// survive a crash/restart gap of minutes; an atomic KV write can,
+// because it has no expiry.
 func (s *SnapshotStore) CreateSnapshot(
 	ctx context.Context, run dag.WorkflowRun,
 ) (bool, error) {
@@ -643,25 +640,34 @@ func (s *SnapshotStore) loadPrunable(
 // lagging replica, and every Load feeds a read-modify-Save. The
 // returned run carries the revision it was read at (see Save).
 func (s *SnapshotStore) Load(ctx context.Context, runID string) (dag.WorkflowRun, error) {
+	run, _, err := s.loadOrMarker(ctx, runID)
+	return run, err
+}
+
+// loadOrMarker is Load that also reports, with ErrRunNotFound, whether
+// the snapshot was deleted (pruned) rather than never written.
+func (s *SnapshotStore) loadOrMarker(
+	ctx context.Context, runID string,
+) (dag.WorkflowRun, bool, error) {
 	if runID == "" {
 		panic("SnapshotStore.Load: runID must not be empty")
 	}
 	if s.nc == nil {
 		panic("SnapshotStore.Load: nats connection must not be nil")
 	}
-	entry, err := natsutil.KVGetLeader(ctx, s.nc, runsBucket, "run."+runID)
+	entry, deleted, err := natsutil.KVGetLeaderOrMarker(ctx, s.nc, runsBucket, "run."+runID)
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return dag.WorkflowRun{}, ErrRunNotFound
+			return dag.WorkflowRun{}, deleted, ErrRunNotFound
 		}
-		return dag.WorkflowRun{}, err
+		return dag.WorkflowRun{}, false, err
 	}
 	var run dag.WorkflowRun
 	if err := json.Unmarshal(entry.Value, &run); err != nil {
-		return dag.WorkflowRun{}, err
+		return dag.WorkflowRun{}, false, err
 	}
 	run.Revision = dag.NewSnapshotRevision(entry.Revision)
-	return run, nil
+	return run, false, nil
 }
 
 // retrySnapshotConflict runs handle until it returns anything other
