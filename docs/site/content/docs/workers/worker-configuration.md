@@ -120,7 +120,7 @@ A decode or encode failure is a non-retryable failure. `worker.UnwrapTrigger()` 
 | `FailPermanent(err)` | Fail without retrying |
 | `FailRetryAfter(err, d)` | Fail and retry after `d` |
 | `Continue(out)` | Request another iteration of an [agent loop](/docs/step-types/agent-loops) |
-| `Heartbeat()` | Extend the claim; see [Heartbeats](/docs/workers/heartbeats) |
+| `Heartbeat()` | Optional extra extension of the claim (automatic already); see [Heartbeats](/docs/workers/heartbeats) |
 | `Pause(name, d)` | Hold the task and run it again after `d` |
 | `Checkpoint(b)`, `LoadCheckpoint()` | Save and read state across retries and pauses |
 | `PutStream(b)` | Publish a live token to `stream.{run_id}.{step_id}` |

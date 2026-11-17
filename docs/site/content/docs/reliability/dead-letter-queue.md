@@ -3,11 +3,11 @@ title: Dead Letter Queue
 weight: 4
 ---
 
-The **dead letter queue** (DLQ) captures task messages that have exhausted all retries, providing a 30-day window for inspection and replay. The stream also has a byte ceiling of 5% of `max_store_bytes`, and the oldest entries go first if it fills.
+The **dead letter queue** (DLQ) captures task messages that have exhausted all retries, for inspection and replay. The stream has no max age: it is capped at 5% of `max_store_bytes`, and the oldest entries go first if it fills.
 
 ## DEAD_LETTERS Stream
 
-When a step fails permanently -- either by exceeding its retry limit or by calling `FailPermanent()` -- the engine publishes the failed task message to the `DEAD_LETTERS` stream on `dead.{taskType}.{runID}.{stepID}`. Messages are retained for **30 days**. Publishing is deduplicated for 24 hours on the run, step and attempt count, so a redelivered failure event does not create a second entry.
+When a step fails permanently -- either by exceeding its retry limit or by calling `FailPermanent()` -- the engine publishes the failed task message to the `DEAD_LETTERS` stream on `dead.{taskType}.{runID}.{stepID}`. Messages have no max age; they are retained until the stream's byte ceiling pushes out the oldest. Publishing is deduplicated for 24 hours on the run, step and attempt count, so a redelivered failure event does not create a second entry.
 
 The DLQ keeps the original task body, and carries the run ID, step ID, error and delivery count as headers. This gives operators everything needed to diagnose the failure and decide whether to replay.
 
@@ -58,7 +58,7 @@ An entry written before the DLQ kept task bodies cannot be replayed; `dlq replay
 
 | Mode | Behavior |
 |------|----------|
-| `replay` | Re-publish original DLQ messages to resume at the failed step. Uses the existing run ID and state. Limited by 30-day DLQ retention. |
+| `replay` | Re-publish original DLQ messages to resume at the failed step. Uses the existing run ID and state. Limited by how long the DLQ keeps the entry (size-bounded, no max age). |
 | `rerun` | Start a fresh run with the original input. New run ID, clean state, uses the current workflow definition. |
 
 Both modes support `--dry-run` to preview what would be replayed without taking action.

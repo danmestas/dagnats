@@ -46,7 +46,7 @@
 | Internal API | NATS micro (discovery + load balancing) |
 | Workflow def versioning | KV revision history |
 | Large payloads | Object Store + event references |
-| Step timeouts | AckWait + MaxDeliver |
+| Step timeouts | Engine watchdog timers in `SLEEP_TIMERS` (AckWait is the worker claim only) |
 
 ## NATS Resources
 
@@ -57,8 +57,8 @@
 | WORKFLOW_HISTORY | `history.>` | Immutable event log (5s dedup) |
 | TASK_QUEUES | `task.>` | Work queue distribution |
 | EVENTS | `event.>` | External triggers |
-| DEAD_LETTERS | `dead.>` | Permanent failures (30-day retention) |
-| TELEMETRY | `telemetry.>` | Observability signals (7-day, 1GB max) |
+| DEAD_LETTERS | `dead.>` | Permanent failures (size-bounded, no max age) |
+| TELEMETRY | `telemetry.>` | Observability signals (size-bounded, no max age) |
 | SLEEP_TIMERS | `sleep.>`, `scheduled.>` | Durable timers via NakWithDelay (sleep, wait-timeout, rate-retry, scheduled runs) |
 
 **KV Buckets:**
@@ -111,7 +111,7 @@ Three interfaces, split by concern. Handlers type-assert to optional capabilitie
 - `Complete(output)`, `Fail(err)`, `FailPermanent(err)`, `FailRetryAfter(err, d)` — terminal actions
 - `Continue(output)` — agent loop iteration
 - `PutStream(data)` — real-time streaming via core pub/sub (`stream.{runID}.{stepID}`)
-- `Heartbeat()` — extends AckWait via InProgress()
+- `Heartbeat()` — extends AckWait via InProgress() once, on top of the automatic heartbeat the worker keeps while a handler runs
 
 **Checkpointing** (methods on TaskContext directly):
 - `Checkpoint(state)` / `LoadCheckpoint()` — KV persistence
@@ -211,7 +211,7 @@ Observability: `step.failure.non_retriable` and `step.failure.retry_after` count
 
 **Bulk retry** (`POST /runs/retry`, `dagnats run retry-all`): Retry up to 1000 failed runs. Two modes:
 - `rerun` — fresh start with original input (new run ID, clean state, uses current workflow def)
-- `replay` — re-publish DLQ task messages to resume at failed step (existing run, limited by 30-day DLQ retention)
+- `replay` — re-publish DLQ task messages to resume at failed step (existing run, limited by the DLQ's size-bounded retention)
 
 Both support `--dry-run`, time range filters (`--after`, `--before`). Sequential processing, 1000-run cap.
 

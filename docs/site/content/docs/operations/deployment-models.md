@@ -20,7 +20,7 @@ This is the recommended model for development, staging, and small-to-medium prod
 | Component | Role |
 |-----------|------|
 | Embedded NATS | JetStream streams, KV buckets, pub/sub |
-| ActorOrchestrator | Per-workflow actors, event processing |
+| Orchestrator | Workflow state machine, event processing |
 | API Service | REST + NATS micro control plane |
 | TriggerService | Cron, subject, and webhook triggers |
 | HTTP Server | REST endpoints, health checks, webhooks |
@@ -35,7 +35,7 @@ Your workers are separate processes. They connect to the embedded NATS server ov
 3. Connect internal client to `nats://localhost:{port}`
 4. Create all JetStream streams and KV buckets (`natsutil.SetupAll`), within a 30-second budget standalone or 3 minutes in a cluster
 5. Initialize telemetry pipeline
-6. Start API service, actor orchestrator, HTTP bridge, trigger service
+6. Start API service, orchestrator, HTTP bridge, trigger service
 7. Start HTTP server
 8. Block on SIGINT/SIGTERM
 

@@ -124,7 +124,7 @@ This three-phase pattern (reason, approve, execute) is the safest way to run LLM
 | Approval gate | 4-24 hours | Async review; the step fails on expiry |
 | Per-iteration timeout | 60-120 seconds | Prevent hung LLM calls |
 
-For `WaitForSignal`, remember to call `Heartbeat()` periodically if the wait exceeds the NATS AckWait period (5 minutes by default). Or use `Pause()` to NAK with delay and resume when the human responds. Either way the wait counts toward the step's timeout, so set one that covers the longest expected response.
+For `WaitForSignal`, the worker extends AckWait automatically while it waits, up to a one-hour cap by default, so no manual `Heartbeat()` is needed. For longer waits use `Pause()` to NAK with delay and resume when the human responds. Either way the wait counts toward the step's timeout, so set one that covers the longest expected response.
 
 ## Inputs for Running Agents
 

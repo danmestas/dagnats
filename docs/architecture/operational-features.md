@@ -95,7 +95,7 @@ At most one active run per key. Two conflict modes:
 
 - Stream: `DEAD_LETTERS` (subjects: `dead.{taskName}.{runID}.{stepID}`)
 - Payload: JSON with run_id, step_id, task, error, attempts
-- 30-day retention
+- Size-bounded ring (no max age): a share of `max_store_bytes`, oldest dropped first when full
 - CLI: `dagnats dlq list` (50 max), `dagnats dlq replay <seq>`
 
 ## Run Output
@@ -169,7 +169,7 @@ Prevents duplicate workflow runs by keying on a value extracted from input. `Wor
 
 - Fields: `WorkflowDef.InputSchema`, `WorkflowDef.OutputSchema` (JSON Schema subset)
 - In-house validator ~100 LOC: supports `type`, `required`, `properties` (recursive)
-- Input validated on start (reject invalid). Output logged as warning (don't fail).
+- Input validated on start (reject invalid). Output validated when the run would complete: a mismatch fails the run, and the violation becomes the offending terminal step's error.
 - Nil schema passes all inputs.
 
 ## Workflow Timeouts

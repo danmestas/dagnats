@@ -458,7 +458,7 @@ different purposes and neither replaces the other.
   shares the single `history.{runID}` subject, so events *within a run*
   arrive in publish order. There is no cross-run or cross-subject
   ordering guarantee.
-- **Retention:** `historyMaxAge` -- 30 days (`internal/natsutil/conn.go`).
+- **Retention:** no max age; a size-bounded ring (a share of `max_store_bytes`, oldest dropped first when full) (`internal/natsutil/conn.go`).
 - **Use for:** reconstructing a run's full step-by-step timeline
   (waterfall views, per-step duration, debugging a specific run).
 

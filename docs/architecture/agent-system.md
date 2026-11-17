@@ -7,8 +7,8 @@
 loads run state from KV per event, and serializes each run's events
 behind a per-run mutex (`getRunLock`, a `sync.Map` of `*sync.Mutex`)
 to prevent concurrent KV load-modify-save races. Supervision
-(retry/timeout) is provided by JetStream's `AckWait`/`MaxDeliver` per
-this repo's NATS-native patterns, not by an in-process actor system.
+(retry/timeout) is provided by the engine's retry policies and watchdog timers
+plus JetStream's `AckWait` (task consumers have no `MaxDeliver`), not by an in-process actor system.
 
 The experimental actor-based engine path (`WorkflowActor`,
 `ActorOrchestrator`) was removed on 2026-05-02 — see

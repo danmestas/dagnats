@@ -78,7 +78,7 @@ Reference implementation of the wire protocol for other language SDK authors.
 
 ```go
 client := httpclient.New("http://localhost:8080", httpclient.WithToken("secret"))
-client.Connect(ctx, reg)
+client.Connect(ctx, "worker-1", []string{"echo"}, 5)
 tasks, _ := client.Poll(ctx, []string{"echo"}, 5, 30*time.Second)
 client.Complete(ctx, tasks[0].TaskID, output)
 client.Disconnect()

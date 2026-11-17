@@ -47,13 +47,13 @@ sequenceDiagram
     Engine->>Engine: step.failed (retriable): retry policy decides
 ```
 
-Workers hold their claim on a task by heartbeating. `Heartbeat()` sends an `InProgress()` signal to NATS so the message is not redelivered while the handler is still working. It does not extend the step timeout:
+Workers hold their claim on a task by heartbeating, which the worker does automatically while the handler runs (see [Heartbeats](/docs/workers/heartbeats)). `Heartbeat()` sends one more `InProgress()` signal by hand and is never needed to prevent redelivery. Neither extends the step timeout:
 
 ```go
 w.Handle("long-task", func(ctx worker.TaskContext) error {
     for i := 0; i < 100; i++ {
         processChunk(i)
-        ctx.Heartbeat() // keep the claim; the step timeout still applies
+        ctx.Heartbeat() // optional; the claim is held automatically, the step timeout still applies
     }
     return ctx.Complete([]byte(`{"chunks":100}`))
 })
