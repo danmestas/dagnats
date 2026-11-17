@@ -46,7 +46,7 @@ w.Handle("wait-for-review", func(ctx worker.TaskContext) error {
 
 The timeout is capped at **1 hour** by the implementation. If the timeout expires before a signal arrives, `WaitForSignal` returns an error with the message `signal "name" timed out after duration`.
 
-**While waiting**, the step's NATS message remains in-flight. For long waits, call `Heartbeat()` periodically to prevent AckWait redelivery, or use `Pause()` to NAK with delay and resume on the next delivery. The wait counts toward the step's timeout either way.
+**While waiting**, the step's NATS message remains in-flight. The worker extends AckWait automatically while the handler waits (see [Heartbeats](/docs/workers/heartbeats)), up to a one-hour cap by default, so long waits should use `Pause()` to NAK with delay and resume on the next delivery. The wait counts toward the step's timeout either way.
 
 ### SendSignal
 

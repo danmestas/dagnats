@@ -60,7 +60,7 @@ NATS server's `DeleteConsumer` is **idempotent across concurrent callers**: when
 ## Out of scope (deferred)
 
 - Per-task `AckWait` override via `WithAckWait` handler-registration option — separate follow-up issue.
-- In-handler heartbeats via `msg.InProgress()` — ADR-008 (tracked as follow-up issue, not yet written).
+- In-handler heartbeats via `msg.InProgress()` — no ADR was written; shipped as the worker's automatic heartbeat (`worker/progress.go`).
 - Cross-process consumer-name collision detection — ADR-009 candidate (tracked as follow-up issue).
 - Unification of default and elastic consumer paths — ADR-007 (proposed alongside this ADR).
 

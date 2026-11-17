@@ -38,7 +38,7 @@ type Config struct {
     HTTPAddr       string   // HTTP listen address
     NATSPort       int      // Embedded NATS port
     LeafRemotes    []string // Hub URLs for leaf node mode (max 10)
-    MaxStoreBytes  int64    // JetStream storage cap (default 10GB)
+    MaxStoreBytes  int64    // JetStream storage cap (unset: half of free disk at DataDir, capped at 10 GiB; 10 GiB if disk size is unknown)
 }
 ```
 

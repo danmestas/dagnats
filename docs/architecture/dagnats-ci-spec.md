@@ -330,7 +330,7 @@ w.Start()
 
 `daggerCall` reads `ctx.Metadata()` for `module`/`call`, reads `ctx.Input()` for
 the repo+SHA, runs Dagger, and reports via `ctx.Complete` / `ctx.Fail`. Long
-builds call `ctx.Heartbeat()` to hold the AckWait. The engine remains the sole
+builds need no call to hold the AckWait: the worker heartbeats automatically. The engine remains the sole
 retry authority (ADR-011); workers stay thin.
 
 ## 6. Execution model (Dagger)

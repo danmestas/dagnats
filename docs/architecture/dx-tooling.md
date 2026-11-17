@@ -61,6 +61,6 @@ All calls read JetStream metadata only — no message bodies scanned. ~N+4 API c
 
 `dagnats trigger history <trigger-id> [--limit=N] [--json]` shows fire events for a trigger.
 
-**Data source:** `TRIGGER_HISTORY` stream (`trigger.fire.{triggerID}`, 30-day retention). `TriggerFire` records published by trigger scheduler on every fire, including skipped fires (singleton/dedup/concurrency). Run status enriched at query time from `workflow_runs` KV with bounded parallel lookups (16 concurrent).
+**Data source:** `TRIGGER_HISTORY` stream (`trigger.fire.{triggerID}`, size-bounded, no max age). `TriggerFire` records published by trigger scheduler on every fire, including skipped fires (singleton/dedup/concurrency). Run status enriched at query time from `workflow_runs` KV with bounded parallel lookups (16 concurrent).
 
 **Columns:** time, status (started/completed/failed/cancelled/skipped), run ID, duration.

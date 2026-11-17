@@ -118,6 +118,6 @@ The engine holds no per-run state in memory between events. All state lives in t
 
 ## Trade-offs
 
-- **Storage grows with traffic**: `WORKFLOW_HISTORY` keeps 30 days of events and is also capped by a share of the store budget. Size `max_store_bytes` for your run rate.
+- **Storage grows with traffic**: `WORKFLOW_HISTORY` has no age limit; it keeps as many events as its share of the store budget holds and drops the oldest when full. Size `max_store_bytes` for your run rate.
 - **The snapshot matters**: losing the `workflow_runs` bucket loses current run state even though recent events remain. Replicate it (cluster mode) or back up the data directory.
 - **Event schema evolution**: changing event payloads requires backward compatibility. DagNats keeps payloads as `json.RawMessage` and parses defensively.

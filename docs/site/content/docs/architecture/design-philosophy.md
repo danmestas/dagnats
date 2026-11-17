@@ -57,7 +57,7 @@ This is intentional. A panic at startup is better than a nil pointer dereference
 
 ### Bounded Everything
 
-All loops, queues, retries, and collections have explicit upper bounds. Configuration files are limited to 300 lines. Leaf remotes are capped at 10. Worker configs are capped at 50. Map steps allow at most 10,000 items. Dynamic planners generate at most 100 steps. Task redelivery is capped by JetStream's `MaxDeliver`. Parallel KV fetches run under a fixed concurrency limit.
+All loops, queues, retries, and collections have explicit upper bounds. Configuration files are limited to 300 lines. Leaf remotes are capped at 10. Worker configs are capped at 50. Map steps allow at most 10,000 items. Dynamic planners generate at most 100 steps. Task retries are bounded by each step's retry policy, owned by the engine (task consumers set no `MaxDeliver`); the engine's own history consumer is capped by its redelivery schedule, after which an event is dead-lettered. Parallel KV fetches run under a fixed concurrency limit.
 
 Unbounded growth is a bug. Every bound is documented and enforced.
 

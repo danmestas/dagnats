@@ -316,8 +316,8 @@ The deployment matrix in practice:
 |---|---|
 | Local development | Nothing. Run `dagnats serve`, open `http://localhost:8080/console/`. |
 | Remote inspection from your laptop | `ssh -L 8080:localhost:8080 vps`, open the console in your local browser. No auth needed because the loopback binding plus the SSH tunnel together provide access control. |
-| Team access with SSO | Run dagnats with `DAGNATS_LISTEN_ADDR=0.0.0.0` and `DAGNATS_CONSOLE_TRUST_FORWARDED_AUTH=true`. Put Cloudflare Access, oauth2-proxy, or your existing auth proxy in front. dagnats reads `X-Forwarded-User` from each request and uses it for the action audit log. |
-| Homelab, no SSO, want to expose on LAN | Run dagnats with `DAGNATS_LISTEN_ADDR=0.0.0.0` and `DAGNATS_CONSOLE_PASSWORD=...`. |
+| Team access with SSO | Run dagnats with `DAGNATS_HTTP_ADDR=0.0.0.0:8080` and `DAGNATS_CONSOLE_TRUST_FORWARDED_AUTH=true`. Put Cloudflare Access, oauth2-proxy, or your existing auth proxy in front. dagnats reads `X-Forwarded-User` from each request and uses it for the action audit log. |
+| Homelab, no SSO, want to expose on LAN | Run dagnats with `DAGNATS_HTTP_ADDR=0.0.0.0:8080` and `DAGNATS_CONSOLE_PASSWORD=...`. |
 
 What this approach explicitly does **not** do:
 
@@ -484,7 +484,7 @@ The plan splits along the dx-audit leverage ranking. Each PR closes a leverage t
 ### PR 1 — Foundation (skeleton + auth + assets) — ~500 LOC
 
 - `internal/console/` package created
-- Mount at `/console/` in `server/server.go` (next to existing OpenAPI/Scalar mount). Default bind for the listener is `127.0.0.1`; changing this is an opt-in via `DAGNATS_LISTEN_ADDR`.
+- Mount at `/console/` in `server/server.go` (next to existing OpenAPI/Scalar mount). Default bind for the listener is `127.0.0.1`; changing this is an opt-in via `DAGNATS_HTTP_ADDR`.
 - Loopback-trust auth gate: if the bound address is loopback, `/console/*` mounts unconditionally. If the bound address is non-loopback, mounting requires either `DAGNATS_CONSOLE_TRUST_FORWARDED_AUTH=true` or `DAGNATS_CONSOLE_PASSWORD=...`; without either, the console refuses to mount and the startup log emits a loud message naming both env vars.
 - When forward-auth is enabled, `X-Forwarded-User` and `X-Forwarded-Email` are read from each request and threaded into the action audit log entries.
 - Empty dashboard page rendering layout, nav, and a static "system overview" tile.

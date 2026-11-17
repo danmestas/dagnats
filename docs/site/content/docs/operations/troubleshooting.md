@@ -17,7 +17,7 @@ dagnats run inspect <run-id>
 
 Check the run status and step states. If the run shows `pending` with no steps queued:
 
-1. **Engine not running**: verify `dagnats serve` is up and the orchestrator started. Check logs for `ActorOrchestrator.Start` errors.
+1. **Engine not running**: verify `dagnats serve` is up and the orchestrator started. Check logs for `start orchestrator` errors.
 2. **Consumer lag**: the orchestrator's durable consumer on `WORKFLOW_HISTORY` may be behind. Check with `nats consumer info WORKFLOW_HISTORY orchestrator` and look at `Num Pending`.
 3. **NATS connectivity**: the engine may have lost its connection. Check `/health` -- a 503 response means NATS is disconnected.
 
@@ -48,7 +48,7 @@ A step with a `Timeout` fails with a retriable `step timeout exceeded` error whe
 
 **Common causes:**
 
-- **Handler too slow**: the attempt ran past the step's `Timeout`. `ctx.Heartbeat()` keeps the claim on the task message (it calls NATS `InProgress()`), but it does not extend the step timeout.
+- **Handler too slow**: the attempt ran past the step's `Timeout`. The worker keeps the claim on the task message automatically (and `ctx.Heartbeat()` does so by hand, via NATS `InProgress()`), but neither extends the step timeout.
 - **Time spent paused**: time in `Pause()` counts toward the timeout, so a step that pauses repeatedly needs a `Timeout` that covers its whole run.
 - **Worker crashed mid-task**: when the worker stops extending its claim, NATS redelivers the task after `AckWait` to another worker (or the same one after restart). The redelivery does not restart the step timeout. If the handler is an agent loop, the redelivered iteration starts from the last state committed by `Continue()`. If it calls `Journal()`, it also reuses the model responses and tool results the crashed worker recorded, and the engine fails the step with `restart_limit` if the worker crashes on five deliveries in a row. See [Durable Agents](/docs/ai-patterns/durable-agents). Run `dagnats journal check <run-id>` to audit what a journal step recorded.
 - **Network partition**: the worker lost its NATS connection. NATS redelivers to another consumer.

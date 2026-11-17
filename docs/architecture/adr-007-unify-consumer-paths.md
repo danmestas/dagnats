@@ -2,7 +2,7 @@
 
 **Status:** Proposed (2026-05-01)
 **Deciders:** TBD
-**Depends on:** ADR-008 (in-handler heartbeats; tracked as follow-up issue)
+**Depends on:** in-handler heartbeats (no ADR was written; shipped as the worker's automatic heartbeat, `worker/progress.go`)
 **Spec reference:** [`docs/superpowers/specs/2026-05-01-issue-136-durable-task-queue-consumers-design.md`](../superpowers/specs/2026-05-01-issue-136-durable-task-queue-consumers-design.md) §5
 
 ## Context
@@ -57,7 +57,7 @@ Each question is falsifiable. The answer is observable, not opinion.
 
 5. **`MaxAckPending` semantics under pcgroups.** Currently NATS-default (1000) per consumer; under pcgroups partitioning, is it per-partition or per-group? Affects in-flight cap math at scale. Verify by reading pcgroups + flow-control test.
 
-6. **Heartbeat direction.** Long-term answer to `AckWait`-as-workload-knob: handlers signal liveness via `msg.InProgress()`. Sub-questions: where does the ticker live (per-message goroutine vs. dispatch-loop tick); what's the contract for handlers to signal "I'm wedged, don't keep me alive"? Needs its own ADR (**ADR-008**, tracked as follow-up issue). Unification depends on heartbeats — they sequence as ADR-008 first, ADR-007 second. Hence the `Depends on: ADR-008` in this ADR's frontmatter.
+6. **Heartbeat direction.** Long-term answer to `AckWait`-as-workload-knob: handlers signal liveness via `msg.InProgress()`. Sub-questions: where does the ticker live (per-message goroutine vs. dispatch-loop tick); what's the contract for handlers to signal "I'm wedged, don't keep me alive"? Needs its own decision (no ADR was written; it shipped as the automatic heartbeat). Unification depends on heartbeats — they sequence as heartbeats first, ADR-007 second. Hence the `Depends on` in this ADR's frontmatter.
 
 ## Reproducible test plan for unification safety
 

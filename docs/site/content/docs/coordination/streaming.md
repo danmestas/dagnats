@@ -85,7 +85,7 @@ Use both together: stream tokens as they arrive for live UX, then call `Complete
 
 ## Heartbeat During Streaming
 
-Long-running steps that stream data should call `Heartbeat()` periodically to prevent NATS message redelivery. The AckWait timer on the task message resets with each heartbeat. Heartbeats keep the claim only; the step's `Timeout` still applies:
+The worker extends the task message's AckWait automatically while a handler runs, so a long stream is not redelivered (see [Heartbeats](/docs/workers/heartbeats)). Calling `Heartbeat()` is optional; it sends one more extension and reports a cancelled run via `worker.ErrRunCancelled`. Heartbeats keep the claim only; the step's `Timeout` still applies:
 
 ```go
 w.Handle("long-stream", func(ctx worker.TaskContext) error {
