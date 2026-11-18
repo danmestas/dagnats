@@ -4,6 +4,7 @@ package cli
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -59,6 +60,7 @@ func runConfigShowCmd(args []string) {
 	if cfg.DataDir == "" {
 		panic("runConfigShowCmd: DataDir resolved to empty")
 	}
+	cfg = redactConfigSecrets(cfg)
 
 	if HasJSONFlag(args) {
 		if err := FormatJSON(os.Stdout, cfg); err != nil {
@@ -198,4 +200,40 @@ func renderEnvVarValue(row envVarRow) string {
 	default:
 		return raw
 	}
+}
+
+// redactedSecret stands in for a secret value config show must not print.
+const redactedSecret = "REDACTED"
+
+// redactConfigSecrets returns cfg with the secrets it holds inline masked:
+// the cluster auth token, and a password embedded in a leaf remote URL.
+// Secrets kept in files (the *_password_file and token file settings)
+// show only their paths, which stay as they are. Output is often pasted
+// into issues and chats, so it must never carry a credential.
+func redactConfigSecrets(cfg server.Config) server.Config {
+	if cfg.NATSClusterAuthToken != "" {
+		cfg.NATSClusterAuthToken = redactedSecret
+	}
+	if len(cfg.LeafRemotes) == 0 {
+		return cfg
+	}
+	remotes := make([]string, len(cfg.LeafRemotes))
+	for i, remote := range cfg.LeafRemotes {
+		remotes[i] = redactURLPassword(remote)
+	}
+	cfg.LeafRemotes = remotes
+	return cfg
+}
+
+// redactURLPassword masks the password of a URL's userinfo. A value that
+// does not parse is masked whole, since it may still hold a credential.
+func redactURLPassword(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return redactedSecret
+	}
+	if _, hasPassword := parsed.User.Password(); !hasPassword {
+		return raw
+	}
+	return parsed.Redacted()
 }

@@ -30,6 +30,10 @@ func TestBuildLogSubject(t *testing.T) {
 		{"service only", "engine", "", "telemetry.logs.engine.>"},
 		{"level only", "", "error", "telemetry.logs.*.error"},
 		{"both filters", "worker", "info", "telemetry.logs.worker.info"},
+		// The exporter publishes severity lowercase, so --level=ERROR
+		// must build the lowercase subject or it matches nothing.
+		{"upper level", "", "ERROR", "telemetry.logs.*.error"},
+		{"mixed level", "worker", "Warn", "telemetry.logs.worker.warn"},
 	}
 
 	for _, tt := range tests {

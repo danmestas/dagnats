@@ -60,3 +60,29 @@ func TestConfigShowJSONOutput(t *testing.T) {
 		}
 	}
 }
+
+// TestConfigShowHidesSecrets pins that neither form of config show prints
+// the cluster auth token or a password embedded in a leaf remote URL,
+// while still saying they are set and showing the rest of the URL.
+func TestConfigShowHidesSecrets(t *testing.T) {
+	const token, password = "cluster-token-s3cret", "leaf-pa55word"
+	t.Setenv("DAGNATS_NATS_CLUSTER_AUTH_TOKEN", token)
+	t.Setenv("DAGNATS_LEAF_REMOTES", "nats-leaf://hub:"+password+"@eu.example:7422")
+	for _, args := range [][]string{{}, {"--json"}} {
+		output := captureOutput(func() { runConfigShowCmd(args) })
+		if strings.Contains(output, token) || strings.Contains(output, password) {
+			t.Fatalf("config show %v printed a secret:\n%s", args, output)
+		}
+		if !strings.Contains(output, "eu.example:7422") {
+			t.Fatalf("config show %v dropped the leaf remote host:\n%s", args, output)
+		}
+	}
+	var cfg map[string]any
+	output := captureOutput(func() { runConfigShowCmd([]string{"--json"}) })
+	if err := json.Unmarshal([]byte(output), &cfg); err != nil {
+		t.Fatalf("JSON output: %v", err)
+	}
+	if cfg["nats_cluster_auth_token"] != redactedSecret {
+		t.Fatalf("nats_cluster_auth_token = %v, want %q", cfg["nats_cluster_auth_token"], redactedSecret)
+	}
+}

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`dagnats config show` no longer prints secrets.** `--json` printed the cluster auth token (`nats_cluster_auth_token`) in plain text, and both forms printed a password embedded in a leaf remote URL. Both now show `REDACTED`, with the rest of the URL intact. Secrets kept in files show only their paths, as before.
+
+- **`dagnats logs --level` and `logs search --level` match whatever case is given.** Log subjects carry the severity lowercase, so `--level=ERROR` built a subject that matched nothing. The level is now lowercased first.
+
 ## [0.0.67] - 2026-11-18
 
 ### Added
