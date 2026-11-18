@@ -156,6 +156,9 @@ func buildLogSubject(service, level string) string {
 	if len(level) > 20 {
 		panic("buildLogSubject: level string unreasonably long")
 	}
+	// The exporter publishes severity lowercase (normalizeSeverity), so
+	// --level=ERROR must become "error" or the subject matches nothing.
+	level = strings.ToLower(level)
 	if service == "" && level == "" {
 		return "telemetry.logs.>"
 	}
