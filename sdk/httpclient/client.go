@@ -270,6 +270,20 @@ func (c *Client) Pause(
 	return c.resolveExpectOK(ctx, taskID, res)
 }
 
+// Release hands a claimed task back for immediate redelivery without a
+// verdict, for a worker that must stop before it can finish. No outcome
+// and no failed attempt are recorded; the next delivery is the same
+// attempt.
+func (c *Client) Release(ctx context.Context, taskID string) error {
+	if c == nil {
+		panic("Release: c is nil")
+	}
+	if taskID == "" {
+		panic("Release: taskID must not be empty")
+	}
+	return c.resolveExpectOK(ctx, taskID, protocol.TaskResolution{Action: "release"})
+}
+
 // Checkpoint saves intermediate state for a task.
 func (c *Client) Checkpoint(
 	ctx context.Context,

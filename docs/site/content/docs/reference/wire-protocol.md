@@ -231,6 +231,7 @@ Resolves a polled task. Only the token that claimed the task (or the admin token
 | `continue` | `output`, `wait` | Publishes `step.continue` event for an agent loop, ACKs message, removes from ack map. `wait` is `{"delay_ms", "until", "input"}` (ADR-027) and rides the event's payload (and the commit record of a journal step) as the Go SDK's `Continue(..., Delay, Until, UntilInput)` writes it. `delay_ms` must not be negative and `until` must be a real RFC 3339 time, else `400 {"code":"invalid_wait"}`. A `wait` on a step that is not an `agent_loop` step answers `400 {"code":"wait_requires_agent_loop"}` (the task payload's `agent_loop` field says which; a payload with no `state_max_bytes` predates it and is not refused). With `wait.input` set and a submission already queued for the step, nothing is published or acked and the answer is `409 {"error":"...","code":"inputs_queued"}`: the task stays claimed, so the worker places the inputs and continues without the input wait |
 | `inputs.place` | `mode` | Moves the step's queued inputs of `mode` (`steer` or `follow_up`) into the conversation and answers `200 {"inputs":[{"request_id","mode","content"}]}` in submission order (`content` is the submitted JSON, absent when none; `{"inputs":[]}` when nothing is queued, never 204). It runs the Go SDK's `PlaceInputs` through the shared `journal.Placer`: each input is claimed by a compare-and-swap of its status to `placed`, then an `input.placed` record is appended; a redelivery of the same iteration returns the earlier placements once per delivery; the placed inputs settle to `done` when the iteration's `continue` or `complete` commits. Claims the journal on first use like `journal.append` (409 `fenced` and the 410 outcomes apply). Any other `mode` answers `400 {"code":"invalid_mode"}` |
 | `pause` | `duration_ms`, `checkpoint` | Writes checkpoint to KV, NAKs with delay (`duration_ms` in 1 to 3600000), removes from ack map |
+| `release` | none | NAKs with no delay so the task is redelivered at once, removes from ack map, answers `{"status":"released"}` (#1020). Publishes no event: the redelivery is the same attempt. Refused `403` for a token that does not hold the claim, like every action that ends a claim. Tasks have no delivery limit (`MaxDeliver` -1), so releases never exhaust one; for a journal step the next claim counts toward the restart limit, since a release writes no journal record |
 | `checkpoint` | `data` | Writes incremental checkpoint to KV, extends ack deadline (InProgress) |
 | `heartbeat` | none | Extends the ack deadline without resolving the task |
 | `stream` | `data` | Publishes `data` on core NATS subject `stream.{runID}.{stepID}` and extends the ack deadline |
@@ -543,7 +544,7 @@ before the TTL elapses.
   this chunk belongs to -- the SAME numbering `step.started`'s
   `AttemptNumber` and `dag.StepState.Attempts` use. `stream` is `"out"`,
   `"err"`, or `"marker"`; for `"marker"`, `data` carries `"completed"`,
-  `"failed"`, `"continued"`, `"paused"`, or `"truncated"` instead of
+  `"failed"`, `"continued"`, `"paused"`, `"released"`, `"fenced"`, or `"truncated"` instead of
   captured bytes. `data` is base64 on the wire.
 - **Subject:** `logs.{runID}.{stepID}.{attempt}.{iteration}` -- `stepID` is
   sanitized with `natsutil.SubjectToken` before it goes into the
@@ -559,11 +560,11 @@ before the TTL elapses.
   API server process.
 - **Markers:** every path that ends a task attempt -- worker SDK
   `Complete`/`Fail`/`FailPermanent`/`FailRetryAfter`/`Continue`/`Pause`
-  AND the HTTP bridge's `complete`/`fail`/`continue`/`pause` resolve
+  AND the HTTP bridge's `complete`/`fail`/`continue`/`pause`/`release` resolve
   actions alike -- emits exactly one of `"completed"`, `"failed"`
   (covers `Fail`/`FailPermanent`/`FailRetryAfter`, or bridge's single
-  `fail` action distinguished by `failure_type`), `"continued"`, or
-  `"paused"` as the TRUE LAST message on that attempt's subject -- so
+  `fail` action distinguished by `failure_type`), `"continued"`,
+  `"paused"`, or `"released"` as the TRUE LAST message on that attempt's subject -- so
   `GET .../logs?from=failure` resolves the failure position in O(1) via
   `GetLastMsgForSubject` instead of a scan. `from=failure` is strict:
   if the last message isn't a `"failed"` marker, the request 404s with

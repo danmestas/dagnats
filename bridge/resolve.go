@@ -182,7 +182,7 @@ func (b *Bridge) handleResolve(
 // the claim, and a wait_signal may block far too long to hold it.
 func endsClaim(action string) bool {
 	switch action {
-	case "complete", "fail", "continue", "pause":
+	case "complete", "fail", "continue", "pause", "release":
 		return true
 	}
 	return false
@@ -295,6 +295,7 @@ func parseResolveRequest(
 		"complete":    true,
 		"fail":        true,
 		"pause":       true,
+		"release":     true,
 		"checkpoint":  true,
 		"send_signal": true,
 		"wait_signal": true,
@@ -340,6 +341,8 @@ func (b *Bridge) dispatchAction(
 		return b.resolveFail(ctx, taskID, claimingTokenID, msg, req)
 	case "pause":
 		return b.resolvePause(ctx, taskID, claimingTokenID, msg, req)
+	case "release":
+		return b.resolveRelease(ctx, taskID, claimingTokenID, msg, w)
 	case "checkpoint":
 		return b.resolveCheckpoint(ctx, taskID, msg, req)
 	case "send_signal":
@@ -511,6 +514,40 @@ func (b *Bridge) resolvePause(
 	b.ackMap.Delete(taskID)
 	b.ackMap.MarkResolved(taskID, claimingTokenID)
 	return nil
+}
+
+// releasedBody is the answer to a release.
+type releasedBody struct {
+	Status string `json:"status"`
+}
+
+// resolveRelease hands a held task back for immediate redelivery
+// (#1020): a worker that must stop without a verdict (a restart, a
+// spent stop budget) would otherwise leave the task to wait out its
+// claim window. It records no outcome and no failed attempt; the next
+// delivery is the same attempt. Like a release on disconnect, it Naks
+// with no delay, so for a journal step the next claim counts toward the
+// restart limit as any claim without progress does.
+func (b *Bridge) resolveRelease(
+	ctx context.Context, taskID, claimingTokenID string,
+	msg jetstream.Msg, w http.ResponseWriter,
+) error {
+	if taskID == "" {
+		panic("resolveRelease: taskID must not be empty")
+	}
+	if msg == nil {
+		panic("resolveRelease: msg must not be nil")
+	}
+	// Before the Nak, as for pause: the marker ends this delivery's log
+	// subject before the redelivery can open the next one.
+	b.emitLogMarker(ctx, taskID, msg, protocol.LogMarkerReleased)
+	if err := msg.Nak(); err != nil {
+		return fmt.Errorf("nak: %w", err)
+	}
+	b.ackMap.Delete(taskID)
+	b.ackMap.MarkResolved(taskID, claimingTokenID)
+	writeJSON(w, http.StatusOK, releasedBody{Status: "released"})
+	return errResponseAlreadyWritten
 }
 
 // pauseMarker records that the task is pausing: a pause record for a

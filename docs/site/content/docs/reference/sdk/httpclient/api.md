@@ -20,6 +20,7 @@ Package httpclient is a minimal Go example of the DagNats worker protocol over H
   - [func \(c \*Client\) Fail\(ctx context.Context, taskID string, errMsg string\) error](<#Client.Fail>)
   - [func \(c \*Client\) Pause\(ctx context.Context, taskID string, name string, duration time.Duration, checkpoint json.RawMessage\) error](<#Client.Pause>)
   - [func \(c \*Client\) Poll\(ctx context.Context, taskTypes \[\]string, maxTasks int, timeout time.Duration\) \(\[\]protocol.TaskPayload, error\)](<#Client.Poll>)
+  - [func \(c \*Client\) Release\(ctx context.Context, taskID string\) error](<#Client.Release>)
 - [type Option](<#Option>)
   - [func WithToken\(token string\) Option](<#WithToken>)
 
@@ -53,7 +54,7 @@ func New(baseURL string, opts ...Option) *Client
 New creates an HTTP client targeting the given base URL. Panics if baseURL is empty.
 
 <a name="Client.Checkpoint"></a>
-### func \(\*Client\) [Checkpoint](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L274-L278>)
+### func \(\*Client\) [Checkpoint](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L288-L292>)
 
 ```go
 func (c *Client) Checkpoint(ctx context.Context, taskID string, data json.RawMessage) error
@@ -114,6 +115,15 @@ func (c *Client) Poll(ctx context.Context, taskTypes []string, maxTasks int, tim
 ```
 
 Poll long\-polls for available tasks. Returns an empty slice on timeout.
+
+<a name="Client.Release"></a>
+### func \(\*Client\) [Release](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L277>)
+
+```go
+func (c *Client) Release(ctx context.Context, taskID string) error
+```
+
+Release hands a claimed task back for immediate redelivery without a verdict, for a worker that must stop before it can finish. No outcome and no failed attempt are recorded; the next delivery is the same attempt.
 
 <a name="Option"></a>
 ## type [Option](<https://github.com/danmestas/dagnats/blob/main/sdk/httpclient/client.go#L40>)

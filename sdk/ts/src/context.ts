@@ -141,6 +141,15 @@ export class TaskContext {
     await this.resolve("continue", body, call);
   }
 
+  /**
+   * release hands the task back for immediate redelivery without a verdict, for a worker that
+   * must stop (a restart, a spent stop budget) before it can finish. No outcome and no failed
+   * attempt are recorded; the next delivery is the same attempt.
+   */
+  async release(call?: CallOptions): Promise<void> {
+    await this.resolve("release", {}, call);
+  }
+
   /** heartbeat extends the claim with nothing else. */
   async heartbeat(call?: CallOptions): Promise<void> {
     await this.resolve("heartbeat", {}, call);

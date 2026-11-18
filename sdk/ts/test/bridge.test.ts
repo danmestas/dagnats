@@ -94,6 +94,18 @@ test("checkpoint round-trips, and no checkpoint reads as undefined", async () =>
   await ctx.complete(null);
 });
 
+test("release hands the task straight back as the same attempt", async () => {
+  const type = uniqueType();
+  await startOneStepRun(srv, type, { n: 1 });
+  const first = await pollOne(client, type);
+  await new TaskContext(client, first).release();
+  const again = await pollOne(client, type);
+  assert.equal(again.task_id, first.task_id);
+  assert.equal(again.attempt, first.attempt);
+  assert.ok(again.delivered > first.delivered, "the release is a new delivery");
+  await new TaskContext(client, again).complete({ ok: true });
+});
+
 test("logs are accepted for a claimed task", async () => {
   const type = uniqueType();
   await startOneStepRun(srv, type);
