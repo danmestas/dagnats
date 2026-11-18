@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.67] - 2026-11-18
+
 ### Added
 
 - **Bridge workers can release a held task for immediate redelivery (#1020).** A worker that must stop without a verdict, being restarted or past its stop budget, had no way to hand a claimed task back, so the task waited out the claim window (about 5 minutes) before another worker could take it; the workaround was a `pause` of 1ms. The new resolve action `{"action":"release"}` ends the claim and Naks it with no delay. Only the claim's holder may release it (`403` otherwise, `404` once released). It records no outcome and no failed attempt: the redelivery is the same attempt, the step is not failed, and the attempt's log subject ends with a `released` marker. Tasks have no delivery limit, so releases never exhaust one; for a journal step the claim after a release counts toward the restart limit, as after a disconnect. The Go `httpclient.Client.Release` and the TypeScript `TaskContext.release()` call it.
@@ -14,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **A dagnats is documented as one trust domain (#909, #862).** Every program on a dagnats is trusted by whoever runs it. Parties that don't trust each other each run their own dagnats, rather than share one, so per-program NATS accounts aren't planned. The known cross-program gaps inside one account (JetStream reply reflection, push-consumer delivery subjects, inbox forgery) are accepted by design, not pending fixes. A join key admits a program into that trust domain, so give one only to a party you would let run code on the host, and don't leaf-link a dagnats to one whose operator you don't trust. The configuration and wire-protocol docs and the `program` package's threat model now say so.
+
+- **`dagnatstest` prints each node's nats-server warnings and errors when a cluster test fails (#1015).** `StartTestCluster` keeps the last 200 Warn, Error and Fatal lines of every node's nats-server and dumps them in the failed test's output, so a failure caused by the cluster itself (a lost leader, a storage fault) shows its cause.
+
+- **The embedded NATS server is 2.15.3 (#1016)**, a patch release, and golang.org/x/sync is 0.25.0 (#1017).
 
 ## [0.0.66] - 2026-11-12
 
