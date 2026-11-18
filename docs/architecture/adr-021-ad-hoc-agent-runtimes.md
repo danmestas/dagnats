@@ -111,7 +111,10 @@ Resolve by ownership + tiering:
 ### 4. Namespacing & isolation (ADR-017)
 
 Ad-hoc defs live under `agent:{rootRunID}:{name}` (ephemeral) or a stable
-`service::name` (promoted). An agent may register/run/provision **only within its
+`service::name` (promoted). (Superseded: as of v0.0.67 a promoted def is
+registered as `promoted.<name>` — `promotedName` in `internal/api/runtimes.go` — so it
+carries no `agent.` prefix and the reaper skips it; see
+`docs/site/content/docs/ai-patterns/runtime-generated-workflows.md`.) An agent may register/run/provision **only within its
 namespace** — no clobbering another agent's `billing::charge`. Provisioned workers
 get NATS credentials scoped to their namespace's subjects.
 
@@ -157,6 +160,9 @@ From the worker-management question: **the console treats the worker fleet as
 - **Drain / decommission** (safe, no supervisor needed): a graceful-stop control signal
   a live worker honors — finish in-flight, stop pulling, exit. Reversible. A real ops
   need (deploys, maintenance, draining a bad host).
+  (Refined by ADR-022: drain is Tier 1 and reversible, but decommission — drain plus
+  deregister — is Tier 2, undone only by re-provisioning. As of v0.0.67 neither control
+  is implemented.)
 - **Evict a stale record** (cosmetic): remove a dead worker's heartbeat from the KV mirror.
 - **Provision** (guarded, supervisor-backed, Tier 2): "add a worker" is only meaningful if
   a supervisor can launch a process. Exposed to operators as a deliberate, policy-gated
