@@ -54,13 +54,14 @@
 
 ## HTTP-to-NATS Bridge
 
-**Three deep endpoints** (Ousterhout: few endpoints, rich behavior):
+**Four endpoints** (Ousterhout: few endpoints, rich behavior):
 
 | Endpoint | Method | Behavior |
 |----------|--------|----------|
 | `/v1/workers/connect` | POST | Register + SSE heartbeat stream |
 | `/v1/tasks/poll` | POST | Long-poll NATS consumers, return task batch |
 | `/v1/tasks/{id}/resolve` | POST | Action discriminator: complete, fail, pause, checkpoint, send_signal, wait_signal |
+| `/v1/tasks/{id}/logs` | POST | Append task log lines |
 
 **Task identity:** `{runID}.{stepID}` compound key, included in poll response.
 

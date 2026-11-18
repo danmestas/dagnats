@@ -108,7 +108,7 @@ they're mutually exclusive, the same way `call:`/`task:` are.
 
 ```yaml
 checks:
-  # Shorthand: 3 attempts, fixed 5s delay between each -- the same default
+  # Shorthand: 3 retries (up to 4 attempts), fixed 5s delay between each -- the same default
   # a native workflow gets from the legacy StepDef.Retries field.
   clone: { call: "clone", retries: 3 }
 
@@ -116,7 +116,7 @@ checks:
   test:
     call: "test"
     retry:
-      max_attempts: 5
+      max_attempts: 5   # retries after the first attempt
       strategy: exponential   # "fixed" (default), "linear", or "exponential"
       initial_delay: 30s
       max_delay: 2m

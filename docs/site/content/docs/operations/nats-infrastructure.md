@@ -3,7 +3,7 @@ title: NATS Infrastructure
 weight: 3
 ---
 
-DagNats provisions all its NATS resources automatically on startup via `natsutil.SetupAll`. In a cluster every stream and bucket below is created at the cluster's replication factor, except the buckets listed under [Buckets outside SetupAll](#buckets-outside-setupall).
+DagNats provisions all its NATS resources automatically on startup via `natsutil.SetupAll`. In a cluster every stream and bucket below is created at the cluster's replication factor, as is the `console_audit` bucket that `dagnats serve` creates outside `SetupAll` (see [Clustering]({{< ref "/docs/operations/clustering" >}})).
 
 ## JetStream Streams
 

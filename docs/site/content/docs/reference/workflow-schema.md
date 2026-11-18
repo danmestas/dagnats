@@ -193,7 +193,7 @@ Resolution order: step `retry` > workflow `default_retry` > legacy `retries` > n
 
 | Field | JSON Key | Type | Required | Default | Description |
 |-------|----------|------|----------|---------|-------------|
-| MaxAttempts | `max_attempts` | int | Yes | -- | Total retry attempts; 0 means no retries |
+| MaxAttempts | `max_attempts` | int | Yes | -- | Retries after the first attempt (`3` allows up to 4 attempts in all); 0 means no retries |
 | Strategy | `strategy` | RetryStrategy | Yes | -- | Backoff algorithm |
 | InitialDelay | `initial_delay` | duration | Yes | -- | Base delay between attempts |
 | MaxDelay | `max_delay` | duration | Yes | -- | Delay cap (0 = uncapped) |

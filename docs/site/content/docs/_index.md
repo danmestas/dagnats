@@ -14,13 +14,13 @@ Multi-step workflows -- deploy pipelines, code review bots, data processing chai
 
 DagNats combines the **workflow engine** and the **message broker** into a single system by building directly on **NATS JetStream**. You define workflows as directed acyclic graphs (DAGs) in JSON, register them with the server, and write workers that handle individual steps. The engine resolves dependencies, dispatches tasks, handles retries, and tracks state -- all through NATS primitives.
 
-The core execution model is **event sourcing**. Every state change is an immutable event on a JetStream stream. The engine is stateless: it replays the event log to reconstruct workflow state. There is no mutable database row to corrupt or lose.
+The core execution model is **event sourcing**. Every state change is an immutable event on a JetStream stream. The engine keeps no state in memory: it loads each run's KV snapshot (`workflow_runs`) as it handles every event, and the event log records the full history. Run state lives in NATS, so a restarted engine resumes from its durable consumer and the snapshot.
 
 ## Key Differentiators
 
 - **Single binary** -- `dagnats serve` starts an embedded NATS server, the workflow engine, the API, and an HTTP gateway. No external dependencies.
 - **No external database** -- JetStream provides streams, key-value stores, and object storage. All state lives in NATS.
-- **Event-sourced** -- Immutable event log is the source of truth. KV snapshots are a convenience, not authoritative.
+- **Event-sourced** -- Immutable event log is the ordered record that drives the engine; KV snapshots hold each run's current working state.
 - **NATS-native** -- Retries and timeouts are durable timers on a JetStream stream, worker claims use `AckWait`, signals use KV watches, dedup uses `Nats-Msg-Id`.
 - **Agent loops as a primitive** -- Built-in `agent_loop` step type for iterative LLM agent execution with bounded iterations and duration.
 - **Durable Endpoints** -- Expose a workflow as a synchronous HTTP API: an [HTTP trigger](/docs/triggers/http) starts the run, a [`respond` step](/docs/step-types/respond-steps) returns the response, and everything in between gets retries, timeouts, and event-sourced state for free.

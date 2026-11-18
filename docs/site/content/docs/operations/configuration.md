@@ -362,7 +362,7 @@ dagnats config show
 dagnats config show --json
 ```
 
-The `config show` command loads the resolved configuration (all three tiers merged) and prints it. Use `--json` for machine-readable output. This is the fastest way to verify which values are active. It prints the core keys and the console variables; it does not print the cluster keys, so check those in your file or environment.
+The `config show` command loads the resolved configuration (all three tiers merged) and prints it. Use `--json` for machine-readable output. This is the fastest way to verify which values are active. It prints the core keys and the console variables; the text form does not print the cluster keys (use `--json` for those, or check your file or environment).
 
 Example output:
 

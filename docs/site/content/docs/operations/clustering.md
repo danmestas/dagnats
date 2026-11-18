@@ -21,7 +21,7 @@ Choose one of three shapes:
 |-------|-------------|
 | **Regional cluster** | All nodes are in one region. This is the cluster this page describes. |
 | **Leaf node with its own `jetstream_domain`** | One machine is far away: a home server, a laptop, an edge site. It runs a standalone `dagnats serve` with `leaf_remotes` pointing at the cluster nodes' leafnode listeners (`leaf_port`). It does not vote. Request/reply and subscriptions cross the leaf link, and its own JetStream stays local; mirror or source the streams it needs. |
-| **Supercluster** | A second region needs its own engine and quorum. Run a regional cluster there and join the two with NATS gateways. dagnats does not configure gateways yet. |
+| **Supercluster** | A second region needs its own engine and quorum. Run a regional cluster there and join the two with a leafnode link: each region sets `leaf_remotes` and its own `jetstream_domain` (or `region`). dagnats does not configure NATS gateways. See [ADR-031](https://github.com/danmestas/dagnats/blob/main/docs/architecture/adr-031-supercluster-regions.md). |
 
 If a far node is already in a cluster, set [`preferred_leaders`]({{< ref "/docs/operations/configuration" >}}) on every node to the nearby nodes' server names, and plan to move the far node to a leaf. A replica-only node role (`engine: false`), which keeps the node voting and storing but stops its engine, is in progress. See [ADR-030](https://github.com/danmestas/dagnats/blob/main/docs/architecture/adr-030-regional-clusters-and-far-sites.md) for the reasoning and a migration, and [Deployment Models]({{< ref "/docs/operations/deployment-models" >}}) for leaf node setup.
 

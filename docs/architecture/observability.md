@@ -12,7 +12,7 @@ No custom interfaces or abstractions — packages import
 and `go.opentelemetry.io/otel/log` for instrumentation.
 
 Telemetry is always written to a NATS `TELEMETRY` JetStream stream
-(7-day retention, 1 GB cap). Optionally, an OTLP/HTTP exporter sends
+(no max age; a ring buffer capped at a share of `max_store_bytes`). Optionally, an OTLP/HTTP exporter sends
 data to an external collector (SigNoz, Grafana Tempo, Jaeger) when
 `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Observability failures never
 break workflows — export errors are silently dropped.
@@ -70,7 +70,8 @@ W3C Trace Context (traceparent) dual-written to:
 # Export to any OTLP/HTTP-compatible backend
 OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318 dagnats serve
 
-# Or set in dagnats.yaml
+# A non-empty otlp_endpoint in dagnats.yaml also switches the OTLP exporters
+# on, but the SDK takes the target from OTEL_EXPORTER_OTLP_ENDPOINT, not this value
 otlp_endpoint: http://collector:4318
 ```
 
