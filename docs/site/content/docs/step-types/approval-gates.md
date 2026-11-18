@@ -21,7 +21,7 @@ sequenceDiagram
     participant KV as approval_tokens KV
     participant NATS as config.subject
     participant Human
-    participant API as HTTP API / CLI
+    participant API as HTTP API
 
     Engine->>KV: store token (7-day TTL)
     Engine->>NATS: publish notification

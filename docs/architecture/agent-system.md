@@ -49,7 +49,8 @@ too (issue #598) after remaining unused since; recover either from
 - Co-located handlers (define workflow + handler in one file)
 - Standalone tasks (escape DAG ceremony for simple operations)
 - Full condition system (WaitFor, SleepCond, UserEventCond, Or/And combinators)
-- Worker labels/affinity (heterogeneous fleet routing)
+- Worker labels (heterogeneous fleet routing). Run-keyed affinity already ships via pcgroups
+  partitions (`WithPartitions`); see `orbit-extensions.md`
 - Rate limiting as first-class primitive
 - Durable SleepFor (LoopDelay on AgentLoop covers current use case)
 

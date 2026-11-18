@@ -94,9 +94,9 @@ At most one active run per key. Two conflict modes:
 ## Dead-Letter Queue
 
 - Stream: `DEAD_LETTERS` (subjects: `dead.{taskName}.{runID}.{stepID}`)
-- Payload: JSON with run_id, step_id, task, error, attempts
+- Payload: the original task body; run ID, step ID, task, error and attempt/delivery counts travel as headers
 - Size-bounded ring (no max age): a share of `max_store_bytes`, oldest dropped first when full
-- CLI: `dagnats dlq list` (50 max), `dagnats dlq replay <seq>`
+- CLI: `dagnats dlq list` (up to 500 by default; `--limit N` or `--all` to override), `dagnats dlq replay <seq>`
 
 ## Run Output
 
@@ -121,14 +121,14 @@ At most one active run per key. Two conflict modes:
 ## Worker Groups
 
 - Field: `StepDef.WorkerGroup string`
-- Subject routing: `task.{taskType}.{group}.{runID}`
+- Subject routing: `task.{taskType}.={group}.{runID}` (the `=` sentinel marks the group token)
 - Worker option: `WithGroups(groups...)` subscribes to group-specific subjects
 
 **Sticky workers:** Bind a workflow run to a specific worker after the first step. Subsequent steps route to the same worker for cache locality, local state, or GPU affinity. Two strategies:
 - `soft` — prefer sticky worker; 5s fallback timer re-publishes to any worker if unclaimed
 - `hard` — require sticky worker; queues until worker returns (needs workflow timeout)
 
-Binding stored in `sticky_bindings` KV (TTL: workflow timeout + 1h). Workers subscribe to `task.{type}.{workerID}.>` in addition to normal subjects. Engine writes binding on first `step.completed` (from `WorkerID` in event payload) and routes via `publishStickyTask` helper. Workers don't know about sticky — engine owns all routing (information hiding). Incompatible with per-step `WorkerGroup` overrides.
+Binding stored in `sticky_bindings` KV (fixed 25h TTL). Sticky tasks are published to the `STICKY_TASKS` stream on `sticky.{taskType}.{workerID}.{runID}`, which the bound worker subscribes to in addition to normal subjects. Engine writes binding on first `step.completed` (from `WorkerID` in event payload) and routes via `publishStickyTask` helper. Workers don't know about sticky — engine owns all routing (information hiding). Incompatible with per-step `WorkerGroup` overrides.
 
 ## OnFailure Recovery
 
@@ -161,9 +161,9 @@ Binding stored in `sticky_bindings` KV (TTL: workflow timeout + 1h). Workers sub
 
 Prevents duplicate workflow runs by keying on a value extracted from input. `WorkflowDef.IdempotencyKey` is a dot-path expression (e.g., `"data.payment_id"`) evaluated at `StartRun` time.
 
-**Mechanism:** SHA-256 hash of `{workflowName}.{keyValue}` stored in `idempotency_keys` KV bucket (default 24h TTL). If key exists, return existing run ID (201→200 status code change signals idempotent return). If key missing, create run then store mapping. Race condition defined out of existence: KV `Create` (not `Put`) is atomic — loser retries and returns winner's run ID.
+**Mechanism:** SHA-256 hash of `{workflowName}.{keyValue}` stored in `idempotency_keys` KV bucket (default 24h TTL). If key exists, return existing run ID (201→200 status code change signals idempotent return). If key missing, the run ID is claimed with KV `Create` (atomic) before `WorkflowStarted` is published; a loser adopts the winner's run ID.
 
-**Soft failure:** Missing key path in input → run starts without idempotency, warning logged. KV unavailable → run starts normally. Completed run within TTL → returns existing ID (correct — operation already done).
+**Soft failure:** Missing key path in input → run starts without idempotency, warning logged. KV unavailable → the start fails (fail closed). Completed run within TTL → returns existing ID (correct — operation already done).
 
 ## Input/Output Schemas
 

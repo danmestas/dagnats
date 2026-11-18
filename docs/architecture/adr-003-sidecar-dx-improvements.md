@@ -20,6 +20,9 @@ no config scaffolding. Eight improvements split into two phases.
    error + usage and exits 1 instead of silently falling through to start.
 3. **Reject unknown YAML keys.** `LoadConfig` uses `yaml.NewDecoder` with
    `KnownFields(true)` so typos in `dagnats.yaml` produce a clear error.
+   (Still true for the sidecar's `LoadConfig` in `sidecar/config.go`. The workflow and
+   trigger layer, `internal/configfile`, deliberately tolerates unknown top-level keys;
+   see ADR-018.)
 4. **Show backend forwarding in banner.** Conditional line when
    `cfg.Backend != nil`.
 

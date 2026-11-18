@@ -28,7 +28,7 @@ See [HTTP Bridge](/docs/workers/http-bridge) for request and response details.
 
 ## Authentication
 
-When the `DAGNATS_BRIDGE_TOKEN` environment variable is set, all requests must include an `Authorization: Bearer {token}` header. When unset, all requests are allowed (development mode).
+When the `DAGNATS_BRIDGE_TOKEN` environment variable is set, all requests must include an `Authorization: Bearer {token}` header. When unset, the bridge's own endpoints (connect, poll, resolve) allow all requests (development mode). Token management under `/v1/tokens` is the exception: it requires `DAGNATS_BRIDGE_TOKEN` as the admin credential and answers `503` when it is unset.
 
 ## Architecture
 

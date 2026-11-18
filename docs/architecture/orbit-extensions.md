@@ -5,7 +5,8 @@
 Adopted two Synadia Orbit extensions (`github.com/synadia-io/orbit.go`):
 
 - **jetstreamext** — atomic batch publish for DAG task fan-out
-- **pcgroups** — elastic partitioned consumer groups for worker affinity
+- **pcgroups** — elastic partitioned consumer groups for run-keyed worker affinity
+  (the same run always lands on the same worker; label-based fleet routing is not built)
 
 Evaluated and rejected **counters** — the API tracks source streams, not
 source engines, making per-engine crash recovery impossible as designed.
@@ -23,7 +24,8 @@ by idempotent replay.
 dispatched or none. Idempotent replay still works as a safety net.
 
 **Mixed-stream handling:** Normal steps go to `TASK_QUEUES` (`task.>`),
-agent steps go to `AGENT_TASKS` (`agent_task.>`). Atomic publish works
+agent steps go to `AGENT_TASKS` (`agent.task.>`, the subject prefix
+the operator maps with `engine.WithStepRoutes`; dagnats does not provision that stream). Atomic publish works
 within a single stream, so messages are split into two batches — one
 per stream. Each batch is independently all-or-nothing.
 

@@ -65,9 +65,10 @@ type Defaults struct {
 // "15m"). Retries is shorthand for a fixed-delay retry policy; Retry is the
 // full policy. Setting both is a compile-time diagnostic (#681) — see
 // compileCheckRetry. WorkerGroup scopes this check to a worker group,
-// mapped onto the compiled step's WorkerGroup field (#695); combining it
-// with a dotted compiled task type (including every call: check, which
-// always compiles to "dagger.call") is a compile-time diagnostic — see
+// mapped onto the compiled step's WorkerGroup field (#695). It works with
+// any task type, dotted ones included (every call: check compiles to
+// "dagger.call"); a value that dag.ValidWorkerGroup rejects, such as one
+// containing a dot, is a compile-time diagnostic — see
 // compileWorkerGroupDiagnostics.
 type Check struct {
 	Call        string      `yaml:"call"`

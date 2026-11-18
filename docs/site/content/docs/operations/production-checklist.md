@@ -148,7 +148,7 @@ For stateful workers (large model caches, local file context), use **sticky bind
 
 - **WORKFLOW_HISTORY**: ~500 bytes per event. A workflow with 10 steps generates ~12 events. 1 million completed workflows = ~6 GiB.
 - **TASK_QUEUES**: WorkQueue retention means completed tasks are deleted. Disk usage is proportional to in-flight tasks, not total tasks.
-- **TELEMETRY**: 7-day retention, capped at 10% of `max_store_bytes`.
+- **TELEMETRY**: no max age; a ring buffer capped at 10% of `max_store_bytes` that drops the oldest message when full.
 - **KV buckets**: typically small. `workflow_runs` is the largest, proportional to active + recently completed runs.
 
 ### Low-Disk Warning

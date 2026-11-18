@@ -43,6 +43,10 @@ disabled:
   `sleep-timer`, `scheduled-run-timer`, `console_metrics_aggregator`);
   engine-internal KV (`workflow_runs`, `checkpoints`, `concurrency_tasks`,
   `singleton_locks`, `triggers`, `workflow_defs`).
+- **Scope:** this boundary governs the console only. The operator CLI
+  `dagnats clean` is a separate, deliberate path and does purge
+  `WORKFLOW_HISTORY`, `EVENTS` and `workflow_runs` (`cli/clean.go`, `runs`
+  category); see the CLI reference.
 - **UI label:** "Engine-owned — managed by the orchestrator. Destructive
   operations disabled."
 - **Principle:** The safest destructive action is the one the UI will not let

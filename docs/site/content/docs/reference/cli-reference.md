@@ -491,7 +491,7 @@ dagnats trigger create <workflow-id> [flags] [--json]
 
 | Flag | Description |
 |------|-------------|
-| `--cron=EXPR` | Cron expression (5-field or extended) |
+| `--cron=EXPR` | Cron expression (5-field; a six-field expression with seconds is rejected) |
 | `--subject=SUB` | NATS subject pattern |
 | `--webhook=PATH` | Webhook URL path |
 | `--tz=TZ` | Timezone for cron (default: `UTC`) |
@@ -667,7 +667,7 @@ dagnats dlq list [flags] [--json]
 | `--limit=N` | Max messages to fetch (default: up to 500; `0` is rejected) |
 | `--all` | Return every message, ignoring the default cap |
 
-**Output columns:** SEQ, SUBJECT, RUN_ID, STEP_ID, TASK, ERROR, TIMESTAMP
+**Output columns:** SEQ, SUBJECT, RUN_ID, STEP_ID, TASK, BODY, DELIVERY, CONSUMER, ERROR, TIMESTAMP
 
 **Example:**
 ```bash
@@ -896,7 +896,7 @@ dagnats config show --json
 # {"data_dir":"...","http_addr":"127.0.0.1:8080",...}
 ```
 
-`config show` takes `--config=PATH` like `serve`. It prints the resolved config file path (or `(defaults)`), the core settings, and the console and metrics environment variables with their effective values. Secrets print as `(set)` or their placeholder, never the value. The JSON form is the full resolved config, including the cluster and retention fields.
+`config show` takes `--config=PATH` like `serve`. It prints the resolved config file path (or `(defaults)`), the core settings, and the console and metrics environment variables with their effective values. In the text form, secrets print as `(set)` or their placeholder, never the value, and the cluster keys are not shown. The JSON form is the full resolved config, including the cluster and retention fields.
 
 Running `dagnats config` without a subcommand defaults to `show`.
 
@@ -968,7 +968,7 @@ dagnats logs [flags]
 
 | Flag | Description |
 |------|-------------|
-| `--level=LEVEL` | Filter by log level (`ERROR`, `WARN`, `INFO`, `DEBUG`) |
+| `--level=LEVEL` | Filter by log level, lowercase (`error`, `warn`, `info`, `debug`) |
 | `--service=NAME` | Filter by service name |
 | `--tail=N` | Show last N historical messages and exit (max: 10000) |
 
@@ -982,7 +982,7 @@ dagnats logs search [--level=LEVEL] [--service=NAME] [--search=TEXT] [--since=DU
 
 | Flag | Description |
 |------|-------------|
-| `--level=LEVEL` | Filter by log level |
+| `--level=LEVEL` | Filter by log level (lowercase, matched against the subject token: `error`, `info`) |
 | `--service=NAME` | Filter by service name |
 | `--search=TEXT` | Only records whose message contains TEXT |
 | `--since=DUR` | Lookback duration (default `30m`) |
@@ -990,8 +990,8 @@ dagnats logs search [--level=LEVEL] [--service=NAME] [--search=TEXT] [--since=DU
 
 **Tail examples:**
 ```bash
-dagnats logs --level=ERROR
-# Tailing logs on telemetry.logs.*.ERROR ...
+dagnats logs --level=error
+# Tailing logs on telemetry.logs.*.error ...
 # 09:15:30 ERROR   engine  step failed [run_id=a1b2 step=lint]
 
 dagnats logs --tail=20 --service=api
@@ -1098,7 +1098,7 @@ existing scheduled job's command line is needed to get the protection.
 
 | Category | Streams | KV Buckets |
 |----------|---------|------------|
-| `runs` | WORKFLOW_HISTORY, TASK_QUEUES, EVENTS, SLEEP_TIMERS | workflow_runs, scheduled_runs, event_waiters, rate_limits, concurrency_tasks, approval_tokens, debounce_state, idempotency_keys, sticky_bindings, singleton_locks |
+| `runs` | WORKFLOW_HISTORY, TASK_QUEUES, EVENTS, SLEEP_TIMERS, AGENT_JOURNAL | workflow_runs, scheduled_runs, event_waiters, rate_limits, concurrency_tasks, approval_tokens, debounce_state, idempotency_keys, sticky_bindings, singleton_locks |
 | `dlq` | DEAD_LETTERS | — |
 | `otel` | TELEMETRY | — |
 | `defs` | — | workflow_defs |

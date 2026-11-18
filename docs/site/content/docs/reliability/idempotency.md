@@ -19,9 +19,9 @@ When a run starts with input `{"payment_id": "pay_123", "amount": 50}`, the engi
 1. Extracts `"pay_123"` from the input via the `payment_id` dot-path
 2. Checks the `idempotency_keys` KV bucket for the SHA-256 hash of `payment.pay_123` (workflow name, a dot, then the key value)
 3. If found, returns the existing run ID without creating a new run
-4. If not found, creates the run and stores the mapping
+4. If not found, claims the key with the new run ID, then creates the run
 
-The mapping is written with a create-if-absent after the run is published, and the check and the write are not one atomic step. Two requests with the same key that arrive at the same moment can both start a run; the first mapping stored is the one later requests see.
+The run ID is claimed with an atomic KV `Create` before `WorkflowStarted` is published, so two requests with the same key that arrive at the same moment get the same run ID. A request that loses the race adopts the winner's run ID. If the `idempotency_keys` bucket is unavailable, the start fails rather than running without dedup.
 
 ### Dot-Path Extraction
 

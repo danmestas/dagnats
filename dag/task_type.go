@@ -14,7 +14,7 @@ const taskTypeLenMax = 128
 
 // ValidTaskType reports whether s is safe to publish verbatim as one or
 // more NATS subject tokens. StepSubject builds
-// "task.{Task}.{runID}" (optionally "task.{Task}.{WorkerGroup}.{runID}")
+// "task.{Task}.{runID}" (optionally "task.{Task}.={WorkerGroup}.{runID}")
 // from a StepDef's Task with no sanitization — unlike a step ID, which
 // passes through natsutil.SubjectToken first — because a worker's
 // registered task_types must match the value byte-for-byte to poll it.
@@ -80,13 +80,11 @@ func ValidTaskType(s string) error {
 // dotted namespace.
 //
 // Dots are banned here (not merely anchored around, the way FilterFor
-// isolates a dotted Task) because a dot in WorkerGroup is indistinguishable
-// from the separator FilterFor/StepSubject place between Task and
-// WorkerGroup: FilterFor("render", "gpu.fast") and FilterFor("render.gpu",
-// "fast") both derive "task.render.=gpu.fast.*", and NameFor collapses both
-// to "workers-render-=gpu-fast" — a dotted group would silently collide
-// with an unrelated dotted-task/group split. Banning dots in WorkerGroup
-// outright closes that regardless of what the step's Task looks like.
+// isolates a dotted Task) so a group is always exactly one subject token:
+// the "=" sentinel already keeps a grouped pair distinct from a dotted
+// Task, but a dotted group would still make the token count after the
+// sentinel ambiguous, and NameFor's Sanitize collapses "." and "-" to the
+// same byte ("workers-render-=gpu-fast" for group "gpu.fast" or "gpu-fast").
 func ValidWorkerGroup(s string) error {
 	if err := ValidTaskType(s); err != nil {
 		return err

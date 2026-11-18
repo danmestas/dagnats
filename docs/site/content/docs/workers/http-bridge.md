@@ -206,8 +206,8 @@ Publishes stdout and stderr chunks for a claimed task to the run's log stream, t
 ```json
 {
     "chunks": [
-        {"stream": "stdout", "data": "Zm9vCg=="},
-        {"stream": "stderr", "data": "YmFyCg=="}
+        {"stream": "out", "data": "Zm9vCg=="},
+        {"stream": "err", "data": "YmFyCg=="}
     ]
 }
 ```

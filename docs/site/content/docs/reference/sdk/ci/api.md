@@ -49,7 +49,7 @@ func CompileYAMLWith(name string, spec []byte, opts CompileOptions) (CompileResu
 CompileYAMLWith compiles ci.yml bytes of either shape. A spec with a top\-level jobs: key is the Actions\-shaped spec; anything else compiles exactly as CompileYAML always has.
 
 <a name="Parse"></a>
-## func [Parse](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L230>)
+## func [Parse](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L231>)
 
 ```go
 func Parse(spec []byte) (Spec, []Diagnostic)
@@ -58,9 +58,9 @@ func Parse(spec []byte) (Spec, []Diagnostic)
 Parse decodes YAML bytes into a Spec, accumulating a Diagnostic \(rather than failing fast\) for every field that fails to decode. It parses via yaml.Node first so each diagnostic carries the offending field's Line and Column — authors can jump straight to the problem in their ci.yml instead of pattern\-matching a stack\-trace\-flavored error string.
 
 <a name="Check"></a>
-## type [Check](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L72-L80>)
+## type [Check](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L73-L81>)
 
-Check declares one CI check step backed by exactly one runner: Call \(a Dagger function name, compiled to the "dagger.call" task type\) or Task \(a plain task type, compiled verbatim for any worker that speaks the ordinary worker protocol\). Setting both, or neither, is a compile\-time diagnostic \(\#671\) — see compileCheck. Needs lists check names that must complete before this check runs. Timeout is a Go duration string \(e.g. "15m"\). Retries is shorthand for a fixed\-delay retry policy; Retry is the full policy. Setting both is a compile\-time diagnostic \(\#681\) — see compileCheckRetry. WorkerGroup scopes this check to a worker group, mapped onto the compiled step's WorkerGroup field \(\#695\); combining it with a dotted compiled task type \(including every call: check, which always compiles to "dagger.call"\) is a compile\-time diagnostic — see compileWorkerGroupDiagnostics.
+Check declares one CI check step backed by exactly one runner: Call \(a Dagger function name, compiled to the "dagger.call" task type\) or Task \(a plain task type, compiled verbatim for any worker that speaks the ordinary worker protocol\). Setting both, or neither, is a compile\-time diagnostic \(\#671\) — see compileCheck. Needs lists check names that must complete before this check runs. Timeout is a Go duration string \(e.g. "15m"\). Retries is shorthand for a fixed\-delay retry policy; Retry is the full policy. Setting both is a compile\-time diagnostic \(\#681\) — see compileCheckRetry. WorkerGroup scopes this check to a worker group, mapped onto the compiled step's WorkerGroup field \(\#695\). It works with any task type, dotted ones included \(every call: check compiles to "dagger.call"\); a value that dag.ValidWorkerGroup rejects, such as one containing a dot, is a compile\-time diagnostic — see compileWorkerGroupDiagnostics.
 
 ```go
 type Check struct {
@@ -75,7 +75,7 @@ type Check struct {
 ```
 
 <a name="CheckRetry"></a>
-## type [CheckRetry](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L87-L93>)
+## type [CheckRetry](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L88-L94>)
 
 CheckRetry is the full retry policy for a check, mapped onto dag.RetryPolicy by compileCheckRetry. InitialDelay and MaxDelay are Go duration strings, parsed the same way Check.Timeout is. Strategy is one of "fixed", "linear", "exponential" \("" defaults to "fixed", matching dag.RetryPolicy's zero value\).
 
@@ -125,7 +125,7 @@ type Defaults struct {
 ```
 
 <a name="DeployStep"></a>
-## type [DeployStep](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L100-L108>)
+## type [DeployStep](<https://github.com/danmestas/dagnats/blob/main/ci/spec.go#L101-L109>)
 
 DeployStep declares an optional deploy stage that follows the CI checks. Call and Task are mutually exclusive, same as Check \(\#671\) — see compileDeploy. Approval=="required" inserts a durable human\-gate step before execution. Branches limits deployment to specific push targets \(never PR heads\). WorkerGroup mirrors Check.WorkerGroup \(\#695\).
 
