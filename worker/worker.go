@@ -161,8 +161,9 @@ type publishMsgFunc func(
 
 // Worker subscribes to task subjects and dispatches messages to
 // registered handlers. Each task type gets its own JetStream
-// subscription; messages are ack'd after the handler returns so
-// failures are retried by JetStream's MaxDeliver policy.
+// subscription; messages are ack'd after the handler returns. A
+// failure is reported as a step.failed event and the engine owns the
+// retry budget; the consumer leaves MaxDeliver unbounded.
 type Worker struct {
 	nc *nats.Conn
 	js jetstream.JetStream

@@ -10,7 +10,7 @@ DagNats records metrics with the OpenTelemetry metrics API. Each process exports
 `observe.InitTelemetry` (see [Distributed Tracing]({{< ref "/docs/observability/distributed-tracing" >}})) registers a global meter provider with two readers:
 
 - a NATS reader, which publishes each metric as JSON on `telemetry.metrics.{service}.{name}` every 10 seconds;
-- an OTLP/HTTP reader, added when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
+- an OTLP/HTTP reader, added when `OTEL_EXPORTER_OTLP_ENDPOINT` or the `otlp_endpoint` config key is set (a non-empty value either way turns it on; the SDK reads the target from the environment variable).
 
 The NATS exporter uses cumulative temporality: each point carries the running total since the process started, not the change in the last interval. Counters therefore only go up until the process restarts.
 

@@ -119,7 +119,7 @@ all capitals.
 | ID | Requirement | Proven by |
 |---|---|---|
 | R1 | A worker MUST include `iteration`, `attempt` and `dispatch_nonce` on every lifecycle event, and the engine MUST include them on the step timeout watchdog's synthetic `step.failed`. | `TestLifecycleEventsCarryIdentity` |
-| R2 | The engine MUST NOT apply a lifecycle event unless the step is Running and the event's iteration and attempt equal the step's. | `TestAcceptStepEvent` (table) |
+| R2 | The engine MUST NOT apply a lifecycle event unless the step is Running and the event's iteration and attempt equal the step's. (Superseded: as of v0.0.67 a step that is Queued also accepts the event when the iteration and a non-empty dispatch nonce match; the attempt is not compared and the engine adopts the event's attempt. See `acceptStepEvent` and the wire protocol's Dispatch identity section.) | `TestAcceptStepEvent` (table) |
 | R3 | The engine MUST NOT apply a lifecycle event whose present dispatch nonce differs from the step's. | `TestAcceptStepEvent` (table) |
 | R4 | A duplicate `step.continue` for one iteration MUST advance the loop at most once. | `TestStepContinue_DuplicateForSameIterationAdvancesOnce` |
 | R5 | A stale worker's terminal event MUST NOT complete or fail a step that has moved on. | `TestAgentLoop_StaleWorkerCompleteAfterTakeoverIsRejected` |

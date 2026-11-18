@@ -384,12 +384,12 @@ RunStatusNames returns the canonical lowercase string names for every RunStatus 
 func ValidTaskType(s string) error
 ```
 
-ValidTaskType reports whether s is safe to publish verbatim as one or more NATS subject tokens. StepSubject builds "task.\{Task\}.\{runID\}" \(optionally "task.\{Task\}.\{WorkerGroup\}.\{runID\}"\) from a StepDef's Task with no sanitization — unlike a step ID, which passes through natsutil.SubjectToken first — because a worker's registered task\_types must match the value byte\-for\-byte to poll it. consumername.FilterFor anchors a worker's consumer filter on the same value. An unsafe Task \(whitespace, a NATS wildcard, a stray leading, trailing, or empty dotted token\) would register cleanly today and only break at dispatch time, either minting a malformed subject or silently never getting picked up — see issue \#674.
+ValidTaskType reports whether s is safe to publish verbatim as one or more NATS subject tokens. StepSubject builds "task.\{Task\}.\{runID\}" \(optionally "task.\{Task\}.=\{WorkerGroup\}.\{runID\}"\) from a StepDef's Task with no sanitization — unlike a step ID, which passes through natsutil.SubjectToken first — because a worker's registered task\_types must match the value byte\-for\-byte to poll it. consumername.FilterFor anchors a worker's consumer filter on the same value. An unsafe Task \(whitespace, a NATS wildcard, a stray leading, trailing, or empty dotted token\) would register cleanly today and only break at dispatch time, either minting a malformed subject or silently never getting picked up — see issue \#674.
 
 Dots ARE allowed within a token: "dagger.call" is a production task type, and rejecting dots outright would break it. What keeps a dotted task type from leaking into another worker's poll is FilterFor's exact token\-count anchor, not a charset restriction here — see internal/consumername.FilterFor's doc comment.
 
 <a name="ValidWorkerGroup"></a>
-## func [ValidWorkerGroup](<https://github.com/danmestas/dagnats/blob/main/dag/task_type.go#L90>)
+## func [ValidWorkerGroup](<https://github.com/danmestas/dagnats/blob/main/dag/task_type.go#L88>)
 
 ```go
 func ValidWorkerGroup(s string) error
@@ -397,7 +397,7 @@ func ValidWorkerGroup(s string) error
 
 ValidWorkerGroup reports whether s is safe to use as a StepDef.WorkerGroup. StepSubject appends WorkerGroup as its OWN subject token, prefixed with the "=" sentinel \("task.\{Task\}.=\{WorkerGroup\}.\{runID\}", \#704\), so it must satisfy ValidTaskType's charset/length/leading\-trailing\-dot rule AND additionally contain no dots at all — unlike Task, WorkerGroup is never a dotted namespace.
 
-Dots are banned here \(not merely anchored around, the way FilterFor isolates a dotted Task\) because a dot in WorkerGroup is indistinguishable from the separator FilterFor/StepSubject place between Task and WorkerGroup: FilterFor\("render", "gpu.fast"\) and FilterFor\("render.gpu", "fast"\) both derive "task.render.=gpu.fast.\*", and NameFor collapses both to "workers\-render\-=gpu\-fast" — a dotted group would silently collide with an unrelated dotted\-task/group split. Banning dots in WorkerGroup outright closes that regardless of what the step's Task looks like.
+Dots are banned here \(not merely anchored around, the way FilterFor isolates a dotted Task\) so a group is always exactly one subject token: the "=" sentinel already keeps a grouped pair distinct from a dotted Task, but a dotted group would still make the token count after the sentinel ambiguous, and NameFor's Sanitize collapses "." and "\-" to the same byte \("workers\-render\-=gpu\-fast" for group "gpu.fast" or "gpu\-fast"\).
 
 <a name="Validate"></a>
 ## func [Validate](<https://github.com/danmestas/dagnats/blob/main/dag/validate.go#L12>)

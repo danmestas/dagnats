@@ -20,7 +20,7 @@ Task subjects follow the pattern `task.{type}[.={workerGroup}].{runID}`. The run
 | `task.build.*` | All `build` tasks. Does **not** match `task.build.linux.*` |
 | `task.render.=gpu.*` | All `render` tasks in worker group `gpu`. Does **not** match `task.render.gpu.*` |
 
-A step's `task` is published verbatim, so workflow registration rejects a value that could not dispatch correctly. It must be 1 to 128 bytes of `A-Za-z0-9_.-`, must not start or end with `.`, and must not contain an empty token (`a..b`). Dots are legal: `dagger.call` is a valid task type. A step's `worker_group` follows the same rule.
+A step's `task` is published verbatim, so workflow registration rejects a value that could not dispatch correctly. It must be 1 to 128 bytes of `A-Za-z0-9_.-`, must not start or end with `.`, and must not contain an empty token (`a..b`). Dots are legal: `dagger.call` is a valid task type. A step's `worker_group` follows the same rule and additionally must not contain a dot: it is always a single subject token.
 
 The `=` before a group name keeps a grouped pair distinct from a dotted task type. Without it, task `render` in group `gpu` and the task type `render.gpu` would derive the same subject. `=` is rejected in both fields, so it cannot be forged.
 
@@ -177,8 +177,8 @@ Long-polls for available tasks from the TASK_QUEUES stream.
 |-------|------|----------|-------------|
 | `task_types` | []string | Yes | Task types to poll for |
 | `worker_group` | string | No | Worker group to poll. Omit it to poll the ungrouped queue. A token scoped to specific groups can poll only those groups (`403` otherwise) |
-| `max_tasks` | int | Yes | Maximum tasks to return |
-| `timeout_ms` | int | Yes | Long-poll timeout in milliseconds (max 60000) |
+| `max_tasks` | int | No | Maximum tasks to return (default 1) |
+| `timeout_ms` | int | No | Long-poll timeout in milliseconds (default 5000, max 60000) |
 
 **Response:**
 
@@ -538,7 +538,7 @@ before the TTL elapses.
   }
   ```
 
-  `seq` is monotonic per ATTEMPT, shared across `out`/`err`/`marker` --
+  `seq` is monotonic per (attempt, iteration) pair, shared across `out`/`err`/`marker` --
   ordering by `seq` reconstructs write order even though stdout and
   stderr buffer independently. `iteration` is the agent-loop iteration (0 for non-loop steps). `attempt` is the 1-based `AttemptNumber`
   this chunk belongs to -- the SAME numbering `step.started`'s
@@ -884,7 +884,7 @@ The `dagnats-api` micro service answers these subjects for clients that talk to 
 | `api.leases.*` | See [Coordination leases](#coordination-leases-apileases) | |
 | `api.cluster.health` | Empty | The same JSON as `GET /health/cluster` |
 
-The lease endpoints share the queue group `dagnats-leases`, so one instance serves each request. The others have no queue group, so every running instance receives the request.
+Every endpoint here is in a queue group, so one instance serves each request: the lease endpoints share `dagnats-leases` and the others `dagnats-api`. `api.cluster.health` is the exception: it has no queue group, so every running instance answers with its own view.
 
 ### Program registration and confirmation
 

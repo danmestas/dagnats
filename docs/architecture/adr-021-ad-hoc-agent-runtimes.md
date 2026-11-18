@@ -115,6 +115,10 @@ Ad-hoc defs live under `agent:{rootRunID}:{name}` (ephemeral) or a stable
 namespace** — no clobbering another agent's `billing::charge`. Provisioned workers
 get NATS credentials scoped to their namespace's subjects.
 
+> Superseded: as of v0.0.67 the shipped names are `agent.{rootRunID}.{name}` (ephemeral)
+> and `promoted.{name}` (promoted); see `scopePrefix` and `promotedName` in
+> `internal/api/runtimes.go`.
+
 ### 5. Bounds — TigerStyle "bounded everything"
 
 Per-runtime quotas enforced **at the capability boundary** (exceeding a quota returns
