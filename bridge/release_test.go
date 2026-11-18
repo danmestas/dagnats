@@ -8,8 +8,8 @@
 // 5-minute claim window a dropped task would wait out. Negative space:
 //   - a release from a token that does not hold the claim is refused
 //     and leaves the claim with its holder;
-//   - the redelivered task carries the same attempt, and the step is
-//     not failed;
+//   - the redelivered task carries the same attempt, and the run then
+//     completes from it;
 //   - the released claim is gone: resolving it again answers 404.
 package bridge
 
@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/danmestas/dagnats/dag"
+	"github.com/danmestas/dagnats/internal/api"
 )
 
 // releaseRedeliveryMax is how long a released task may take to come
@@ -64,11 +65,31 @@ func TestReleaseRedeliversTheTaskAtOnce(t *testing.T) {
 		t.Fatalf("redelivered attempt %d, want %d: a release is not a failed attempt",
 			again.Attempt, task.Attempt)
 	}
-	run, err := svc.GetRun(context.Background(), task.RunID)
-	if err != nil {
-		t.Fatalf("GetRun: %v", err)
+	// The redelivery finishes the run: the release left no failure behind
+	// for the engine to act on.
+	done := resolveWithBearer(t, baseURL, again.TaskID, bearerB,
+		`{"action":"complete","output":{"ok":true}}`)
+	done.Body.Close()
+	if done.StatusCode != http.StatusOK {
+		t.Fatalf("complete after release: status %d", done.StatusCode)
 	}
-	if got := run.Steps[task.StepID].Status; got == dag.StepStatusFailed {
-		t.Fatalf("step reads %v after a release", got)
+	waitRunStatus(t, svc, task.RunID, dag.RunStatusCompleted)
+}
+
+// waitRunStatus waits up to 10s for runID to read want.
+func waitRunStatus(t *testing.T, svc *api.Service, runID string, want dag.RunStatus) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	var got dag.RunStatus
+	for time.Now().Before(deadline) {
+		run, err := svc.GetRun(context.Background(), runID)
+		if err == nil {
+			got = run.Status
+			if got == want {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
+	t.Fatalf("run %s reads %v, want %v within 10s", runID, got, want)
 }

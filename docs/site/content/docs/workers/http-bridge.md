@@ -125,7 +125,7 @@ Resolves a polled task. The `action` field determines behavior:
 | `continue` | Requests another iteration of an agent loop, with `output` as the next input. An optional `wait` parks the step first (below) |
 | `inputs.place` | Places the step's queued inputs of `mode` (`steer` or `follow_up`) into the conversation and answers `{"inputs":[{"request_id","mode","content"}]}`, `{"inputs":[]}` when there are none; each is returned once per delivery and settles to done when the iteration commits. An unknown `mode` answers `400 {"code":"invalid_mode"}` |
 | `pause` | Saves `checkpoint`, NAKs for `duration_ms` (1 to 3,600,000) so the task comes back |
-| `release` | Hands the task back for immediate redelivery without a verdict, for a worker that must stop before it can finish (a restart, a spent stop budget). Only the claim's holder may release it. No outcome and no failed attempt are recorded: the next delivery is the same attempt. Answers `{"status":"released"}` |
+| `release` | Hands the task back for immediate redelivery without a verdict, for a worker that must stop before it can finish (a restart, a spent stop budget). Only the claim's holder may release it. No outcome and no failed attempt are recorded: the next delivery is the same attempt. Answers `{"status":"released"}`. A release writes no journal record, so on a journal step the next claim counts toward the restart limit (below); a worker that may release the same step repeatedly without progress should `pause` instead |
 | `checkpoint` | Buffers `data` as the task's loop state for the next `continue`, and extends the claim |
 | `heartbeat` | Extends the claim with nothing else |
 | `stream` | Publishes `data` to `stream.{run_id}.{step_id}` for live consumers and extends the claim |
