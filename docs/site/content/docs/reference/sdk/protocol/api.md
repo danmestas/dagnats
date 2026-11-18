@@ -117,6 +117,10 @@ const (
     // LogMarkerPaused is emitted by Pause — this attempt is done; a
     // resumed step (LoadCheckpoint) gets a new attempt-scoped subject.
     LogMarkerPaused = "paused"
+    // LogMarkerReleased is emitted by the bridge's release resolve action
+    // (#1020): this delivery is done without a verdict, and the task is
+    // redelivered at once under a new delivery.
+    LogMarkerReleased = "released"
     // LogMarkerFenced is emitted when a journal step's delivery is
     // fenced by a later claim (ADR-026): this attempt's subject is done
     // and its successor's is already open; nothing failed.
@@ -415,7 +419,7 @@ const (
 ```
 
 <a name="LogChunk"></a>
-## type [LogChunk](<https://github.com/danmestas/dagnats/blob/main/protocol/log_chunk.go#L98-L105>)
+## type [LogChunk](<https://github.com/danmestas/dagnats/blob/main/protocol/log_chunk.go#L102-L109>)
 
 LogChunk is a single unit of captured step output on the BUILD\_LOGS stream, subject logs.\{runID\}.\{stepID\}.\{attempt\}.\{iteration\} \(\#624 review round 3: iteration is a SECOND dimension of dispatch identity, distinct from attempt — an agent\-loop step's Continue re\-dispatches the SAME attempt with a new iteration, never bumping Attempts \(doing so would consume retry budget the step never spent\), so iteration must be part of the subject/Msg\-Id too or iteration 2\+'s chunks collide with iteration 0's within the dedup window exactly the way un\-scoped attempts collided before \#624 review round 2. iteration is 0 for a non\-loop step. Seq is monotonic per \(ATTEMPT, ITERATION\) pair and shared across the out/err streams \(worker/log\_writer.go assigns it from one counter\), so ordering by Seq reconstructs write order even though out and err are independently buffered.
 

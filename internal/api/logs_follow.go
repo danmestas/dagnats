@@ -75,7 +75,7 @@ func isAttemptEndingMarker(marker string) bool {
 	switch marker {
 	case protocol.LogMarkerCompleted, protocol.LogMarkerFailed,
 		protocol.LogMarkerContinued, protocol.LogMarkerPaused,
-		protocol.LogMarkerFenced:
+		protocol.LogMarkerFenced, protocol.LogMarkerReleased:
 		return true
 	}
 	return false
@@ -315,12 +315,13 @@ func writeLogsChunkEvent(w http.ResponseWriter, flusher http.Flusher, c protocol
 
 // writeLogsEOFEvent writes the terminal SSE event. marker is the
 // attempt-ending marker value that triggered it ("" for the crash
-// fallback, which has none) — only continued/paused surface as
+// fallback, which has none) — only continued/paused/released surface as
 // "reason" in the payload; completed/failed and the crash fallback
 // carry an empty object.
 func writeLogsEOFEvent(w http.ResponseWriter, flusher http.Flusher, marker string) {
 	var payload logsEOFEvent
-	if marker == protocol.LogMarkerContinued || marker == protocol.LogMarkerPaused {
+	switch marker {
+	case protocol.LogMarkerContinued, protocol.LogMarkerPaused, protocol.LogMarkerReleased:
 		payload.Reason = marker
 	}
 	data, err := json.Marshal(payload)

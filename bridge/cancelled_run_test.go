@@ -262,3 +262,38 @@ func TestSDKResolveOfCancelledRunReturnsErrRunCancelled(t *testing.T) {
 		t.Fatalf("Complete error = %v, want ErrRunCancelled", err)
 	}
 }
+
+// TestPollSkipsCancelledRunsQueuedAheadOfALiveOne pins #1018's scenario:
+// several cancelled runs' tasks queued ahead of a live run's task. One
+// poll for one task skips every withheld task and hands out the live one,
+// rather than handing out a dead task or returning empty.
+func TestPollSkipsCancelledRunsQueuedAheadOfALiveOne(t *testing.T) {
+	const cancelledCount = 4
+	f := newCancelFixture(t, "cancel-ahead")
+	cancelled := make([]string, 0, cancelledCount)
+	for i := 0; i < cancelledCount; i++ {
+		cancelled = append(cancelled, f.startQueuedRun(t, "cancel-ahead"))
+	}
+	live := f.startQueuedRun(t, "cancel-ahead")
+	for _, runID := range cancelled {
+		f.cancelAndWait(t, runID)
+	}
+
+	got := f.pollOnce(t)
+	if !strings.Contains(got, `"run_id":"`+live+`"`) {
+		t.Fatalf("one poll did not hand out the live run's task: %s", got)
+	}
+	stream, err := f.js.Stream(context.Background(), "TASK_QUEUES")
+	if err != nil {
+		t.Fatalf("TASK_QUEUES: %v", err)
+	}
+	for _, runID := range cancelled {
+		if strings.Contains(got, runID) {
+			t.Fatalf("poll handed out cancelled run %s: %s", runID, got)
+		}
+		_, err := stream.GetLastMsgForSubject(context.Background(), "task.echo."+runID)
+		if !errors.Is(err, jetstream.ErrMsgNotFound) {
+			t.Fatalf("cancelled run %s's task is still queued (err %v)", runID, err)
+		}
+	}
+}

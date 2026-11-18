@@ -67,6 +67,10 @@ const (
 	// LogMarkerPaused is emitted by Pause — this attempt is done; a
 	// resumed step (LoadCheckpoint) gets a new attempt-scoped subject.
 	LogMarkerPaused = "paused"
+	// LogMarkerReleased is emitted by the bridge's release resolve action
+	// (#1020): this delivery is done without a verdict, and the task is
+	// redelivered at once under a new delivery.
+	LogMarkerReleased = "released"
 	// LogMarkerFenced is emitted when a journal step's delivery is
 	// fenced by a later claim (ADR-026): this attempt's subject is done
 	// and its successor's is already open; nothing failed.

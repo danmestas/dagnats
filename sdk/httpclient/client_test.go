@@ -405,3 +405,40 @@ func TestClientPollTimeout(t *testing.T) {
 		t.Errorf("expected 0 tasks, got %d", len(tasks))
 	}
 }
+
+// TestClientReleaseRedeliversAtOnce proves Release (#1020) hands the task
+// back for immediate redelivery as the same attempt, and that the run
+// still completes from the second claim.
+func TestClientReleaseRedeliversAtOnce(t *testing.T) {
+	baseURL, cleanup := testServerAddr(t)
+	defer cleanup()
+	registerWorkflow(t, baseURL, `{
+		"name": "sdk-release-test",
+		"version": "1.0",
+		"steps": [{"id": "echo", "task": "echo"}]
+	}`)
+	ctx := context.Background()
+	client := httpclient.New(baseURL)
+	runID := startRun(t, baseURL, "sdk-release-test", json.RawMessage(`"hi"`))
+
+	first, err := client.Poll(ctx, []string{"echo"}, 1, 10*time.Second)
+	if err != nil || len(first) != 1 {
+		t.Fatalf("first Poll: %d tasks, err %v", len(first), err)
+	}
+	if err := client.Release(ctx, first[0].TaskID); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	// Far below the claim window: only an immediate redelivery arrives.
+	again, err := client.Poll(ctx, []string{"echo"}, 1, 5*time.Second)
+	if err != nil || len(again) != 1 {
+		t.Fatalf("Poll after Release: %d tasks, err %v", len(again), err)
+	}
+	if again[0].TaskID != first[0].TaskID || again[0].Attempt != first[0].Attempt {
+		t.Fatalf("redelivered %s attempt %d, want %s attempt %d",
+			again[0].TaskID, again[0].Attempt, first[0].TaskID, first[0].Attempt)
+	}
+	if err := client.Complete(ctx, again[0].TaskID, json.RawMessage(`"HI"`)); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	waitRunCompleted(t, baseURL, runID, 15*time.Second)
+}
