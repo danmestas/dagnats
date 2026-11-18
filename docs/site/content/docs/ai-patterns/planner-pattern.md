@@ -60,7 +60,7 @@ The engine validates every fragment before materialization. This is your safety 
 
 | Check | What It Prevents |
 |-------|-----------------|
-| Step count bounds (1 to `MaxSteps`) | Unbounded step generation |
+| Step count bound (at most `MaxSteps`; an empty plan is allowed and adds no steps) | Unbounded step generation |
 | Depth limit (`MaxDepth`) | Deeply chained dependencies |
 | Cycle detection | Circular dependencies |
 | ID collision check | Conflicts with static steps |
