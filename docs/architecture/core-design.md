@@ -10,7 +10,7 @@
 
 | Package | Role | Key Constraint |
 |---------|------|----------------|
-| `dag/` | Pure DAG logic, workflow types, validation | Zero I/O. `Advance()` is a pure function |
+| `dag/` | Pure DAG logic, workflow types, validation | Zero I/O. (`Advance()` lives in `internal/engine` and is also pure) |
 | `internal/engine/` | Stateless event processor, DAG orchestration | Reads history stream, writes KV snapshots |
 | `worker/` | Task execution framework | Deep `TaskContext` hides all NATS mechanics |
 | `internal/api/` | Control plane (REST + NATS micro) | Wrapper → Inner pattern with tracing/metrics |
@@ -38,11 +38,11 @@
 | Atomic task fan-out | jetstreamext.PublishMsgBatch (orbit) |
 | Worker affinity | pcgroups elastic consumer groups (orbit) |
 | Singleton execution | pcgroups single-partition group (orbit) |
-| Retry with backoff | NakWithDelay (no timer service) |
+| Retry with backoff | Engine timers on the `SLEEP_TIMERS` stream (`TimerActionRetryBackoff`), fired via NakWithDelay |
 | Exactly-once delivery | Nats-Msg-Id dedup |
 | Run state snapshots | KV with Revision (optimistic locking) |
 | Cross-workflow signals | KV watches |
-| Worker health | Consumer idle heartbeats |
+| Worker health | TTL'd `worker_status` KV entries (dead workers expire; no health polling) |
 | Internal API | NATS micro (discovery + load balancing) |
 | Workflow def versioning | KV revision history |
 | Large payloads | Object Store + event references |
@@ -83,9 +83,9 @@
 
 ## DAG Resolution
 
-`dag.Advance(def, run, event) []Action` is the core pure function:
+`engine.Advance(def, run, event) (run, []SideEffect)` (internal/engine/advance.go) is the core pure function:
 - Input: immutable def + mutable run + new event
-- Output: list of actions (EnqueueTask, CompleteWorkflow, FailWorkflow, ReEnqueueAgentLoop)
+- Output: the updated run plus a list of side effects (EnqueueTask, CompleteWorkflow, FailWorkflow, SkipStep, ...)
 - Calculates ready steps from dependency graph
 - Skipped steps treated as completed for downstream resolution
 - No recursion — iterative with explicit visited set
@@ -173,23 +173,23 @@ type PriorityConfig struct {
 
 ## Human Approval Gates
 
-`StepTypeApproval` — pauses execution until a human approves or rejects via HTTP endpoint or CLI.
+`StepTypeApproval` — pauses execution until a human approves or rejects via HTTP endpoint.
 
 **Token:** 256-bit cryptographically random, stored in `approval_tokens` KV (7-day TTL). Atomic consumption via CAS prevents double-approve.
 
-**Endpoints:** `POST /runs/{id}/approval/{step_id}?action=approve&token={token}` and `?action=reject`. CLI: `dagnats run approve/reject <run-id> <step-id> --token=<token>`.
+**Endpoints:** `POST /runs/{id}/approval/{step_id}?action=approve&token={token}` and `?action=reject`. There is no CLI command for approvals.
 
-**Notification:** Published to `approval.{runID}.{stepID}` NATS subject for integrations (Slack, Discord, etc.). Timeout configurable (max 168h / 7 days) — auto-rejects on expiry.
+**Notification:** Published to the NATS subject set in the step's `subject` config, for integrations (Slack, Discord, etc.). Timeout configurable (max 168h / 7 days) — auto-rejects on expiry.
 
 ## Per-Step Concurrency Limits
 
 Two additional scopes beyond per-workflow `MaxRuns`:
 
-**Per-task-type global:** `StepDef.MaxTaskConcurrency` — "at most N `call-claude` tasks across all runs." KV bucket: `concurrency_tasks` with CAS counters. Checked at task dispatch. If exhausted, retry via `SLEEP_TIMERS` with 1s delay.
+**Per-task-type global:** `StepDef.MaxTaskConcurrency` — "at most N `call-claude` tasks across all runs." KV bucket: `concurrency_tasks`; each key holds the set of steps (`<run_id>/<step_id>`) that hold a slot, so retried or redelivered steps cannot drift the count. Checked at task dispatch. If exhausted, retry via `SLEEP_TIMERS` with 1s delay.
 
 **Per-run:** `ConcurrencyLimit.MaxSteps` — "at most N steps concurrent within this run." Enforced in `enqueueReady`. Builder: `WithConcurrency(maxRuns, maxSteps)`, `WithTaskConcurrency(max)`.
 
-**Bounds:** 1-1000 per scope. CAS retry: 10 attempts.
+**Bounds:** 0-1000 per scope (0 = unlimited).
 
 ## Non-Retriable Errors
 
