@@ -1094,6 +1094,13 @@ Work-queue streams are always skipped, same as `--keep`. Pass `--max-keep=0` to 
 it off, or a lower value to tighten it. This runs by default — no change to an
 existing scheduled job's command line is needed to get the protection.
 
+`AGENT_JOURNAL` is never purged at or above its protected floor, the lowest record a
+running agent step may still read, which the journal's writer publishes as stream
+metadata. `--older-than`, `--max-keep`, `--keep` and `--before-seq` all stop at the
+floor, and when the floor is missing or more than 10 minutes old (no engine is
+writing one) the journal is skipped with an `info:` line, as archivers do. A plain
+`clean` with none of these flags is a full reset and still empties it.
+
 **Categories:**
 
 | Category | Streams | KV Buckets |
