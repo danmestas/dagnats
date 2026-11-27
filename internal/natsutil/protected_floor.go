@@ -88,6 +88,27 @@ func PublishProtectedFloor(
 	return true, nil
 }
 
+// ProtectedFloorOf reads AGENT_JOURNAL's protected floor from its stream
+// metadata the way every purger of the stream must (the archiver's
+// contract above): the floor when it and its time are well formed and
+// the time is neither in the future nor older than
+// ProtectedFloorStaleAfter, else 0. A purger never purges at or above
+// the floor, and purges nothing at all when this returns 0.
+func ProtectedFloorOf(metadata map[string]string, now time.Time) uint64 {
+	if now.IsZero() {
+		panic("ProtectedFloorOf: now must be set")
+	}
+	floor, err := strconv.ParseUint(metadata[MetaProtectedFloor], 10, 64)
+	if err != nil {
+		return 0
+	}
+	at, err := time.Parse(time.RFC3339, metadata[MetaProtectedFloorAt])
+	if err != nil || at.After(now) || now.Sub(at) > ProtectedFloorStaleAfter {
+		return 0
+	}
+	return floor
+}
+
 // floorWriteDue decides a write from what is published: always when
 // nothing usable is; otherwise, once floorWriteInterval has passed for
 // a changed floor, and once floorRefreshInterval has for an unchanged

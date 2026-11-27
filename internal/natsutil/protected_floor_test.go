@@ -218,3 +218,32 @@ func TestProtectedFloorSurvivesReprovisionOnR3(t *testing.T) {
 	}
 	assertStreamUntouched(t, before, after)
 }
+
+// TestProtectedFloorOf pins the archiver's side of the contract, the one
+// reader every purger of AGENT_JOURNAL uses (#1030): a fresh floor reads
+// as its value, and a floor or time that is missing, malformed, in the
+// future or older than ProtectedFloorStaleAfter reads as 0, purge nothing.
+func TestProtectedFloorOf(t *testing.T) {
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
+	at := func(d time.Duration) string { return now.Add(d).Format(time.RFC3339) }
+	cases := []struct {
+		name string
+		meta map[string]string
+		want uint64
+	}{
+		{"fresh", map[string]string{MetaProtectedFloor: "42", MetaProtectedFloorAt: at(-time.Minute)}, 42},
+		{"just inside staleness", map[string]string{MetaProtectedFloor: "42", MetaProtectedFloorAt: at(-ProtectedFloorStaleAfter + time.Second)}, 42},
+		{"no metadata", nil, 0},
+		{"no floor", map[string]string{MetaProtectedFloorAt: at(-time.Minute)}, 0},
+		{"no time", map[string]string{MetaProtectedFloor: "42"}, 0},
+		{"malformed floor", map[string]string{MetaProtectedFloor: "x", MetaProtectedFloorAt: at(-time.Minute)}, 0},
+		{"malformed time", map[string]string{MetaProtectedFloor: "42", MetaProtectedFloorAt: "yesterday"}, 0},
+		{"future time", map[string]string{MetaProtectedFloor: "42", MetaProtectedFloorAt: at(time.Minute)}, 0},
+		{"stale", map[string]string{MetaProtectedFloor: "42", MetaProtectedFloorAt: at(-ProtectedFloorStaleAfter - time.Second)}, 0},
+	}
+	for _, c := range cases {
+		if got := ProtectedFloorOf(c.meta, now); got != c.want {
+			t.Errorf("%s: ProtectedFloorOf = %d, want %d", c.name, got, c.want)
+		}
+	}
+}

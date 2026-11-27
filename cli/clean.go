@@ -362,17 +362,9 @@ func enforceRunCeiling(
 			continue
 		}
 		result.Exceeded++
-		fmt.Fprintf(os.Stderr,
-			"warn: ceiling: %s holds %d messages, over "+
-				"--max-keep=%d (age-based purge alone left it "+
-				"there); purging to the newest %d\n",
-			name, info.State.Msgs, maxKeep, maxKeep)
-		if err := stream.Purge(ctx, opt); err != nil {
-			fmt.Fprintf(os.Stderr,
-				"warn: ceiling purge %s: %v\n", name, err)
-			continue
+		if ceilingPurgeStream(ctx, stream, info, maxKeep) {
+			result.Purged++
 		}
-		result.Purged++
 	}
 
 	for _, name := range cat.Buckets {
@@ -403,6 +395,33 @@ func enforceRunCeiling(
 	}
 
 	return result
+}
+
+// ceilingPurgeStream purges one over-ceiling stream to its newest maxKeep
+// messages; the agent journal only down to its protected floor (#1030).
+func ceilingPurgeStream(
+	ctx context.Context, stream jetstream.Stream, info *jetstream.StreamInfo, maxKeep uint64,
+) bool {
+	if stream == nil || info == nil {
+		panic("ceilingPurgeStream: stream and info must not be nil")
+	}
+	if maxKeep == 0 {
+		panic("ceilingPurgeStream: maxKeep must be positive")
+	}
+	name := info.Config.Name
+	fmt.Fprintf(os.Stderr,
+		"warn: ceiling: %s holds %d messages, over "+
+			"--max-keep=%d (age-based purge alone left it "+
+			"there); purging to the newest %d\n",
+		name, info.State.Msgs, maxKeep, maxKeep)
+	if isJournal(info) {
+		return purgeJournalBelow(ctx, stream, info, keepBoundary(info, maxKeep))
+	}
+	if err := stream.Purge(ctx, jetstream.WithPurgeKeep(maxKeep)); err != nil {
+		fmt.Fprintf(os.Stderr, "warn: ceiling purge %s: %v\n", name, err)
+		return false
+	}
+	return true
 }
 
 // containsCategory reports whether name appears in categories.
@@ -636,6 +655,9 @@ func purgeStreamBefore(
 
 	// If the newest message is older than cutoff, purge everything.
 	if info.State.LastTime.Before(cutoff) {
+		if isJournal(info) {
+			return purgeJournalBelow(ctx, stream, info, info.State.LastSeq+1)
+		}
 		if err := stream.Purge(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "warn: purge %s: %v\n",
 				info.Config.Name, err)
@@ -679,6 +701,9 @@ func purgeStreamBefore(
 				info.Config.Name, err)
 			return false
 		}
+		if isJournal(info) {
+			return purgeJournalBelow(ctx, stream, info, info.State.LastSeq+1)
+		}
 		if err := stream.Purge(ctx); err != nil {
 			return false
 		}
@@ -691,6 +716,9 @@ func purgeStreamBefore(
 	}
 
 	// Purge everything before this sequence.
+	if isJournal(info) {
+		return purgeJournalBelow(ctx, stream, info, meta.Sequence.Stream)
+	}
 	if err := stream.Purge(ctx,
 		jetstream.WithPurgeSequence(meta.Sequence.Stream),
 	); err != nil {
@@ -872,7 +900,7 @@ func executeSeqPurge(
 
 	opt := purgeSeqOpt(keep, beforeSeq)
 	var result cleanResult
-	result.Streams = seqPurgeStreams(ctx, js, streams, opt)
+	result.Streams = seqPurgeStreams(ctx, js, streams, keep, beforeSeq)
 	cleared, errs := seqPurgeBuckets(ctx, js, buckets, opt)
 	result.Buckets = cleared
 	result.Errors = errs
@@ -884,8 +912,9 @@ func seqPurgeStreams(
 	ctx context.Context,
 	js jetstream.JetStream,
 	names []string,
-	opt jetstream.StreamPurgeOpt,
+	keep, beforeSeq uint64,
 ) int {
+	opt := purgeSeqOpt(keep, beforeSeq)
 	if js == nil {
 		panic("seqPurgeStreams: js must not be nil")
 	}
@@ -914,6 +943,16 @@ func seqPurgeStreams(
 			fmt.Fprintf(os.Stderr,
 				"info: skip sequence purge of %s: work-queue stream self-drains\n",
 				name)
+			continue
+		}
+		if isJournal(info) {
+			boundary := beforeSeq
+			if keep > 0 {
+				boundary = keepBoundary(info, keep)
+			}
+			if purgeJournalBelow(ctx, stream, info, boundary) {
+				purged++
+			}
 			continue
 		}
 		if err := stream.Purge(ctx, opt); err != nil {
