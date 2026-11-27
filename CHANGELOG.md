@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.68] - 2026-11-27
+
 ### Added
 
 - **A `jobs:` spec can cancel superseded runs with `concurrency:` (#1031).** `concurrency: {group: ${{ github.ref }}, cancel-in-progress: true}` compiles to the workflow's singleton in `cancel` mode, keyed on the run input's `github.ref`. A newer run for a ref cancels the older one, and its queued jobs are never handed out, so a one-slot runner gets the current tip instead of superseded work. `${{ github.workflow }}-${{ github.ref }}` is accepted as is, and a plain group name serializes the whole workflow. `cancel-in-progress: false`, other expressions and secrets are diagnostics. A workflow outside `jobs:` gets the same result with `singleton: {mode: cancel, key: <input path>}`.
