@@ -57,14 +57,13 @@ var unsupportedJobsKeys = map[string]string{
 	"runs-on":           "this spec runs every job on the repository's worker group",
 	"outputs":           "this spec passes no outputs between jobs",
 	"permissions":       "this spec has no token permissions",
-	"concurrency":       "this spec has no concurrency groups",
 	"defaults":          "set env or working-directory on the job instead",
 	"shell":             "this spec runs every step with the worker's shell",
 	"continue-on-error": "a failed step fails its job",
 }
 
 var (
-	jobsTopAllowed = []string{"on", "env", "jobs", "name"}
+	jobsTopAllowed = []string{"on", "env", "jobs", "name", "concurrency"}
 	jobsJobAllowed = []string{"name", "needs", "timeout-minutes", "retries", "env",
 		"environment", "working-directory", "steps"}
 	jobsStepAllowed = []string{"name", "run", "env", "working-directory"}
@@ -131,9 +130,11 @@ type parsedJob struct {
 }
 
 type parsedJobs struct {
-	on   json.RawMessage
-	env  envValues
-	jobs map[string]*parsedJob
+	on  json.RawMessage
+	env envValues
+	// singleton is the compiled concurrency: (#1031), nil without one.
+	singleton *dag.SingletonConfig
+	jobs      map[string]*parsedJob
 	// jobsKey positions diagnostics about the jobs as a whole.
 	jobsKey *yaml.Node
 	// ids lists every declared job id, including jobs that failed to parse,
@@ -347,6 +348,8 @@ func parseJobsSpec(doc *yaml.Node) (parsedJobs, []Diagnostic) {
 			p.env, diags = parseJobsEnv(val, "env", diags)
 		case "name":
 			_, diags = parseJobsString(val, "name", diags)
+		case "concurrency":
+			p.singleton, diags = parseConcurrency(val, diags)
 		case "jobs":
 			p.jobsKey = key
 			diags = parseJobsMap(&p, val, diags)

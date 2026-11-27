@@ -280,7 +280,7 @@ jobs:
 
 Allowed keys:
 
-- **top level:** `on`, `env`, `jobs`, `name`
+- **top level:** `on`, `env`, `jobs`, `name`, `concurrency`
 - **job:** `name`, `needs`, `timeout-minutes`, `retries`, `env`,
   `environment`, `working-directory`, `steps`
 - **step:** `name`, `run`, `env`, `working-directory`
@@ -297,6 +297,19 @@ Allowed keys:
   starts the job. A `jobs:` workflow has no run deadline, so time a job
   spends queued for a worker never counts against it, as in GitHub
   Actions. A run's `first_step_started_at` shows how long it waited.
+- **`concurrency:` cancels the older run in a group.** Write
+  `concurrency: {group: ..., cancel-in-progress: true}`. It compiles to the
+  workflow's singleton in `cancel` mode: a newer run in the group cancels the
+  run that holds it, and a cancelled run's queued jobs are never handed to a
+  worker (a claimed one gets `409` and stops). The group's expression is not
+  evaluated, since the spec has no expressions: `${{ github.ref }}`, or
+  `${{ github.workflow }}-${{ github.ref }}`, names the run-input path the
+  group is read from, so the caller starts each run with
+  `{"github": {"ref": "refs/heads/main"}}`. The workflow prefix adds nothing,
+  because a group is already scoped to its workflow. A group with no
+  expression holds one run at a time for the whole workflow, and so does a
+  run whose input lacks the path. `cancel-in-progress: false` (queue the
+  newer run) is a diagnostic, as is any other expression or a secret.
 - **The task type comes from the caller.** Every job compiles to task
   `<task_namespace>.job` in worker group `<task_namespace>`, where
   `task_namespace` is supplied with the compile request. A `jobs:` spec
@@ -362,8 +375,8 @@ only ${{ secrets.NAME }} as an env value"*.
 
 These GitHub Actions keys are reported as **not supported**, each with a
 reason, rather than as typos: `uses`, `if`, `strategy`, `matrix`,
-`container`, `services`, `runs-on`, `outputs`, `permissions`, `concurrency`,
-`defaults`, `shell`, `continue-on-error`.
+`container`, `services`, `runs-on`, `outputs`, `permissions`, `defaults`,
+`shell`, `continue-on-error`.
 
 ### YAML rules
 
