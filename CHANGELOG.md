@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A `jobs:` spec can cancel superseded runs with `concurrency:` (#1031).** `concurrency: {group: ${{ github.ref }}, cancel-in-progress: true}` compiles to the workflow's singleton in `cancel` mode, keyed on the run input's `github.ref`. A newer run for a ref cancels the older one, and its queued jobs are never handed out, so a one-slot runner gets the current tip instead of superseded work. `${{ github.workflow }}-${{ github.ref }}` is accepted as is, and a plain group name serializes the whole workflow. `cancel-in-progress: false`, other expressions and secrets are diagnostics. A workflow outside `jobs:` gets the same result with `singleton: {mode: cancel, key: <input path>}`.
+
+- **A run records when its first step started (#1032).** `first_step_started_at` on the run snapshot (`GET /runs/{id}`, `runs.get`) is set by the run's first accepted `step.started`, so a client can show the wait for a worker apart from the running time.
+
 ### Changed
 
 - **A worker token refused for its scope gets a JSON 403 naming that scope (#1026).** Poll and connect answered a task type or worker group outside the token's scope with a plain-text sentence, so a caller fronting the bridge had to parse English to tell a runner which group its token belongs to. The body is now `{"error", "code", "requested", "token_task_types", "token_worker_groups"}`, with `code` `task_type_not_allowed` or `worker_group_not_allowed` and the same sentence in `error`. A client that showed the body as text now shows this JSON; the TypeScript SDK's error already exposes `code`. An unknown or revoked token still gets the bare 401.
@@ -20,10 +26,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`dagnats config show` no longer prints secrets.** `--json` printed the cluster auth token (`nats_cluster_auth_token`) in plain text, and both forms printed a password embedded in a leaf remote URL. Both now show `REDACTED`, with the rest of the URL intact. Secrets kept in files show only their paths, as before.
 
 - **`dagnats logs --level` and `logs search --level` match whatever case is given.** Log subjects carry the severity lowercase, so `--level=ERROR` built a subject that matched nothing. The level is now lowercased first.
-
-### Added
-
-- **A run records when its first step started (#1032).** `first_step_started_at` on the run snapshot (`GET /runs/{id}`, `runs.get`) is set by the run's first accepted `step.started`, so a client can show the wait for a worker apart from the running time.
 
 ## [0.0.67] - 2026-11-18
 

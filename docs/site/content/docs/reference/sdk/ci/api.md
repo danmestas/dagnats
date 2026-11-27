@@ -6,6 +6,10 @@
 import "github.com/danmestas/dagnats/ci"
 ```
 
+ci/jobs\_concurrency.go A jobs: spec's top\-level concurrency \(\#1031\), GitHub's concurrency: \{group, cancel\-in\-progress: true\}, compiles to the workflow's singleton in cancel mode: a newer run in a group cancels the run holding it, and the bridge never hands out a cancelled run's queued task, so a worker gets only the newest run per group.
+
+The spec has no expressions, so the group's one $\{\{ PATH \}\} is not evaluated: it names the run\-input path the lock is keyed on, which the caller fills when it starts the run \(input \{"github":\{"ref":...\}\} for $\{\{ github.ref \}\}\). A $\{\{ github.workflow \}\}\- prefix adds nothing, since every lock is already scoped to its workflow, and a group with no expression is one run at a time for the whole workflow.
+
 Package ci parses .dagnats/ci.yml CI specs and compiles them into dag.WorkflowDef instances ready for submission to a DagNats engine.
 
 This package lives at the module root \(not under internal/\) so the dagnats\-ci add\-on module — which cannot import github.com/danmestas/dagnats's internal/ tree — can depend on it directly, mirroring the openapi/ package's promotion \(\#614\). Core DagNats stays spec\-agnostic: the mounted /v1/ci/\* control\-plane endpoints \(internal/api/rest\_ci.go\) are the only place ci.yml awareness enters the control plane.

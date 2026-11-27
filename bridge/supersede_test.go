@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/danmestas/dagnats/ci"
 	"github.com/danmestas/dagnats/dag"
 	"github.com/danmestas/dagnats/internal/api"
 	"github.com/danmestas/dagnats/internal/engine"
@@ -89,6 +90,51 @@ func TestSingletonCancelHandsOutOnlyTheNewestTaskPerKey(t *testing.T) {
 		run, err := svc.GetRun(ctx, live)
 		if err != nil || run.Status == dag.RunStatusCancelled {
 			t.Fatalf("run %s was cancelled or unreadable (%v): only the same key supersedes", live, err)
+		}
+	}
+}
+
+// TestJobsConcurrencySupersedesTheOlderRunPerRef is the same guarantee
+// reached from a ci.yml: concurrency: {group: ${{ github.ref }},
+// cancel-in-progress: true} compiles to the singleton, keyed on the run
+// input's github.ref. A newer run for a ref cancels the older; a run for
+// another ref is untouched.
+func TestJobsConcurrencySupersedesTheOlderRunPerRef(t *testing.T) {
+	_, nc := natstest.StartServer(t)
+	if err := natsutil.SetupAll(nc); err != nil {
+		t.Fatalf("SetupAll: %v", err)
+	}
+	orch := engine.NewOrchestrator(nc)
+	orch.Start()
+	t.Cleanup(orch.Stop)
+	svc := api.NewService(nc)
+	spec := []byte("on: push\nconcurrency:\n  group: ${{ github.workflow }}-${{ github.ref }}\n" +
+		"  cancel-in-progress: true\njobs:\n  test:\n    steps:\n      - run: go test ./...\n")
+	res, diags := ci.CompileYAMLWith("repo-ci", spec, ci.CompileOptions{TaskNamespace: "repo"})
+	if len(diags) != 0 {
+		t.Fatalf("compile: %+v", diags)
+	}
+	ctx := context.Background()
+	if err := svc.RegisterWorkflow(ctx, res.Workflow); err != nil {
+		t.Fatalf("RegisterWorkflow: %v", err)
+	}
+	start := func(ref string) string {
+		t.Helper()
+		id, err := svc.StartRun(ctx, "repo-ci", json.RawMessage(`{"github":{"ref":"`+ref+`"}}`))
+		if err != nil {
+			t.Fatalf("StartRun(%s): %v", ref, err)
+		}
+		return id
+	}
+	old := start("refs/heads/main")
+	waitRunStatus(t, svc, old, dag.RunStatusRunning)
+	other := start("refs/heads/feature")
+	tip := start("refs/heads/main")
+	waitRunStatus(t, svc, old, dag.RunStatusCancelled)
+	for _, live := range []string{tip, other} {
+		run, err := svc.GetRun(ctx, live)
+		if err != nil || run.Status == dag.RunStatusCancelled {
+			t.Fatalf("run %s was cancelled or unreadable (%v): only the same ref supersedes", live, err)
 		}
 	}
 }

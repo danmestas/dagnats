@@ -97,6 +97,7 @@ func compileJobsDoc(
 	// which the watchdog counts from the job's step.started, as GitHub
 	// Actions counts timeout-minutes; queue time is not limited.
 	def.Timeout = 0
+	def.Singleton = parsed.singleton
 	if err := dag.Validate(def); err != nil {
 		return CompileResult{}, addDiagnostic(diags, Diagnostic{
 			Field: stepFieldFromError(err), Message: err.Error(),
