@@ -246,6 +246,8 @@ GET /runs/{id}
 
 A step's `output` is raw bytes, so JSON carries it as a base64 string (here, `{"files": 3}`). Each step state also has timing fields (`started_at`, `completed_at`, `attempt_started_at`) and a `dispatch_nonce`.
 
+The run itself carries `first_step_started_at`, when a worker first started one of its steps, absent until then. With `created_at` it splits a run's time into the wait for a worker and the time spent running.
+
 The snapshot also carries `def_hash`: the definition version this run is pinned to (see [Wire Protocol: Workflow Re-registration and def_hash](../wire-protocol#workflow-re-registration-and-def_hash)). Empty for a run started before this field existed.
 
 | Status | Condition |

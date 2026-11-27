@@ -9,9 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `jobs:` workflow no longer counts queue time against `timeout-minutes` (#1032).** The compiled workflow carried a run timeout, the sum of its jobs' limits, and the engine starts a run's deadline when the run is created. A job that waited for a worker lost that wait from its limit, and the run was cancelled by the first event after the deadline, even its job's own completion. On a one-runner repository the second of two queued runs was cancelled at 36 minutes with no failing step. A `jobs:` workflow now has no run deadline: each job's `timeout-minutes` is its step timeout, enforced from the moment a worker starts the job, as in GitHub Actions. Queue time is not limited. Workflows compiled from a checks spec, and other workflows with a `timeout`, are unchanged.
+
 - **`dagnats config show` no longer prints secrets.** `--json` printed the cluster auth token (`nats_cluster_auth_token`) in plain text, and both forms printed a password embedded in a leaf remote URL. Both now show `REDACTED`, with the rest of the URL intact. Secrets kept in files show only their paths, as before.
 
 - **`dagnats logs --level` and `logs search --level` match whatever case is given.** Log subjects carry the severity lowercase, so `--level=ERROR` built a subject that matched nothing. The level is now lowercased first.
+
+### Added
+
+- **A run records when its first step started (#1032).** `first_step_started_at` on the run snapshot (`GET /runs/{id}`, `runs.get`) is set by the run's first accepted `step.started`, so a client can show the wait for a worker apart from the running time.
 
 ## [0.0.67] - 2026-11-18
 

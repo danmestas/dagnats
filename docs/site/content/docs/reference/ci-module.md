@@ -292,6 +292,11 @@ Allowed keys:
   single job id or a list; repeats are kept once), and `Timeout` comes from `timeout-minutes`
   (a positive integer up to 360; a check's default when absent). `retries`
   is the same fixed-delay shorthand a check has (at most 100,000).
+- **`timeout-minutes` limits a job's running time, not its wait.** Each
+  job's limit is its step timeout, which counts from the moment a worker
+  starts the job. A `jobs:` workflow has no run deadline, so time a job
+  spends queued for a worker never counts against it, as in GitHub
+  Actions. A run's `first_step_started_at` shows how long it waited.
 - **The task type comes from the caller.** Every job compiles to task
   `<task_namespace>.job` in worker group `<task_namespace>`, where
   `task_namespace` is supplied with the compile request. A `jobs:` spec

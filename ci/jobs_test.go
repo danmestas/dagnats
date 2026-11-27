@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -352,36 +353,29 @@ func TestJobsDefBoundCountsEscaping(t *testing.T) {
 	requireDiagAt(t, spec, diags, "compiled workflow encodes", "jobs:")
 }
 
-// TestJobsWorkflowTimeoutSaturates pins the overflow fix: jobs whose
-// timeouts cap at the ceiling, never wrap negative. The first spec has each
-// job alone over the ceiling; the second has jobs individually under it
-// whose SUM is over, which is the branch that guards the running total.
-func TestJobsWorkflowTimeoutSaturates(t *testing.T) {
-	var b strings.Builder
-	b.WriteString("jobs:\n")
-	for _, id := range []string{"a", "b", "c", "d", "e", "f"} {
-		b.WriteString("  " + id + ":\n    timeout-minutes: 360\n" +
-			"    retries: 100000\n    steps:\n      - run: x\n")
-	}
-	res, diags := compileJobs(t, b.String(), testNamespace)
+// TestJobsWorkflowHasNoRunDeadline pins #1032: a jobs workflow sets no
+// run timeout, so time a job waits in the queue for a worker never counts
+// against its timeout-minutes. Each job keeps its own limit as its step
+// timeout, which the engine's watchdog counts from the job's step.started.
+func TestJobsWorkflowHasNoRunDeadline(t *testing.T) {
+	spec := "jobs:\n  test:\n    timeout-minutes: 36\n    steps:\n      - run: x\n" +
+		"  lint:\n    needs: test\n    retries: 2\n    steps:\n      - run: y\n"
+	res, diags := compileJobs(t, spec, testNamespace)
 	if len(diags) != 0 {
 		t.Fatalf("unexpected diagnostics: %+v", diags)
 	}
-	if res.Workflow.Timeout != jobsWorkflowTimeoutMax {
-		t.Fatalf("timeout = %v, want the %v ceiling", res.Workflow.Timeout, jobsWorkflowTimeoutMax)
+	if res.Workflow.Timeout != 0 {
+		t.Fatalf("workflow timeout = %v, want none: a run deadline counts queue time",
+			res.Workflow.Timeout)
 	}
-	// 360m x 1001 attempts is about 0.69 years: under the cap alone, over
-	// it in pairs.
-	pair := "jobs:\n  a:\n    timeout-minutes: 360\n    retries: 1000\n" +
-		"    steps:\n      - run: x\n  b:\n    timeout-minutes: 360\n" +
-		"    retries: 1000\n    steps:\n      - run: y\n"
-	summed, diags := compileJobs(t, pair, testNamespace)
-	if len(diags) != 0 || summed.Workflow.Timeout != jobsWorkflowTimeoutMax {
-		t.Fatalf("summed timeout = %v (%+v), want the %v ceiling",
-			summed.Workflow.Timeout, diags, jobsWorkflowTimeoutMax)
+	steps := map[string]time.Duration{}
+	for _, step := range res.Workflow.Steps {
+		steps[step.ID] = step.Timeout
 	}
-	one, _ := compileJobs(t, "jobs:\n  a:\n    steps:\n      - run: x\n", testNamespace)
-	if one.Workflow.Timeout <= 0 || one.Workflow.Timeout >= jobsWorkflowTimeoutMax {
-		t.Fatalf("a small spec's timeout %v must be positive and uncapped", one.Workflow.Timeout)
+	if steps["test"] != 36*time.Minute {
+		t.Fatalf("job test step timeout = %v, want its timeout-minutes 36m", steps["test"])
+	}
+	if steps["lint"] <= 0 {
+		t.Fatalf("job lint step timeout = %v, want the default, positive", steps["lint"])
 	}
 }
