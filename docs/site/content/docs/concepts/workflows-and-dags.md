@@ -65,8 +65,20 @@ Chain these on the builder before calling `Build()`:
 | `WithSticky(strategy)` | Worker affinity (`soft` prefers, `hard` requires) |
 | `WithIdempotencyKey(dotPath)` | Dedup runs by input field |
 | `WithSingleton(mode)` | One-at-a-time (`skip` or `cancel` duplicates) |
+| `WithSingletonKey(mode, dotPath)` | One-at-a-time per value of an input field |
 | `WithPriority(cfg)` | Priority-based run ordering |
 | `CancelOn(event, match)` | Cancel on external event |
+
+### Newest run per key wins
+
+A workflow with `WithSingletonKey(dag.SingletonModeCancel, "branch")` keeps one run per
+value of the input's `branch`: a new run cancels the run that holds the key. A
+cancelled run's queued tasks are never handed to a worker (a poll skips and
+removes them in the same request), and a task already claimed gets `409` on its
+next heartbeat or resolve, so the worker stops. A worker with one slot is
+therefore handed the newest run for a branch, never one it superseded. A forge,
+for example, keys push runs by repository, workflow and branch, and merge runs
+by landing id. Runs for other keys are untouched.
 
 ## Validation
 
