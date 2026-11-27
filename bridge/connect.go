@@ -63,9 +63,13 @@ func (b *Bridge) handleConnect(
 	)
 
 	claims := claimsFromContext(ctx)
-	groups, status, refusal := connectWorkerGroups(req.WorkerGroup, claims)
-	if status != 0 {
-		http.Error(w, refusal, status)
+	groups, scope, err := connectWorkerGroups(req.WorkerGroup, claims)
+	if scope != nil {
+		scope.write(w)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	dir := worker.NewDirectory(b.js)
@@ -203,8 +207,8 @@ func deregisterOnDisconnect(
 
 // parseConnectRequest validates the connect JSON body.
 // connectWorkerGroups resolves the worker groups a connecting bridge
-// worker is recorded as draining (#719), returning a non-zero HTTP
-// status and message when the connect must be refused.
+// worker is recorded as draining (#719). A group outside the token's
+// scope is a scope refusal (403); an invalid group value is an error (400).
 //
 // A named worker_group is validated exactly as a poll's is, so a connect
 // succeeds only for a group this worker could actually poll. When
@@ -219,17 +223,16 @@ func deregisterOnDisconnect(
 // ungrouped queue, so that registration would be false.
 func connectWorkerGroups(
 	group string, claims workertoken.Claims,
-) ([]string, int, string) {
+) ([]string, *scopeRefusal, error) {
 	var groups []string
 	if group == "" {
 		groups = append([]string(nil), claims.WorkerGroups...)
 	} else {
 		if err := dag.ValidWorkerGroup(group); err != nil {
-			return nil, http.StatusBadRequest, err.Error()
+			return nil, nil, err
 		}
 		if !claims.AllowsWorkerGroup(group) {
-			return nil, http.StatusForbidden,
-				claims.ExplainWorkerGroupRefusal(group)
+			return nil, workerGroupRefusal(claims, group), nil
 		}
 		groups = []string{group}
 	}
@@ -244,7 +247,7 @@ func connectWorkerGroups(
 	if len(groups) > workertoken.WorkerGroupsCountMax {
 		panic("connectWorkerGroups: recorded groups exceed the mint bound")
 	}
-	return groups, 0, ""
+	return groups, nil, nil
 }
 
 func parseConnectRequest(

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A worker token refused for its scope gets a JSON 403 naming that scope (#1026).** Poll and connect answered a task type or worker group outside the token's scope with a plain-text sentence, so a caller fronting the bridge had to parse English to tell a runner which group its token belongs to. The body is now `{"error", "code", "requested", "token_task_types", "token_worker_groups"}`, with `code` `task_type_not_allowed` or `worker_group_not_allowed` and the same sentence in `error`. A client that showed the body as text now shows this JSON; the TypeScript SDK's error already exposes `code`. An unknown or revoked token still gets the bare 401.
+
 ### Fixed
 
 - **`dagnats clean` no longer purges agent journal records a running step still needs (#1030).** `AGENT_JOURNAL` is in the `runs` category, and `--older-than`, the `--max-keep` ceiling, `--keep` and `--before-seq` purged it like any other stream, ignoring the protected floor its writer publishes (`dagnats.protected_floor`). A long agent step whose records were older than the cutoff could lose ones it still had to read. Each of those purges now stops at the floor, and with a missing or stale floor the journal is skipped with an `info:` line, the same contract archivers keep. `natsutil.ProtectedFloorOf` is that contract's one reader. A plain `clean` with no bound remains a full reset.
