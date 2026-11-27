@@ -485,7 +485,11 @@ func (o *Orchestrator) handleStepStarted(
 	if evt.AttemptNumber > state.Attempts {
 		state.Attempts = evt.AttemptNumber
 	}
-	elapsed := startAttemptClock(&state, time.Now().UTC())
+	now := time.Now().UTC()
+	elapsed := startAttemptClock(&state, now)
+	if run.FirstStepStartedAt == nil {
+		run.FirstStepStartedAt = &now
+	}
 	// Postcondition: the max() rule above is what keeps per-attempt
 	// retry timer msg-ids distinct (#381) — a regression to "assign"
 	// would let out-of-order step.started decrement the counter.

@@ -1868,7 +1868,7 @@ func (def *WorkflowDef) UnmarshalJSON(data []byte) error
 UnmarshalJSON accepts duration fields as Go duration strings \("30s"\) or integer nanoseconds.
 
 <a name="WorkflowRun"></a>
-## type [WorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L390-L464>)
+## type [WorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L390-L469>)
 
 WorkflowRun holds live state for a single execution of a WorkflowDef. Steps maps step ID to its current StepState; initialized to pending for all steps. Input preserves the original user\-supplied payload so retries can reuse it.
 
@@ -1890,12 +1890,17 @@ type WorkflowRun struct {
     ParentStepID string `json:"parent_step_id,omitempty"`
     // ForkedFrom is set on a run started by POST /runs/{run}/fork
     // (#810). Additive: other runs leave it nil.
-    ForkedFrom     *ForkOrigin `json:"forked_from,omitempty"`
-    Deadline       *time.Time  `json:"deadline,omitempty"`
-    PriorityOffset int         `json:"priority_offset,omitempty"`
-    SingletonKey   string      `json:"singleton_key,omitempty"`
-    TraceParent    string      `json:"trace_parent,omitempty"`
-    CompletedAt    *time.Time  `json:"completed_at,omitempty"`
+    ForkedFrom *ForkOrigin `json:"forked_from,omitempty"`
+    Deadline   *time.Time  `json:"deadline,omitempty"`
+    // FirstStepStartedAt is when a worker first started one of the run's
+    // steps (its first accepted step.started), so a client can show the
+    // time the run waited in the queue apart from the time it ran (#1032).
+    // Nil until then. Additive: older snapshots read nil.
+    FirstStepStartedAt *time.Time `json:"first_step_started_at,omitempty"`
+    PriorityOffset     int        `json:"priority_offset,omitempty"`
+    SingletonKey       string     `json:"singleton_key,omitempty"`
+    TraceParent        string     `json:"trace_parent,omitempty"`
+    CompletedAt        *time.Time `json:"completed_at,omitempty"`
     // Labels are caller-supplied key/value metadata set at start time
     // (#629). External triggers start runs *about* something (an order,
     // a tenant, a region) and need to find or bulk-cancel those runs
@@ -1951,7 +1956,7 @@ type WorkflowRun struct {
 ```
 
 <a name="NewWorkflowRun"></a>
-### func [NewWorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L469>)
+### func [NewWorkflowRun](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L474>)
 
 ```go
 func NewWorkflowRun(def WorkflowDef, runID string) WorkflowRun
@@ -1960,7 +1965,7 @@ func NewWorkflowRun(def WorkflowDef, runID string) WorkflowRun
 NewWorkflowRun constructs a WorkflowRun with all steps initialized to pending. runID must be non\-empty — callers are responsible for providing a unique ID \(e.g. nuid.Next\(\)\) before calling this constructor.
 
 <a name="WorkflowRun.EffectiveTime"></a>
-### func \(WorkflowRun\) [EffectiveTime](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L493>)
+### func \(WorkflowRun\) [EffectiveTime](<https://github.com/danmestas/dagnats/blob/main/dag/types.go#L498>)
 
 ```go
 func (r WorkflowRun) EffectiveTime() time.Time

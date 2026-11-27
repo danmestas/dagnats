@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/danmestas/dagnats/dag"
 	"gopkg.in/yaml.v3"
@@ -33,12 +32,6 @@ const (
 	// assumes the server keeps max_payload at or above the default; a server
 	// configured lower can still refuse a def that passes here.
 	jobsDefMaxBytes = 768 * 1024
-	// jobsWorkflowTimeoutMax caps the summed workflow timeout. The engine
-	// sets a run deadline with time.Now().Add(timeout) and bounds neither,
-	// so an unbounded sum (many jobs x long timeouts x high retries) could
-	// overflow there. A year is far past any real spec's total and keeps
-	// that arithmetic safe.
-	jobsWorkflowTimeoutMax = 365 * 24 * time.Hour
 )
 
 // jobStepPayload and jobPayload define the wire shape of Metadata["ci.job"].
@@ -98,7 +91,12 @@ func compileJobsDoc(
 	def := dag.WorkflowDef{
 		Name: name, Version: workflowVersion, Steps: buildJobSteps(parsed, payloads, namespace),
 	}
-	def.Timeout = jobsWorkflowTimeout(parsed)
+	// No run timeout (#1032): the engine starts a run deadline when the run
+	// is created, so a job waiting for a worker would lose that time from
+	// its timeout-minutes. Each job's limit is its step timeout instead,
+	// which the watchdog counts from the job's step.started, as GitHub
+	// Actions counts timeout-minutes; queue time is not limited.
+	def.Timeout = 0
 	if err := dag.Validate(def); err != nil {
 		return CompileResult{}, addDiagnostic(diags, Diagnostic{
 			Field: stepFieldFromError(err), Message: err.Error(),
@@ -432,32 +430,4 @@ func buildJobSteps(p parsedJobs, payloads map[string]string, namespace string) [
 		})
 	}
 	return steps
-}
-
-// jobsWorkflowTimeout gives the workflow room for every job to run in
-// sequence with all its retries; the checks shape's fixed 45m would cut a
-// longer job off mid-run. It never drops below the checks default.
-func jobsWorkflowTimeout(p parsedJobs) time.Duration {
-	if len(p.ids) == 0 {
-		panic("jobsWorkflowTimeout: a compiled spec has at least one job")
-	}
-	total := time.Duration(0)
-	for _, id := range p.ids {
-		job := p.jobs[id]
-		if job.timeout <= 0 || job.retries < 0 {
-			panic("jobsWorkflowTimeout: a clean job has a positive timeout and retries >= 0")
-		}
-		// One job's product fits: timeout <= 360m and retries are bounded
-		// by dag.RetryAttemptCountMax, about 2.2e18ns. The SUM across jobs
-		// is what can overflow, so saturate at the ceiling instead.
-		per := job.timeout * time.Duration(1+job.retries)
-		if per >= jobsWorkflowTimeoutMax || total >= jobsWorkflowTimeoutMax-per {
-			return jobsWorkflowTimeoutMax
-		}
-		total += per
-	}
-	if total < workflowTimeout {
-		return workflowTimeout
-	}
-	return total
 }

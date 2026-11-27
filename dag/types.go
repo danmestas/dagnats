@@ -404,12 +404,17 @@ type WorkflowRun struct {
 	ParentStepID string `json:"parent_step_id,omitempty"`
 	// ForkedFrom is set on a run started by POST /runs/{run}/fork
 	// (#810). Additive: other runs leave it nil.
-	ForkedFrom     *ForkOrigin `json:"forked_from,omitempty"`
-	Deadline       *time.Time  `json:"deadline,omitempty"`
-	PriorityOffset int         `json:"priority_offset,omitempty"`
-	SingletonKey   string      `json:"singleton_key,omitempty"`
-	TraceParent    string      `json:"trace_parent,omitempty"`
-	CompletedAt    *time.Time  `json:"completed_at,omitempty"`
+	ForkedFrom *ForkOrigin `json:"forked_from,omitempty"`
+	Deadline   *time.Time  `json:"deadline,omitempty"`
+	// FirstStepStartedAt is when a worker first started one of the run's
+	// steps (its first accepted step.started), so a client can show the
+	// time the run waited in the queue apart from the time it ran (#1032).
+	// Nil until then. Additive: older snapshots read nil.
+	FirstStepStartedAt *time.Time `json:"first_step_started_at,omitempty"`
+	PriorityOffset     int        `json:"priority_offset,omitempty"`
+	SingletonKey       string     `json:"singleton_key,omitempty"`
+	TraceParent        string     `json:"trace_parent,omitempty"`
+	CompletedAt        *time.Time `json:"completed_at,omitempty"`
 	// Labels are caller-supplied key/value metadata set at start time
 	// (#629). External triggers start runs *about* something (an order,
 	// a tenant, a region) and need to find or bulk-cancel those runs
