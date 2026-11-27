@@ -352,7 +352,7 @@ The `checkpoints` KV bucket uses keys formatted as `{run_id}.{step_id}`.
 
 | Transport | Method |
 |-----------|--------|
-| HTTP bridge | Bearer token via `Authorization: Bearer {token}` header — the `DAGNATS_BRIDGE_TOKEN` admin bearer, or a minted worker token scoped to task-type prefixes ([`/v1/tokens`](../rest-api#tokens)). Missing or invalid tokens return `401 Unauthorized`. A worker token polling a task type outside its `task_type_prefixes`, or a worker group outside its `worker_groups`, returns `403`. |
+| HTTP bridge | Bearer token via `Authorization: Bearer {token}` header — the `DAGNATS_BRIDGE_TOKEN` admin bearer, or a minted worker token scoped to task-type prefixes ([`/v1/tokens`](../rest-api#tokens)). Missing or invalid tokens return `401 Unauthorized`. A worker token polling a task type outside its `task_type_prefixes`, or a worker group outside its `worker_groups` (on poll or connect), returns `403` with a JSON body: `{"error": "<sentence>", "code": "task_type_not_allowed" or "worker_group_not_allowed", "requested": "<the refused task type or group>", "token_task_types": [...], "token_worker_groups": [...]}` (#1026). The scope lists are the token's own and never null. A missing or invalid token gets only the `401`. |
 | NATS native | NATS native authentication (user/password, tokens, NKey, JWT). |
 
 ---

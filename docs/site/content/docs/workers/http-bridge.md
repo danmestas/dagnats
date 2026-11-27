@@ -269,7 +269,7 @@ The release is keyed on the connection, not just the id: a worker that reconnect
 
 ## Worker groups
 
-A task whose step sets `worker_group` is published to a group-specific subject. To drain it over HTTP, name the group in `worker_group` on both connect and poll. A token minted with a group scope can poll only the groups it was minted for; any other group answers `403`.
+A task whose step sets `worker_group` is published to a group-specific subject. To drain it over HTTP, name the group in `worker_group` on both connect and poll. A token minted with a group scope can poll only the groups it was minted for; any other group answers `403` with a JSON body whose `code` is `worker_group_not_allowed`, naming the requested group and the token's own `token_worker_groups` and `token_task_types` (a task type outside the token's scope answers `task_type_not_allowed` the same way).
 
 A bridge poll uses the same durable consumer a native Go worker would create for that task type and group, so bridge workers and native workers for the same group share one queue. A poll with no `worker_group` takes only the ungrouped queue.
 

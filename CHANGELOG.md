@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **A worker token refused for its scope gets a JSON 403 naming that scope (#1026).** Poll and connect answered a task type or worker group outside the token's scope with a plain-text sentence, so a caller fronting the bridge had to parse English to tell a runner which group its token belongs to. The body is now `{"error", "code", "requested", "token_task_types", "token_worker_groups"}`, with `code` `task_type_not_allowed` or `worker_group_not_allowed` and the same sentence in `error`. A client that showed the body as text now shows this JSON; the TypeScript SDK's error already exposes `code`. An unknown or revoked token still gets the bare 401.
+
 ### Fixed
 
 - **A `jobs:` workflow no longer counts queue time against `timeout-minutes` (#1032).** The compiled workflow carried a run timeout, the sum of its jobs' limits, and the engine starts a run's deadline when the run is created. A job that waited for a worker lost that wait from its limit, and the run was cancelled by the first event after the deadline, even its job's own completion. On a one-runner repository the second of two queued runs was cancelled at 36 minutes with no failing step. A `jobs:` workflow now has no run deadline: each job's `timeout-minutes` is its step timeout, enforced from the moment a worker starts the job, as in GitHub Actions. Queue time is not limited. Workflows compiled from a checks spec, and other workflows with a `timeout`, are unchanged.

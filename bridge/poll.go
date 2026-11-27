@@ -107,11 +107,11 @@ func (b *Bridge) handlePoll(
 	}
 	claims := claimsFromContext(ctx)
 	if unmatched, ok := firstUnauthorizedTaskType(claims, req.TaskTypes); ok {
-		http.Error(w, claims.ExplainTaskTypeRefusal(unmatched), http.StatusForbidden)
+		taskTypeRefusal(claims, unmatched).write(w)
 		return
 	}
 	if !claims.AllowsWorkerGroup(req.WorkerGroup) {
-		http.Error(w, claims.ExplainWorkerGroupRefusal(req.WorkerGroup), http.StatusForbidden)
+		workerGroupRefusal(claims, req.WorkerGroup).write(w)
 		return
 	}
 	conn, ok := b.pollConn(ctx, w, claims, req)
